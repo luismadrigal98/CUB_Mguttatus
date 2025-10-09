@@ -60,7 +60,8 @@ codon_quant <- function(transcripts, codons, parallel = T,
   #' @param codons Codons to quantify.
   #' @param parallel Whether to enable or not the parallel processing.
   #' @param check_canonical This flag enable the filtering out of genes that do
-  #' not start with the canonical ATG.
+  #' not start with the canonical ATG. If TRUE is passed, ATG is assumed to be
+  #' canonical.
   #' 
   #' @return Count data table of codon per gene
   #' ___________________________________________________________________________
@@ -69,6 +70,8 @@ codon_quant <- function(transcripts, codons, parallel = T,
                           msg = "Input object (transcripts) must be of class `DNAStringSet`")
   
   # Check that the gene has a canonical start ATG
+  filter <- check_canonical(transcripts)
+  transcripts <- transcripts[filter] # Filter out non-canonical genes
   
   splitInPartsAux <- function(string, size)
   {
