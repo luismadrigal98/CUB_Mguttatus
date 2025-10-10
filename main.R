@@ -71,7 +71,7 @@ codon_quant <- function(transcripts, codons, parallel = T,
                           msg = "Input object (transcripts) must be of class `DNAStringSet`")
   
   # Check that the gene has a canonical start ATG
-  filter <- check_canonical(transcripts)
+  filter <- check_canonical_start(transcripts)
   transcripts <- transcripts[filter] # Filter out non-canonical genes
   
   # Check that the reading frame is correct (length of transcript is multiple of 3)
@@ -82,29 +82,37 @@ codon_quant <- function(transcripts, codons, parallel = T,
   if(parallel)
   {
     results <- foreach(i = 1:length(transcripts), 
-                       .export = c("splitInPartsAux"),
-                       .packages = c("data.table")) %dopar%
+                       .export = c("splitInPartsAux",
+                                   "codons_counter",
+                                   "codons"),
+                       .packages = c("data.table"),
+                       .combine = 'rbind') %dopar%
       {
-        
+        codons_counter(sequence = as.character(transcripts[[i]]),
+                       Gene_name = gene_name_extractor(names(transcripts[i])),
+                       codons = codons)
       }
+    
+    results <- results |> as.data.table() |> setorder(Gene_name)
   }
   
   else # Sequential approach (better for debugging)
   {
+    results <- lapply(X = 1:length(transcripts), 
+                      FUN = function(i)
+                        {
+                          codons_counter(sequence = as.character(transcripts[[i]]),
+                                       gene = gene_name_extractor(names(transcripts[i])),
+                                       codons = codons)
+                        }
+                      )
     
+    results <- do.call("rbind", results)
+    
+    results <- results |> as.data.table() |> setorder(Gene_name)
   }
-}
-
-codons_counter <- function(seq)
-{
-  #' Main function to count how many times a give codon appears in the seq input
-  #' 
-  #' @param seq Sequence for which the codons are going to be quantified
-  #' 
-  #' @return data.table entry wiht the Gene name and the counts for each codon
-  #' ___________________________________________________________________________
   
-  
+  return(results)
 }
 
 ## 3.2) Analysis from fasta and gff3 ----
