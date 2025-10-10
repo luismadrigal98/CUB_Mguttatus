@@ -10,19 +10,19 @@ codons_counter <- function(sequence, gene, codons)
   #' @return data.table entry wiht the Gene name and the counts for each codon
   #' ___________________________________________________________________________
   
-  sequence <- splitInPartsAx(sequence, 3)
+  sequence <- splitInPartsAux(sequence, 3)
   
   # Generate the counts
-  seq_table <- table(squence)
+  seq_table <- table(sequence)
   
   # Store the results
   result <- data.frame(Gene_name = gene)
   
   # Create the other fields
-  sapply(codons, function(x)
+  for (x in codons)
   {
-    result[, x] <- ifelse(is.na(seq_table[x]), 0, seq_table[x]) 
-  })
+    result[, x] <- ifelse(is.na(seq_table[x]), 0, seq_table[x])
+  }
   
   return(result)
 }
