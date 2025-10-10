@@ -12,6 +12,7 @@ library(Biostrings)
 library(data.table)
 library(assertthat)
 library(stringi)
+library(data.table)
 
 # 1.1) Definition of globals ----
 
@@ -73,14 +74,37 @@ codon_quant <- function(transcripts, codons, parallel = T,
   filter <- check_canonical(transcripts)
   transcripts <- transcripts[filter] # Filter out non-canonical genes
   
-  splitInPartsAux <- function(string, size)
+  # Check that the reading frame is correct (length of transcript is multiple of 3)
+  transcripts <- transcripts[sapply(1:length(transcripts), function(i){
+    length(splitInPartsAux(as.character(transcripts[[i]]), 1)) %% 3 == 0
+  })]
+  
+  if(parallel)
   {
-    #' Auxiliar function to split a string in sub-strings of fixed length
-    #' _________________________________________________________________________
-    
-    pat <- paste0('.{1,', size, '}')
-    stri_extract_all_regex(string, pat)
+    results <- foreach(i = 1:length(transcripts), 
+                       .export = c("splitInPartsAux"),
+                       .packages = c("data.table")) %dopar%
+      {
+        
+      }
   }
+  
+  else # Sequential approach (better for debugging)
+  {
+    
+  }
+}
+
+codons_counter <- function(seq)
+{
+  #' Main function to count how many times a give codon appears in the seq input
+  #' 
+  #' @param seq Sequence for which the codons are going to be quantified
+  #' 
+  #' @return data.table entry wiht the Gene name and the counts for each codon
+  #' ___________________________________________________________________________
+  
+  
 }
 
 ## 3.2) Analysis from fasta and gff3 ----
