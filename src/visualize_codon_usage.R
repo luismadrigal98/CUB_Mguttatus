@@ -47,7 +47,7 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
     plot_data$Codon <- factor(plot_data$Codon, levels = unique(plot_data$Codon))
     
     p <- ggplot(plot_data, aes(x = Codon, y = AA, fill = RSCU)) +
-      geom_tile(color = "white", size = 0.5) +
+      geom_tile(color = "white", linewidth = 0.5) +
       scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
                           midpoint = 1, name = "RSCU") +
       theme_minimal() +

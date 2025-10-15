@@ -7,6 +7,9 @@
 ## 1) Load required libraries and set up environment ----
 ## _____________________________________________________________________________
 
+# Source the set_environment function first
+source("./src/set_environment.R")
+
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
                         'stringi', 'foreach', 'doParallel', 'coRdon',
                         'doFuture', 'ggplot2')

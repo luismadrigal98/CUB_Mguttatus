@@ -103,7 +103,7 @@ enc_plot <- function(enc_values, gc_content, output_file = "enc_plot.pdf")
   p <- ggplot(plot_data, aes(x = GC3s, y = ENC)) +
     geom_point(alpha = 0.3, size = 1, color = "darkgray") +
     geom_line(data = expected_curve, aes(x = GC3s, y = ENC_expected), 
-              color = "red", size = 1) +
+              color = "red", linewidth = 1) +
     theme_minimal() +
     labs(title = "ENC Plot (Effective Number of Codons vs GC3s)",
          subtitle = "Red curve: expected ENC under mutation-drift equilibrium",
