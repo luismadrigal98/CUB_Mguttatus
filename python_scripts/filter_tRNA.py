@@ -12,30 +12,35 @@ import sys
 import argparse
 
 def filter_tRNA(input_file, output_file, exclude_scaffolds=False):
-    # Read the input tRNA file, skipping the first 3 header lines
-    # Use sep='\s+' instead of deprecated delim_whitespace
-    df = pd.read_csv(input_file, skiprows=3, sep='\s+', header=None)
+    # Read the file line by line to handle variable number of columns
+    rows = []
+    with open(input_file, 'r') as f:
+        # Skip the first 3 header lines
+        for _ in range(3):
+            next(f)
+        
+        # Process each data line
+        for line in f:
+            line = line.strip()
+            if line:  # Skip empty lines
+                parts = line.split()
+                # Ensure we have at least 9 columns, pad with empty string if needed
+                while len(parts) < 10:
+                    parts.append('')
+                # Take only the first 10 columns to handle any extra whitespace
+                rows.append(parts[:10])
     
-    # Handle variable number of columns by ensuring we have at least 10 columns
-    # Some rows have 9 columns (no Notes), some have 10 (with Notes like 'pseudo')
-    max_cols = df.shape[1]
-    if max_cols < 10:
-        # Add empty Notes column if it doesn't exist
-        df[9] = ''
+    # Create DataFrame with consistent structure
+    df = pd.DataFrame(rows, columns=['Sequence_name', 'tRNA_number', 'tRNA_start', 'tRNA_end', 
+                                   'tRNA_type', 'Anticodon', 'Intron_start', 'Intron_end', 'Score', 'Notes'])
     
-    # Filter out rows where the last column contains 'pseudo' (indicating pseudogenes)
-    # Check both column 9 (Notes) and handle cases where 'pseudo' might be in different positions
-    if max_cols >= 10:
-        filtered_df = df[~df[9].astype(str).str.contains('pseudo', na=False)]
-    else:
-        filtered_df = df.copy()
+    # Filter out rows where the Notes column contains 'pseudo' (indicating pseudogenes)
+    filtered_df = df[~df['Notes'].str.contains('pseudo', na=False)]
 
     # Optionally filter out scaffold entries
     if exclude_scaffolds:
         # Filter out rows where sequence name contains 'scaffold' (case-insensitive)
-        filtered_df = filtered_df[~filtered_df[0].astype(str).str.contains('scaffold', case=False, na=False)]
-
-    filtered_df.columns = ['Sequence_name', 'tRNA_number', 'tRNA_start', 'tRNA_end', 'tRNA_type', 'Anticodon', 'Intron_start', 'Intron_end', 'Score', 'Notes']
+        filtered_df = filtered_df[~filtered_df['Sequence_name'].str.contains('scaffold', case=False, na=False)]
 
     # Write the filtered DataFrame to the output file
     filtered_df.to_csv(output_file, sep='\t', index=False)
