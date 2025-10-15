@@ -2,7 +2,8 @@ set_environment <- function(required_pckgs,
                             automatic_download = FALSE,
                             personal_seed = as.numeric(Sys.time()),
                             parallel_backend = FALSE,
-                            n_cores = NULL)
+                            n_cores = NULL,
+                            src_dir = './src')
 {
   #' This fucntion will set up the working environment for performing all the
   #' analysis. It will load all the required packages, set the seed for
@@ -74,6 +75,13 @@ set_environment <- function(required_pckgs,
     registerDoFuture()
     plan(multisession, workers = ifelse(!is.null(n_cores), n_cores, parallelly::availableCores() - 1))
   }
+  
+  # Source required functions
+  message("Sourcing the required functions")
+  source_files <- list.files(path = src_dir, pattern = "*.R", full.names = TRUE)
+  source_files <- setdiff(source_files, './src/set_environment.R')
+  
+  sapply(source_files, function(x) source(x))
   
   return(invisible())
 }
