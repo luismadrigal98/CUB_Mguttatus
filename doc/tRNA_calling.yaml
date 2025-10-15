@@ -1,0 +1,4 @@
+name: tRNA_calling
+program: tRNAscan-SE
+version: 2.0.12
+command: tRNAscan-SE -E -o Mguttatusvar_IM767_887_v2.0_tRNA.txt Mguttatusvar_IM767_887_v2.0.fa
