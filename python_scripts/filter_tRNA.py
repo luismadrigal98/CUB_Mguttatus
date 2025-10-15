@@ -42,7 +42,8 @@ def filter_tRNA(input_file, output_file, exclude_scaffolds=False):
         # Filter out rows where sequence name contains 'scaffold' (case-insensitive)
         filtered_df = filtered_df[~filtered_df['Sequence_name'].str.contains('scaffold', case=False, na=False)]
 
-    # Write the filtered DataFrame to the output file
+    # Write the filtered DataFrame to the output file, excluding the Notes column, because at this point is empty
+    filtered_df = filtered_df.drop(columns=['Notes'])
     filtered_df.to_csv(output_file, sep='\t', index=False)
 
 def main():
