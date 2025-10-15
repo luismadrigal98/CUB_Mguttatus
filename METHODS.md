@@ -133,7 +133,7 @@ The ENC plot identifies genes under selection for codon usage bias by comparing 
 
 ### Expected ENC Curve (Wright 1990)
 ```
-ENC_expected = 2 + GC3s + 29 / (GC3s² + (1-GC3s)²)
+ENC_expected = 2 + GC3s + (29 / (GC3s² + (1-GC3s)²))
 ```
 
 This curve represents the expected relationship between ENC and GC3s if codon usage were determined solely by mutational bias.

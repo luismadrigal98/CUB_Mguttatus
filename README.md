@@ -28,7 +28,7 @@ This repository provides tools to analyze codon usage patterns, evaluate selecti
 
 ```r
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
-                        'stringi', 'foreach', 'doParallel', 'coRdon',
+                        'stringi', 'foreach', 'doParallel',
                         'doFuture', 'ggplot2')
 ```
 

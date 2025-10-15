@@ -8,7 +8,7 @@
 
 ## Load required libraries
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
-                        'stringi', 'foreach', 'doParallel', 'coRdon',
+                        'stringi', 'foreach', 'doParallel',
                         'doFuture', 'ggplot2')
 
 # Source set_environment function

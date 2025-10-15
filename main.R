@@ -11,7 +11,7 @@
 source("./src/set_environment.R")
 
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
-                        'stringi', 'foreach', 'doParallel', 'coRdon',
+                        'stringi', 'foreach', 'doParallel',
                         'doFuture', 'ggplot2')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 

@@ -18,7 +18,10 @@ install.packages(c(
 # Bioconductor packages
 if (!requireNamespace("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
-BiocManager::install(c("Biostrings", "coRdon"))
+BiocManager::install("Biostrings")
+
+# Optional: coRdon package (not required for core functionality)
+# BiocManager::install("coRdon")
 ```
 
 ### 2. Clone the repository
