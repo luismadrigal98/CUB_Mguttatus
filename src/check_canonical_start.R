@@ -13,7 +13,7 @@ check_canonical_start <- function(transcript_set,
   
   selector <- sapply(1:length(transcript_set), function(i)
   {
-    as.character(trans[[i]][1:3]) == start
+    as.character(transcript_set[[i]][1:3]) == start
   })
   
   return(selector)
