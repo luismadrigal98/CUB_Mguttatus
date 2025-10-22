@@ -24,6 +24,7 @@ set_environment(required_pckgs = required_libraries, personal_seed = 1998,
                 parallel_backend = T, n_cores = 10)
 
 # 1.1) Definition of globals ----
+# Look-up table
 
 genetic_code_dna_long <- c(
   "TTT"="Phe", "TTC"="Phe", "TTA"="Leu", "TTG"="Leu",

@@ -26,42 +26,36 @@ calculate_rscu <- function(codon_counts, genetic_code)
   # Remove STOP codons from analysis
   aa_groups <- aa_groups[names(aa_groups) != "STOP"]
   
-  for(gene_idx in 1:nrow(codon_counts))
+  for(aa in names(aa_groups))
   {
-    for(aa in names(aa_groups))
+    # Get the set of synonymous codons for this AA
+    syn_codons <- aa_groups[[aa]]
+    n_synonymous <- length(syn_codons)
+    
+    # 5. Perform data.table operations on ALL genes at once
+    
+    # A) Calculate T (total_aa_count) for every gene
+    #    rowSums() is applied to the subset of data (.SD) defined by .SDcols
+    rscu_results[, total_aa_count := rowSums(.SD), .SDcols = syn_codons]
+    
+    # B) Calculate E (expected_freq) for every gene
+    rscu_results[, expected_freq := total_aa_count / n_synonymous]
+    
+    # C) Calculate RSCU = X_i / E_i for each synonymous codon
+    #    This is a fast loop over a few column NAMES, not rows.
+    for(codon in syn_codons)
     {
-      synonymous_codons <- aa_groups[[aa]]
-      
-      # Get counts for this amino acid's synonymous codons
-      codon_values <- as.numeric(codon_counts[gene_idx, synonymous_codons, with = FALSE])
-      total_aa_count <- sum(codon_values)
-      
-      if(total_aa_count > 0)
-      {
-        n_synonymous <- length(synonymous_codons)
-        expected_freq <- total_aa_count / n_synonymous
-        
-        # Calculate RSCU for each codon
-        for(i in seq_along(synonymous_codons))
-        {
-          codon <- synonymous_codons[i]
-          observed <- codon_values[i]
-          rscu_value <- ifelse(expected_freq > 0, 
-                               (observed / expected_freq) * n_synonymous / n_synonymous,
-                               0)
-          rscu_results[gene_idx, (codon) := observed / expected_freq]
-        }
-      }
-      else
-      {
-        # If no counts, set RSCU to 0
-        for(codon in synonymous_codons)
-        {
-          rscu_results[gene_idx, (codon) := 0]
-        }
-      }
+      # We use fifelse() for a fast, safe division by zero.
+      # If expected_freq is 0, RSCU is 0, otherwise calculate X_i / E_i
+      rscu_results[, (codon) := fifelse(expected_freq == 0, 
+                                        0, 
+                                        .SD[[1]] / expected_freq), 
+                   .SDcols = codon]
     }
   }
+  
+  # Clean up the temporary helper columns
+  rscu_results[, c("total_aa_count", "expected_freq") := NULL]
   
   return(rscu_results)
 }
