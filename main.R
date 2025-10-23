@@ -111,6 +111,9 @@ rf_values <- calculate_rf(codon_usage, genetic_code_dna_long)
 # Get he PSPM
 pspm_overall <- calculate_overall_PSPM(rf_values, genetic_code_dna_long)
 
+# Create logos
+create_aa_logo(pspm_overall)
+
 # Calculate GC content
 gc_content <- calculate_gc_content(codon_usage)
 
