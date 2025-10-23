@@ -18,6 +18,11 @@ calculate_overall_PSPM <- function(rf_data, genetic_code)
   # Iterate over each amino acid in the genetic code
   unique_aas <- unique(genetic_code)
   
+  # Remove STOP and single codon aa
+  unique_aas <- unique_aas[unique_aas != "STOP" & 
+                            unique_aas != "Met" & 
+                            unique_aas != "Trp"]
+  
   overall_PSPM <- lapply(unique_aas, function(aa)
   {
     # Get synonymous codons for the amino acid

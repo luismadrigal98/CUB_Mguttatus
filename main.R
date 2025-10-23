@@ -19,7 +19,8 @@ source("./src/set_environment.R")
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
                         'stringi', 'foreach', 'doParallel',
                         'doFuture', 'ggplot2', 'grid', 'gridExtra',
-                        'ggseqlogo')
+                        'ggseqlogo', 'FactoMineR',
+                        'factoextra')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -57,6 +58,11 @@ trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_
 
 codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long), 
                            parallel = T)
+
+## 3.2) Clean the codon usage object (remove the STOP codon)
+
+codon_usage <- codon_usage |>
+  trim_uninformative(genetic_code = genetic_code_dna_long)
 
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----

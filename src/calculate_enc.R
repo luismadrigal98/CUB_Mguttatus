@@ -16,7 +16,9 @@ calculate_enc <- function(codon_counts, genetic_code)
   
   # Group codons by amino acid
   aa_groups <- split(names(genetic_code), genetic_code)
-  aa_groups <- aa_groups[names(aa_groups) != "STOP"]
+  aa_groups <- aa_groups[names(aa_groups) != "STOP" & 
+                           names(aa_groups) != "Trp" &
+                           names(aa_groups) != "Met"]
   
   # Classify amino acids by number of synonymous codons
   aa_by_n <- list(

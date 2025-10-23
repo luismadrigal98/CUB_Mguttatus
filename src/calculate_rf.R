@@ -25,10 +25,14 @@ calculate_rf <- function(codon_counts, genetic_code)
   # Remove STOP codons from analysis
   aa_groups <- aa_groups[names(aa_groups) != "STOP"]
   
+  # Remove Met and Trp (uninformative)
+  aa_groups <- aa_groups[names(aa_groups) != "Trp" & names(aa_groups) != "Met"]
+  
   for(aa in names(aa_groups))
   {
     # Get the set of synonymous codons for this AA
     syn_codons <- aa_groups[[aa]]
+    total_syn_codons <- length(syn_codons)
     
     # 5. Perform data.table operations on ALL genes at once
     
@@ -43,7 +47,7 @@ calculate_rf <- function(codon_counts, genetic_code)
       # We use fifelse() for a fast, safe division by zero.
       # If expected_freq is 0, RSCU is 0, otherwise calculate X_i / E_i
       rf_results[, (codon) := fifelse(total_aa_count == 0, 
-                                        0, 
+                                        1/total_syn_codons, 
                                         .SD[[1]] / total_aa_count), 
                    .SDcols = codon]
     }

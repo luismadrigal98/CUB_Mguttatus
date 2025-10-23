@@ -26,6 +26,9 @@ calculate_rscu <- function(codon_counts, genetic_code)
   # Remove STOP codons from analysis
   aa_groups <- aa_groups[names(aa_groups) != "STOP"]
   
+  # Remove Met and Trp (uninformative)
+  aa_groups <- aa_groups[names(aa_groups) != "Trp" & names(aa_groups) != "Met"]
+  
   for(aa in names(aa_groups))
   {
     # Get the set of synonymous codons for this AA
@@ -48,7 +51,7 @@ calculate_rscu <- function(codon_counts, genetic_code)
       # We use fifelse() for a fast, safe division by zero.
       # If expected_freq is 0, RSCU is 0, otherwise calculate X_i / E_i
       rscu_results[, (codon) := fifelse(expected_freq == 0, 
-                                        0, 
+                                        1, 
                                         .SD[[1]] / expected_freq), 
                    .SDcols = codon]
     }
