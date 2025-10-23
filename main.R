@@ -18,7 +18,8 @@ source("./src/set_environment.R")
 
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
                         'stringi', 'foreach', 'doParallel',
-                        'doFuture', 'ggplot2', 'grid', 'gridExtra')
+                        'doFuture', 'ggplot2', 'grid', 'gridExtra',
+                        'ggseqlogo')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -103,6 +104,12 @@ rscu_values <- calculate_rscu(codon_usage, genetic_code_dna_long)
 
 # Calculate ENC
 enc_values <- calculate_enc(codon_usage, genetic_code_dna_long)
+
+# Calculate RF
+rf_values <- calculate_rf(codon_usage, genetic_code_dna_long)
+
+# Get he PSPM
+pspm_overall <- calculate_overall_PSPM(rf_values, genetic_code_dna_long)
 
 # Calculate GC content
 gc_content <- calculate_gc_content(codon_usage)

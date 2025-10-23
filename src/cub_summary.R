@@ -16,7 +16,7 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
   #' @return List with all analysis results
   #' ___________________________________________________________________________
   
-  library(data.table)
+  require(data.table)
   
   # Create output directory if needed
   if(!dir.exists(output_dir))
@@ -34,16 +34,24 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
   message("Calculating ENC...")
   enc_results <- calculate_enc(codon_counts, genetic_code)
   
-  # 3. Calculate GC content
+  # 3. Calculate the RF
+  message("Calculating the RF...")
+  rf_results <- calculate_rf(codon_counts, genetic_code)
+  
+  # 4. Calculate the PSPM
+  message("Calculating the PSPM...")
+  pspm_overall <- calculate_overall_PSPM(rf_results, genetic_code)
+  
+  # 5. Calculate GC content
   message("Calculating GC content metrics...")
   gc_results <- calculate_gc_content(codon_counts)
   
-  # 4. Merge all results
+  # 6. Merge all results
   message("Merging results...")
   summary_table <- merge(codon_counts, enc_results, by = "Gene_name")
   summary_table <- merge(summary_table, gc_results, by = "Gene_name")
   
-  # 5. Generate visualizations
+  # 7. Generate visualizations
   message("Creating visualizations...")
   
   # Codon usage heatmap
@@ -105,50 +113,10 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
   return(list(
     summary_table = summary_table,
     enc_results = enc_results,
+    rf_results = rf_results,
+    pspm_results = pspm_overall,
     gc_results = gc_results,
     rscu_results = rscu_results,
     statistics = stats
   ))
-}
-
-
-create_aa_specific_logos <- function(codon_counts, genetic_code, 
-                                     output_dir = "./results/codon_logos")
-{
-  #' Create codon logos for all amino acids
-  #' 
-  #' @description Generates sequence logo-style plots for each amino acid
-  #' showing nucleotide preferences at each codon position
-  #' 
-  #' @param codon_counts Data table with codon counts per gene
-  #' @param genetic_code Named vector mapping codons to amino acids
-  #' @param output_dir Directory for output files
-  #' 
-  #' @return Invisible
-  #' ___________________________________________________________________________
-  
-  if(!dir.exists(output_dir))
-  {
-    dir.create(output_dir, recursive = TRUE)
-  }
-  
-  # Get unique amino acids (excluding STOP)
-  amino_acids <- unique(genetic_code[genetic_code != "STOP"])
-  
-  message(sprintf("Creating codon logos for %d amino acids...", 
-                  length(amino_acids)))
-  
-  for(aa in amino_acids)
-  {
-    tryCatch({
-      output_file <- file.path(output_dir, paste0("codon_logo_", aa, ".pdf"))
-      create_codon_logo(codon_counts, genetic_code, aa, output_file)
-    }, error = function(e) {
-      message(sprintf("Warning: Could not create logo for %s: %s", aa, e$message))
-    })
-  }
-  
-  message(sprintf("Codon logos saved to: %s", output_dir))
-  
-  return(invisible())
 }
