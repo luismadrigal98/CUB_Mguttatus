@@ -57,8 +57,8 @@ plot_multivariate_analysis <- function(coord_data,
       stop("Need at least 2 dimensions for bivariate plot")
     }
     
-    p <- ggplot(coord_data, aes_string(x = dims[1], y = dims[2], 
-                                        color = group_var, fill = group_var)) +
+    p <- ggplot(coord_data, aes(x = .data[[dims[1]]], y = .data[[dims[2]]], 
+                                        color = .data[[group_var]], fill = .data[[group_var]])) +
       geom_point(alpha = point_alpha, size = point_size) +
       stat_ellipse(geom = "polygon", level = confidence_level, 
                    alpha = ellipse_alpha, show.legend = FALSE) +
@@ -91,8 +91,8 @@ plot_multivariate_analysis <- function(coord_data,
     # Create pairs plot
     p <- GGally::ggpairs(
       plot_data,
-      columns = 1:length(dims),
-      mapping = aes_string(color = group_var, fill = group_var),
+      columns = seq_along(dims),
+      mapping = aes(color = .data[[group_var]], fill = .data[[group_var]]),
       upper = list(continuous = "points"),
       lower = list(continuous = wrap("points", alpha = point_alpha)),
       diag = list(continuous = wrap("densityDiag", alpha = 0.5)),
@@ -333,8 +333,8 @@ create_biplot <- function(analysis_result,
   p <- ggplot() +
     # Plot observations
     geom_point(data = coord_data,
-               aes_string(x = dim_cols[1], y = dim_cols[2], 
-                         color = group_var),
+               aes(x = .data[[dim_cols[1]]], y = .data[[dim_cols[2]]], 
+                         color = .data[[group_var]]),
                alpha = 0.4, size = 1.5) +
     # Plot loading arrows
     geom_segment(data = loadings_df,

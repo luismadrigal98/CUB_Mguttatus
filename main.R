@@ -156,24 +156,80 @@ cor(exp_bud_enc$ENC, exp_bud_enc$Expression)
 plot(exp_bud_enc$ENC, exp_bud_enc$Expression)
 lm(Expression ~ ENC, data = exp_bud_enc)
 
-# Top 5% vs rest ...
+# Define expression groups: Top 5% vs Bottom 5% (extreme comparison)
 
-top_5_percent_cutoff <- quantile(exp_bud_enc$Expression, probs = 0.95)
+top_5_cutoff <- quantile(exp_bud_enc$Expression, probs = 0.95)
+bottom_5_cutoff <- quantile(exp_bud_enc$Expression, probs = 0.05)
 
-exp_bud_enc$Expression_Group <- ifelse(
-  exp_bud_enc$Expression >= top_5_percent_cutoff,
-  "Top 5% Expressed",
-  "Bottom 95%"
+exp_bud_enc$Expression_Group <- case_when(
+  exp_bud_enc$Expression >= top_5_cutoff ~ "Top 5%",
+  exp_bud_enc$Expression <= bottom_5_cutoff ~ "Bottom 5%",
+  TRUE ~ "Middle 90%"
 )
 
-library(ggplot2)
-ggplot(exp_bud_enc, aes(x = Expression_Group, y = ENC, fill = Expression_Group)) +
-  geom_boxplot() +
-  labs(title = "ENC of Highly Expressed Genes vs. Other Genes",
-       y = "Effective Number of Codons (ENC)") +
-  theme_minimal()
+# Also create a version with only extremes for clearer visualization
+exp_bud_enc_extremes <- exp_bud_enc |>
+  filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
 
-wilcox.test(ENC ~ Expression_Group, data = exp_bud_enc)
+# Print the actual group names for verification
+cat("\n=== WARNING: Check Expression Group Names ===\n")
+cat("If you see different group names in Step 8 plots, re-run this Step 7!\n")
+cat("Expected names: Top 5%, Bottom 5%, Middle 90%\n")
+cat("Actual names in data:\n")
+print(table(exp_bud_enc$Expression_Group))
+cat("\n")
+
+# Statistical comparison
+cat("\n=== Expression Group Statistics ===\n")
+cat(sprintf("Top 5%% threshold: %.2f CPM\n", top_5_cutoff))
+cat(sprintf("Bottom 5%% threshold: %.2f CPM\n", bottom_5_cutoff))
+cat(sprintf("Top 5%% genes: %d\n", sum(exp_bud_enc$Expression_Group == "Top 5%")))
+cat(sprintf("Bottom 5%% genes: %d\n", sum(exp_bud_enc$Expression_Group == "Bottom 5%")))
+cat(sprintf("Middle 90%% genes: %d\n", sum(exp_bud_enc$Expression_Group == "Middle 90%")))
+
+# Boxplot comparison
+library(ggplot2)
+p_boxplot <- ggplot(exp_bud_enc, aes(x = Expression_Group, y = ENC, fill = Expression_Group)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
+  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
+                                "Bottom 5%" = "#377EB8",
+                                "Middle 90%" = "#999999")) +
+  labs(title = "ENC by Expression Level",
+       subtitle = "Diamond = mean, box = median ± IQR",
+       y = "Effective Number of Codons (ENC)",
+       x = "Expression Group") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+ggsave("./results/ENC_by_expression_group.pdf", p_boxplot, width = 8, height = 6)
+
+# Statistical tests
+cat("\n=== Wilcoxon Test: Top 5% vs Bottom 5% ===\n")
+wilcox_result <- wilcox.test(ENC ~ Expression_Group, 
+                              data = exp_bud_enc_extremes)
+print(wilcox_result)
+
+cat("\n=== Summary Statistics ===\n")
+summary_stats <- exp_bud_enc %>%
+  group_by(Expression_Group) %>%
+  summarise(
+    n = n(),
+    mean_ENC = mean(ENC, na.rm = TRUE),
+    median_ENC = median(ENC, na.rm = TRUE),
+    sd_ENC = sd(ENC, na.rm = TRUE),
+    mean_Expression = mean(Expression, na.rm = TRUE)
+  )
+print(summary_stats)
+
+# Effect size (Cohen's d)
+top5_enc <- exp_bud_enc_extremes$ENC[exp_bud_enc_extremes$Expression_Group == "Top 5%"]
+bottom5_enc <- exp_bud_enc_extremes$ENC[exp_bud_enc_extremes$Expression_Group == "Bottom 5%"]
+cohens_d <- (mean(top5_enc) - mean(bottom5_enc)) / 
+  sqrt((sd(top5_enc)^2 + sd(bottom5_enc)^2) / 2)
+cat(sprintf("\nCohen's d effect size: %.3f\n", cohens_d))
+cat("(Small: 0.2, Medium: 0.5, Large: 0.8)\n")
 
 ## *****************************************************************************
 ## 8) Correspondence analysis over counts and PCA over RSCU ----
@@ -181,6 +237,11 @@ wilcox.test(ENC ~ Expression_Group, data = exp_bud_enc)
 
 # Source plotting functions
 source("./src/plot_multivariate_analysis.R")
+
+cat("\n=== Running Multivariate Analyses ===\n")
+cat("This will create plots for:\n")
+cat("  1. All three groups (Top 5%, Middle 90%, Bottom 5%)\n")
+cat("  2. Only extremes (Top 5% vs Bottom 5% - clearer contrast)\n\n")
 
 # 8.1) CA analysis ---- 
 
@@ -199,56 +260,113 @@ codon_usage_CA_coord <- exp_bud_enc |>
 names(codon_usage_CA_coord)[names(codon_usage_CA_coord) %in% c("Dim 1", "Dim 2", "Dim 3", "Dim 4", "Dim 5")] <- 
   c("Dim.1", "Dim.2", "Dim.3", "Dim.4", "Dim.5")
 
+# Ensure Expression_Group is character (not factor) for color matching
+codon_usage_CA_coord$Expression_Group <- as.character(codon_usage_CA_coord$Expression_Group)
+
+# Debug: check that Expression_Group exists and has correct values
+cat("Checking Expression_Group column:\n")
+cat("  Column exists:", "Expression_Group" %in% names(codon_usage_CA_coord), "\n")
+cat("  Unique values:", paste(unique(codon_usage_CA_coord$Expression_Group), collapse = ", "), "\n")
+cat("  Counts:", paste(table(codon_usage_CA_coord$Expression_Group), collapse = ", "), "\n")
+
+# Create version with only extreme groups
+codon_usage_CA_coord_extremes <- codon_usage_CA_coord |>
+  filter(Expression_Group %in% c("Top 5% Expressed", "Bottom 95%")) |>  # Updated group names
+  mutate(Expression_Group = as.character(Expression_Group))  # Ensure character type
+
+# Define colors for all groups
+# Note: Update these if you re-run Step 7 with new group names
+colors_all <- c("Top 5% Expressed" = "#E41A1C",  # Current name in data
+                "Bottom 95%" = "#377EB8",         # Current name in data
+                "Middle 90%" = "#CCCCCC")         # Gray for middle (if exists)
+
+colors_extremes <- c("Top 5% Expressed" = "#E41A1C", 
+                     "Bottom 95%" = "#377EB8")
+
 # Plot variance explained
 plot_variance_explained(codon_usage_CA, 
                        analysis_type = "CA",
                        n_dims = 10,
                        output_file = "./results/CA_variance_explained.pdf")
 
-# Create bivariate ellipse plot (CA Dim 1 vs Dim 2)
+cat("\n--- CA Analysis: Comparing All Three Groups ---\n")
+
+# Bivariate ellipse plot - All groups (CA Dim 1 vs Dim 2)
 plot_multivariate_analysis(codon_usage_CA_coord,
                           dims = c("Dim.1", "Dim.2"),
                           group_var = "Expression_Group",
                           analysis_type = "CA",
                           plot_type = "bivariate_ellipse",
                           confidence_level = 0.95,
-                          output_file = "./results/CA_bivariate_ellipse_D1_D2.pdf")
+                          colors = colors_all,
+                          output_file = "./results/CA_all_groups_D1_D2.pdf")
 
-# Create bivariate ellipse plot (CA Dim 1 vs Dim 3)
-plot_multivariate_analysis(codon_usage_CA_coord,
-                          dims = c("Dim.1", "Dim.3"),
-                          group_var = "Expression_Group",
-                          analysis_type = "CA",
-                          plot_type = "bivariate_ellipse",
-                          confidence_level = 0.95,
-                          output_file = "./results/CA_bivariate_ellipse_D1_D3.pdf")
-
-# Create 3D static plot
-plot_multivariate_analysis(codon_usage_CA_coord,
-                          dims = c("Dim.1", "Dim.2", "Dim.3"),
-                          group_var = "Expression_Group",
-                          analysis_type = "CA",
-                          plot_type = "3D_static",
-                          output_file = "./results/CA_3D_plot.pdf")
-
-# Create 3D interactive plot (optional - requires plotly)
-if (requireNamespace("plotly", quietly = TRUE)) {
-  plot_multivariate_analysis(codon_usage_CA_coord,
-                            dims = c("Dim.1", "Dim.2", "Dim.3"),
-                            group_var = "Expression_Group",
-                            analysis_type = "CA",
-                            plot_type = "3D_interactive",
-                            output_file = "./results/CA_3D_interactive.html")
-}
-
-# Create biplot showing top codon loadings
+# Biplot with all groups
 create_biplot(codon_usage_CA,
              coord_data = codon_usage_CA_coord,
              group_var = "Expression_Group",
              analysis_type = "CA",
              dims = c(1, 2),
-             n_loadings = 15,
-             output_file = "./results/CA_biplot_D1_D2.pdf")
+             n_loadings = 20,
+             colors = colors_all,
+             output_file = "./results/CA_biplot_all_groups.pdf")
+
+cat("\n--- CA Analysis: Top 5% vs Bottom 5% Only (Clearer Contrast) ---\n")
+
+# Bivariate ellipse plot - Extremes only (CA Dim 1 vs Dim 2)
+plot_multivariate_analysis(codon_usage_CA_coord_extremes,
+                          dims = c("Dim.1", "Dim.2"),
+                          group_var = "Expression_Group",
+                          analysis_type = "CA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          colors = colors_extremes,
+                          output_file = "./results/CA_extremes_only_D1_D2.pdf")
+
+# Bivariate ellipse plot - Extremes (CA Dim 1 vs Dim 3)
+plot_multivariate_analysis(codon_usage_CA_coord_extremes,
+                          dims = c("Dim.1", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "CA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          colors = colors_extremes,
+                          output_file = "./results/CA_extremes_only_D1_D3.pdf")
+
+# 3D static plot - Extremes only
+plot_multivariate_analysis(codon_usage_CA_coord_extremes,
+                          dims = c("Dim.1", "Dim.2", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "CA",
+                          plot_type = "3D_static",
+                          colors = colors_extremes,
+                          output_file = "./results/CA_extremes_3D.pdf")
+
+# Biplot - Extremes only
+create_biplot(codon_usage_CA,
+             coord_data = codon_usage_CA_coord_extremes,
+             group_var = "Expression_Group",
+             analysis_type = "CA",
+             dims = c(1, 2),
+             n_loadings = 20,
+             colors = colors_extremes,
+             output_file = "./results/CA_biplot_extremes_only.pdf")
+
+# Statistical test for CA dimension separation
+cat("\n=== MANOVA Test: CA Dimensions by Expression Group (Extremes) ===\n")
+ca_manova <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ Expression_Group, 
+                    data = codon_usage_CA_coord_extremes)
+print(summary(ca_manova))
+
+# Univariate tests for each dimension
+cat("\n=== Univariate Tests for Each CA Dimension ===\n")
+for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
+  wtest <- wilcox.test(as.formula(paste(dim, "~ Expression_Group")), 
+                       data = codon_usage_CA_coord_extremes)
+  cat(sprintf("%s: W = %.2f, p-value = %.4f %s\n", 
+              dim, wtest$statistic, wtest$p.value,
+              ifelse(wtest$p.value < 0.05, "***", "")))
+}
 
 # 8.2) PCA analysis ----
 
@@ -264,60 +382,258 @@ rscu_PCA_coord <- as.data.frame(rscu_PCA$ind$coord) |>
 rscu_PCA_coord <- exp_bud_enc |>
   left_join(y = rscu_PCA_coord, by = "Gene_name")
 
+# Ensure Expression_Group is character (not factor) for color matching
+rscu_PCA_coord$Expression_Group <- as.character(rscu_PCA_coord$Expression_Group)
+
+# Create version with only extreme groups
+rscu_PCA_coord_extremes <- rscu_PCA_coord |>
+  filter(Expression_Group %in% c("Top 5% Expressed", "Bottom 95%")) |>  # Updated group names
+  mutate(Expression_Group = as.character(Expression_Group))  # Ensure character type
+
 # Plot variance explained
 plot_variance_explained(rscu_PCA, 
                        analysis_type = "PCA",
                        n_dims = 10,
                        output_file = "./results/PCA_variance_explained.pdf")
 
-# Create bivariate ellipse plot (PC1 vs PC2)
+cat("\n--- PCA Analysis: Comparing All Three Groups ---\n")
+
+# Bivariate ellipse plot - All groups (PC1 vs PC2)
 plot_multivariate_analysis(rscu_PCA_coord,
                           dims = c("Dim.1", "Dim.2"),
                           group_var = "Expression_Group",
                           analysis_type = "PCA",
                           plot_type = "bivariate_ellipse",
                           confidence_level = 0.95,
-                          output_file = "./results/PCA_bivariate_ellipse_PC1_PC2.pdf")
+                          colors = colors_all,
+                          output_file = "./results/PCA_all_groups_PC1_PC2.pdf")
 
-# Create bivariate ellipse plot (PC1 vs PC3)
-plot_multivariate_analysis(rscu_PCA_coord,
-                          dims = c("Dim.1", "Dim.3"),
-                          group_var = "Expression_Group",
-                          analysis_type = "PCA",
-                          plot_type = "bivariate_ellipse",
-                          confidence_level = 0.95,
-                          output_file = "./results/PCA_bivariate_ellipse_PC1_PC3.pdf")
-
-# Create 3D static plot
-plot_multivariate_analysis(rscu_PCA_coord,
-                          dims = c("Dim.1", "Dim.2", "Dim.3"),
-                          group_var = "Expression_Group",
-                          analysis_type = "PCA",
-                          plot_type = "3D_static",
-                          output_file = "./results/PCA_3D_plot.pdf")
-
-# Create 3D interactive plot (optional - requires plotly)
-if (requireNamespace("plotly", quietly = TRUE)) {
-  plot_multivariate_analysis(rscu_PCA_coord,
-                            dims = c("Dim.1", "Dim.2", "Dim.3"),
-                            group_var = "Expression_Group",
-                            analysis_type = "PCA",
-                            plot_type = "3D_interactive",
-                            output_file = "./results/PCA_3D_interactive.html")
-}
-
-# Create biplot showing top codon loadings
+# Biplot with all groups
 create_biplot(rscu_PCA,
              coord_data = rscu_PCA_coord,
              group_var = "Expression_Group",
              analysis_type = "PCA",
              dims = c(1, 2),
-             n_loadings = 15,
-             output_file = "./results/PCA_biplot_PC1_PC2.pdf")
+             n_loadings = 20,
+             colors = colors_all,
+             output_file = "./results/PCA_biplot_all_groups.pdf")
 
-message("\nMultivariate analysis plots saved to ./results/")
-message("- Variance explained plots")
-message("- Bivariate ellipse plots (multiple dimension pairs)")
-message("- 3D static plots")
-message("- 3D interactive plots (if plotly available)")
-message("- Biplots showing top codon loadings")
+cat("\n--- PCA Analysis: Top 5% vs Bottom 5% Only (Clearer Contrast) ---\n")
+
+# Bivariate ellipse plot - Extremes only (PC1 vs PC2)
+plot_multivariate_analysis(rscu_PCA_coord_extremes,
+                          dims = c("Dim.1", "Dim.2"),
+                          group_var = "Expression_Group",
+                          analysis_type = "PCA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          colors = colors_extremes,
+                          output_file = "./results/PCA_extremes_only_PC1_PC2.pdf")
+
+# Bivariate ellipse plot - Extremes (PC1 vs PC3)
+plot_multivariate_analysis(rscu_PCA_coord_extremes,
+                          dims = c("Dim.1", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "PCA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          colors = colors_extremes,
+                          output_file = "./results/PCA_extremes_only_PC1_PC3.pdf")
+
+# 3D static plot - Extremes only
+plot_multivariate_analysis(rscu_PCA_coord_extremes,
+                          dims = c("Dim.1", "Dim.2", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "PCA",
+                          plot_type = "3D_static",
+                          colors = colors_extremes,
+                          output_file = "./results/PCA_extremes_3D.pdf")
+
+# Biplot - Extremes only
+create_biplot(rscu_PCA,
+             coord_data = rscu_PCA_coord_extremes,
+             group_var = "Expression_Group",
+             analysis_type = "PCA",
+             dims = c(1, 2),
+             n_loadings = 20,
+             colors = colors_extremes,
+             output_file = "./results/PCA_biplot_extremes_only.pdf")
+
+# Statistical test for PCA dimension separation
+cat("\n=== MANOVA Test: PCA Dimensions by Expression Group (Extremes) ===\n")
+pca_manova <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ Expression_Group, 
+                     data = rscu_PCA_coord_extremes)
+print(summary(pca_manova))
+
+# Univariate tests for each dimension
+cat("\n=== Univariate Tests for Each PC Dimension ===\n")
+for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
+  wtest <- wilcox.test(as.formula(paste(dim, "~ Expression_Group")), 
+                       data = rscu_PCA_coord_extremes)
+  cat(sprintf("%s: W = %.2f, p-value = %.4f %s\n", 
+              dim, wtest$statistic, wtest$p.value,
+              ifelse(wtest$p.value < 0.05, "***", "")))
+}
+
+message("\n=== Multivariate Analysis Complete ===")
+message("\nPlots saved to ./results/:")
+message("  - Variance explained plots (CA and PCA)")
+message("  - All groups comparison (Top 5%, Middle 90%, Bottom 5%)")
+message("  - Extremes only comparison (Top 5% vs Bottom 5%)")
+message("  - Biplots showing codon loadings (AT vs GC pattern)")
+message("\nCheck the statistical tests above for significance of group separation.")
+
+## *****************************************************************************
+## 9) Analyze codon loading patterns (AT vs GC bias) ----
+## _____________________________________________________________________________
+
+cat("\n=== Analyzing Codon Loading Patterns ===\n")
+cat("Understanding mutational bias: AT-ending vs GC-ending codons\n\n")
+
+source("./src/analyze_codon_loadings.R")
+
+# Analyze CA loadings
+ca_loadings <- analyze_codon_loadings(
+  analysis_result = codon_usage_CA,
+  analysis_type = "CA",
+  dims = c(1, 2, 3),
+  genetic_code = genetic_code_dna_long,
+  output_file = "./results/CA_codon_loadings_AT_vs_GC.pdf"
+)
+
+# Analyze PCA loadings
+pca_loadings <- analyze_codon_loadings(
+  analysis_result = rscu_PCA,
+  analysis_type = "PCA",
+  dims = c(1, 2, 3),
+  genetic_code = genetic_code_dna_long,
+  output_file = "./results/PCA_codon_loadings_AT_vs_GC.pdf"
+)
+
+cat("\n=== Interpretation ===\n")
+cat("If AT-ending and GC-ending codons load in opposite directions:\n")
+cat("  → This indicates MUTATIONAL BIAS is the dominant force\n")
+cat("  → Genome-wide GC content variation drives the main axis\n")
+cat("\nIf selection for expression is important, look for:\n")
+cat("  → Small but significant separation in extremes (Top 5% vs Bottom 5%)\n")
+cat("  → Lower ENC in highly expressed genes (already observed!)\n")
+cat("  → Specific codons preferred in highly expressed genes\n")
+
+## *****************************************************************************
+## 10) Calculate Codon Adaptation Index (CAI) ----
+## _____________________________________________________________________________
+
+cat("\n=== Step 10: Codon Adaptation Index (CAI) ===\n")
+cat("CAI measures the degree of bias towards codons preferred in highly expressed genes\n")
+cat("CAI ranges from 0 to 1, where higher values indicate stronger adaptation\n")
+cat("Higher CAI = more similar to codon usage in highly expressed genes\n\n")
+
+source("./src/calculate_cai.R")
+
+# Define reference set: Top 5% expressed genes
+reference_genes <- exp_bud_enc |>
+  filter(Expression_Group == "Top 5%") |>
+  pull(Gene_name)
+
+cat(sprintf("Using %d highly expressed genes as reference set\n", length(reference_genes)))
+
+# Calculate CAI for all genes
+cai_results <- calculate_cai(
+  codon_counts = codon_usage,
+  reference_genes = reference_genes,
+  genetic_code = genetic_code_dna_long
+)
+
+# Extract CAI values and merge with expression data
+cai_values <- cai_results$cai_values
+w_table <- cai_results$w_table
+
+# Merge CAI with expression and ENC data
+exp_bud_enc_cai <- exp_bud_enc |>
+  left_join(cai_values, by = "Gene_name")
+
+# Save results
+write.csv(exp_bud_enc_cai, "./results/expression_enc_cai.csv", row.names = FALSE)
+write.csv(w_table, "./results/optimal_codons_weights.csv", row.names = FALSE)
+
+cat("\n=== CAI vs Expression Level ===\n")
+# Compare CAI across expression groups
+cai_by_group <- exp_bud_enc_cai |>
+  group_by(Expression_Group) |>
+  summarise(
+    n = n(),
+    mean_CAI = mean(CAI, na.rm = TRUE),
+    median_CAI = median(CAI, na.rm = TRUE),
+    sd_CAI = sd(CAI, na.rm = TRUE),
+    mean_ENC = mean(ENC, na.rm = TRUE)
+  )
+
+print(cai_by_group)
+
+# Statistical test: Top 5% vs Bottom 5%
+cat("\n=== Wilcoxon Test: CAI in Top 5% vs Bottom 5% ===\n")
+cai_extremes <- exp_bud_enc_cai |>
+  filter(Expression_Group %in% c("Top 5% Expressed", "Bottom 95%"))
+
+wilcox_cai <- wilcox.test(CAI ~ Expression_Group, data = cai_extremes)
+print(wilcox_cai)
+
+# Effect size (Cohen's d)
+top_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Top 5% Expressed") |> pull(CAI)
+bottom_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Bottom 95%") |> pull(CAI)
+pooled_sd <- sqrt((var(top_cai, na.rm = TRUE) + var(bottom_cai, na.rm = TRUE)) / 2)
+cohens_d <- (mean(top_cai, na.rm = TRUE) - mean(bottom_cai, na.rm = TRUE)) / pooled_sd
+cat(sprintf("\nCohen's d (effect size): %.3f\n", cohens_d))
+cat("Interpretation: |d| < 0.2 = small, 0.5 = medium, 0.8 = large\n")
+
+# Plot CAI by expression group
+library(ggplot2)
+p_cai_boxplot <- ggplot(exp_bud_enc_cai, aes(x = Expression_Group, y = CAI, fill = Expression_Group)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
+  scale_fill_manual(values = c("Top 5% Expressed" = "#E41A1C", 
+                                "Bottom 95%" = "#377EB8",
+                                "Middle 90%" = "#999999")) +
+  labs(title = "Codon Adaptation Index by Expression Level",
+       subtitle = "Diamond = mean, box = median ± IQR. Higher CAI = more adapted to highly expressed genes",
+       y = "CAI (Codon Adaptation Index)",
+       x = "Expression Group") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+ggsave("./results/CAI_by_expression_group.pdf", p_cai_boxplot, width = 8, height = 6)
+cat("\nBoxplot saved: ./results/CAI_by_expression_group.pdf\n")
+
+# Correlation between CAI and other metrics
+cat("\n=== Correlations ===\n")
+cat(sprintf("CAI vs Expression: r = %.4f\n", cor(exp_bud_enc_cai$CAI, exp_bud_enc_cai$Expression, use = "complete.obs")))
+cat(sprintf("CAI vs ENC: r = %.4f\n", cor(exp_bud_enc_cai$CAI, exp_bud_enc_cai$ENC, use = "complete.obs")))
+cat(sprintf("ENC vs Expression: r = %.4f\n", cor(exp_bud_enc_cai$ENC, exp_bud_enc_cai$Expression, use = "complete.obs")))
+
+# Scatter plot: CAI vs ENC
+p_cai_enc <- ggplot(exp_bud_enc_cai, aes(x = ENC, y = CAI, color = Expression_Group)) +
+  geom_point(alpha = 0.3, size = 1) +
+  scale_color_manual(values = c("Top 5% Expressed" = "#E41A1C", 
+                                 "Bottom 95%" = "#377EB8",
+                                 "Middle 90%" = "#999999")) +
+  labs(title = "CAI vs ENC by Expression Level",
+       subtitle = "Lower ENC and Higher CAI indicate stronger codon bias",
+       x = "ENC (Effective Number of Codons)",
+       y = "CAI (Codon Adaptation Index)",
+       color = "Expression Group") +
+  theme_minimal(base_size = 12)
+
+ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
+cat("Scatter plot saved: ./results/CAI_vs_ENC_scatter.pdf\n")
+
+cat("\n=== CAI Analysis Complete ===\n")
+cat("Key findings:\n")
+cat("  - Higher CAI = codon usage more similar to highly expressed genes\n")
+cat("  - Lower ENC = stronger codon bias (less uniform usage)\n")
+cat("  - Expected pattern: highly expressed genes have higher CAI and lower ENC\n")
+cat("\nResults saved:\n")
+cat("  - ./results/expression_enc_cai.csv (all genes with CAI values)\n")
+cat("  - ./results/optimal_codons_weights.csv (relative adaptiveness per codon)\n")
+cat("  - ./results/CAI_by_expression_group.pdf (boxplot comparison)\n")
+cat("  - ./results/CAI_vs_ENC_scatter.pdf (relationship between metrics)\n")
