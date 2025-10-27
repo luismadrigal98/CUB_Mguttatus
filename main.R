@@ -176,12 +176,51 @@ ggplot(exp_bud_enc, aes(x = Expression_Group, y = ENC, fill = Expression_Group))
 wilcox.test(ENC ~ Expression_Group, data = exp_bud_enc)
 
 ## *****************************************************************************
-## 8) Correspondence analysis ----
+## 8) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
+
+# 8.1) CA analysis ---- 
 
 codon_usage_m <- as.matrix(codon_usage[, -1])
 rownames(codon_usage_m) <- codon_usage[[1]]
 colnames(codon_usage_m) <- names(codon_usage)[-1]
 
 codon_usage_CA <- CA(X = codon_usage_m, graph = F)
-codon_usage_CA_coord
+codon_usage_CA_coord <- as.data.frame(codon_usage_CA$row$coord) |>
+  dplyr::mutate(Gene_name = sub("\\.1$", "", row.names(codon_usage_CA$row$coord)))
+
+codon_usage_CA_coord <- exp_bud_enc |>
+  left_join(y = codon_usage_CA_coord, by = "Gene_name")
+
+# Ploting the CA1 and CA2
+
+ggplot(codon_usage_CA_coord, aes(x = `Dim 1`, y = `Dim 2`, 
+                                 color = Expression_Group)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "Correspondence Analysis of Codon Usage",
+       x = "CA Dimension 1",
+       y = "CA Dimension 2") +
+  theme_minimal()
+
+# 8.2) PCA analysis ----
+
+rscu_m <- as.matrix(rscu_values[, -1])
+rownames(rscu_m) <- rscu_values[[1]]
+colnames(rscu_m) <- names(rscu_values)[-1]
+
+rscu_PCA <- PCA(rscu_m, graph = F)
+
+rscu_PCA_coord <- as.data.frame(rscu_PCA$ind$coord) |>
+  dplyr::mutate(Gene_name = sub("\\.1$", "", row.names(rscu_PCA$ind$coord)))
+
+rscu_PCA_coord <- exp_bud_enc |>
+  left_join(y = rscu_PCA_coord, by = "Gene_name")
+
+# Ploting the PCA1 and PCA2
+ggplot(rscu_PCA_coord, aes(x = Dim.1, y = Dim.3, 
+                             color = Expression_Group)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA of RSCU Values",
+       x = "PCA Dimension 1",
+       y = "PCA Dimension 2") +
+  theme_minimal()
