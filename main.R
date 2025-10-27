@@ -179,6 +179,9 @@ wilcox.test(ENC ~ Expression_Group, data = exp_bud_enc)
 ## 8) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
 
+# Source plotting functions
+source("./src/plot_multivariate_analysis.R")
+
 # 8.1) CA analysis ---- 
 
 codon_usage_m <- as.matrix(codon_usage[, -1])
@@ -192,15 +195,60 @@ codon_usage_CA_coord <- as.data.frame(codon_usage_CA$row$coord) |>
 codon_usage_CA_coord <- exp_bud_enc |>
   left_join(y = codon_usage_CA_coord, by = "Gene_name")
 
-# Ploting the CA1 and CA2
+# Rename dimensions to match plotting function expectations
+names(codon_usage_CA_coord)[names(codon_usage_CA_coord) %in% c("Dim 1", "Dim 2", "Dim 3", "Dim 4", "Dim 5")] <- 
+  c("Dim.1", "Dim.2", "Dim.3", "Dim.4", "Dim.5")
 
-ggplot(codon_usage_CA_coord, aes(x = `Dim 1`, y = `Dim 2`, 
-                                 color = Expression_Group)) +
-  geom_point(alpha = 0.6) +
-  labs(title = "Correspondence Analysis of Codon Usage",
-       x = "CA Dimension 1",
-       y = "CA Dimension 2") +
-  theme_minimal()
+# Plot variance explained
+plot_variance_explained(codon_usage_CA, 
+                       analysis_type = "CA",
+                       n_dims = 10,
+                       output_file = "./results/CA_variance_explained.pdf")
+
+# Create bivariate ellipse plot (CA Dim 1 vs Dim 2)
+plot_multivariate_analysis(codon_usage_CA_coord,
+                          dims = c("Dim.1", "Dim.2"),
+                          group_var = "Expression_Group",
+                          analysis_type = "CA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          output_file = "./results/CA_bivariate_ellipse_D1_D2.pdf")
+
+# Create bivariate ellipse plot (CA Dim 1 vs Dim 3)
+plot_multivariate_analysis(codon_usage_CA_coord,
+                          dims = c("Dim.1", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "CA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          output_file = "./results/CA_bivariate_ellipse_D1_D3.pdf")
+
+# Create 3D static plot
+plot_multivariate_analysis(codon_usage_CA_coord,
+                          dims = c("Dim.1", "Dim.2", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "CA",
+                          plot_type = "3D_static",
+                          output_file = "./results/CA_3D_plot.pdf")
+
+# Create 3D interactive plot (optional - requires plotly)
+if (requireNamespace("plotly", quietly = TRUE)) {
+  plot_multivariate_analysis(codon_usage_CA_coord,
+                            dims = c("Dim.1", "Dim.2", "Dim.3"),
+                            group_var = "Expression_Group",
+                            analysis_type = "CA",
+                            plot_type = "3D_interactive",
+                            output_file = "./results/CA_3D_interactive.html")
+}
+
+# Create biplot showing top codon loadings
+create_biplot(codon_usage_CA,
+             coord_data = codon_usage_CA_coord,
+             group_var = "Expression_Group",
+             analysis_type = "CA",
+             dims = c(1, 2),
+             n_loadings = 15,
+             output_file = "./results/CA_biplot_D1_D2.pdf")
 
 # 8.2) PCA analysis ----
 
@@ -216,11 +264,60 @@ rscu_PCA_coord <- as.data.frame(rscu_PCA$ind$coord) |>
 rscu_PCA_coord <- exp_bud_enc |>
   left_join(y = rscu_PCA_coord, by = "Gene_name")
 
-# Ploting the PCA1 and PCA2
-ggplot(rscu_PCA_coord, aes(x = Dim.1, y = Dim.3, 
-                             color = Expression_Group)) +
-  geom_point(alpha = 0.6) +
-  labs(title = "PCA of RSCU Values",
-       x = "PCA Dimension 1",
-       y = "PCA Dimension 2") +
-  theme_minimal()
+# Plot variance explained
+plot_variance_explained(rscu_PCA, 
+                       analysis_type = "PCA",
+                       n_dims = 10,
+                       output_file = "./results/PCA_variance_explained.pdf")
+
+# Create bivariate ellipse plot (PC1 vs PC2)
+plot_multivariate_analysis(rscu_PCA_coord,
+                          dims = c("Dim.1", "Dim.2"),
+                          group_var = "Expression_Group",
+                          analysis_type = "PCA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          output_file = "./results/PCA_bivariate_ellipse_PC1_PC2.pdf")
+
+# Create bivariate ellipse plot (PC1 vs PC3)
+plot_multivariate_analysis(rscu_PCA_coord,
+                          dims = c("Dim.1", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "PCA",
+                          plot_type = "bivariate_ellipse",
+                          confidence_level = 0.95,
+                          output_file = "./results/PCA_bivariate_ellipse_PC1_PC3.pdf")
+
+# Create 3D static plot
+plot_multivariate_analysis(rscu_PCA_coord,
+                          dims = c("Dim.1", "Dim.2", "Dim.3"),
+                          group_var = "Expression_Group",
+                          analysis_type = "PCA",
+                          plot_type = "3D_static",
+                          output_file = "./results/PCA_3D_plot.pdf")
+
+# Create 3D interactive plot (optional - requires plotly)
+if (requireNamespace("plotly", quietly = TRUE)) {
+  plot_multivariate_analysis(rscu_PCA_coord,
+                            dims = c("Dim.1", "Dim.2", "Dim.3"),
+                            group_var = "Expression_Group",
+                            analysis_type = "PCA",
+                            plot_type = "3D_interactive",
+                            output_file = "./results/PCA_3D_interactive.html")
+}
+
+# Create biplot showing top codon loadings
+create_biplot(rscu_PCA,
+             coord_data = rscu_PCA_coord,
+             group_var = "Expression_Group",
+             analysis_type = "PCA",
+             dims = c(1, 2),
+             n_loadings = 15,
+             output_file = "./results/PCA_biplot_PC1_PC2.pdf")
+
+message("\nMultivariate analysis plots saved to ./results/")
+message("- Variance explained plots")
+message("- Bivariate ellipse plots (multiple dimension pairs)")
+message("- 3D static plots")
+message("- 3D interactive plots (if plotly available)")
+message("- Biplots showing top codon loadings")
