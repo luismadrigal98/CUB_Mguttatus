@@ -12,116 +12,98 @@ calculate_enc <- function(codon_counts, genetic_code)
   #' @return Data frame with Gene_name and ENC values
   #' ___________________________________________________________________________
   
-  library(data.table)
+  # --- 1. Prepare Metadata ---
+  # Create a data.table of the genetic code and add degeneracy class
+  gc_dt <- data.table(Codon = names(genetic_code), AA = genetic_code)
   
-  # Group codons by amino acid
-  aa_groups <- split(names(genetic_code), genetic_code)
-  aa_groups <- aa_groups[names(aa_groups) != "STOP" & 
-                           names(aa_groups) != "Trp" &
-                           names(aa_groups) != "Met"]
+  # Get degeneracy for AAs (excluding STOP, Met, Trp)
+  aa_groups <- split(gc_dt[!(AA %in% c("STOP", "Met", "Trp"))]$Codon, 
+                     gc_dt[!(AA %in% c("STOP", "Met", "Trp"))]$AA)
   
-  # Classify amino acids by number of synonymous codons
-  aa_by_n <- list(
-    "2" = names(aa_groups)[sapply(aa_groups, length) == 2],
-    "3" = names(aa_groups)[sapply(aa_groups, length) == 3],
-    "4" = names(aa_groups)[sapply(aa_groups, length) == 4],
-    "6" = names(aa_groups)[sapply(aa_groups, length) == 6]
-  )
+  aa_degeneracy <- sapply(aa_groups, length)
+  aa_to_deg_dt <- data.table(AA = names(aa_degeneracy), Degeneracy = aa_degeneracy)
   
-  enc_values <- numeric(nrow(codon_counts))
+  # Join degeneracy info back to the main genetic code table
+  gc_dt <- gc_dt[aa_to_deg_dt, on = "AA"]
   
-  for(gene_idx in 1:nrow(codon_counts))
-  {
-    F_values <- list()
-    
-    # Calculate F for each degeneracy class
-    for(n in names(aa_by_n))
-    {
-      n_int <- as.integer(n)
-      aa_list <- aa_by_n[[n]]
-      
-      if(length(aa_list) == 0) next
-      
-      F_sum <- 0
-      n_aa <- 0
-      
-      for(aa in aa_list)
-      {
-        codons <- aa_groups[[aa]]
-        counts <- as.numeric(codon_counts[gene_idx, codons, with = FALSE])
-        total <- sum(counts)
-        
-        if(total > 0)
-        {
-          # Calculate homozygosity
-          p_squared_sum <- sum((counts / total)^2)
-          F_aa <- (total * p_squared_sum - 1) / (total - 1)
-          
-          if(!is.na(F_aa) && is.finite(F_aa))
-          {
-            F_sum <- F_sum + F_aa
-            n_aa <- n_aa + 1
-          }
-        }
-      }
-      
-      if(n_aa > 0)
-      {
-        F_values[[n]] <- F_sum / n_aa
-      }
-      else
-      {
-        F_values[[n]] <- 0
-      }
-    }
-    
-    # Calculate ENC
-    # ENC = 2 + 9/F2 + 1/F3 + 5/F4 + 3/F6
-    enc <- 2  # Met and Trp (non-degenerate)
-    
-    if(!is.null(F_values[["2"]]) && F_values[["2"]] > 0)
-    {
-      enc <- enc + 9 / F_values[["2"]]
-    }
-    else
-    {
-      enc <- enc + 9
-    }
-    
-    if(!is.null(F_values[["3"]]) && F_values[["3"]] > 0)
-    {
-      enc <- enc + 1 / F_values[["3"]]
-    }
-    else
-    {
-      enc <- enc + 1
-    }
-    
-    if(!is.null(F_values[["4"]]) && F_values[["4"]] > 0)
-    {
-      enc <- enc + 5 / F_values[["4"]]
-    }
-    else
-    {
-      enc <- enc + 5
-    }
-    
-    if(!is.null(F_values[["6"]]) && F_values[["6"]] > 0)
-    {
-      enc <- enc + 3 / F_values[["6"]]
-    }
-    else
-    {
-      enc <- enc + 3
-    }
-    
-    enc_values[gene_idx] <- enc
-  }
+  # --- 2. Melt Codon Counts to Long Format ---
+  # We only need to melt codons that are part of the calculation
+  codon_cols <- gc_dt$Codon
+  melted_counts <- melt(codon_counts, 
+                        id.vars = "Gene_name", 
+                        measure.vars = intersect(codon_cols, names(codon_counts)), 
+                        variable.name = "Codon", 
+                        value.name = "Count")
   
-  result <- data.frame(
-    Gene_name = codon_counts$Gene_name,
-    ENC = enc_values
-  )
+  # --- 3. Join Metadata with Counts ---
+  melted_counts <- gc_dt[melted_counts, on = "Codon"]
+  
+  # --- 4. Calculate F_aa (Homozygosity) for all Gene/AA pairs ---
+  
+  # a. Get total count for each AA in each gene
+  melted_counts[, Total := sum(Count), by = .(Gene_name, AA)]
+  
+  # b. Calculate sum of squared proportions (p_squared_sum)
+  #    Only for AAs that are present (Total > 0)
+  aa_f_values <- melted_counts[Total > 0, 
+                               .(p_squared_sum = sum((Count / Total)^2)), 
+                               by = .(Gene_name, AA, Degeneracy, Total)]
+  
+  # c. Calculate F_aa for each AA
+  #    Only where Total > 1 (to avoid 0/0 division)
+  aa_f_values[Total > 1, F_aa := (Total * p_squared_sum - 1) / (Total - 1)]
+  
+  # d. Filter out NA/Inf values (where Total was 1)
+  aa_f_values <- aa_f_values[!is.na(F_aa)]
+  
+  # --- 5. Calculate Average F (F_bar_k) for each Degeneracy Class ---
+  f_bar_k <- aa_f_values[, .(F_bar = mean(F_aa)), by = .(Gene_name, Degeneracy)]
+  
+  # --- 6. Dcast to Wide Format ---
+  # Create a table with one row per gene and columns: Gene_name, F2, F3, F4, F6
+  f_bar_wide <- dcast(f_bar_k, Gene_name ~ paste0("F", Degeneracy), value.var = "F_bar")
+  
+  # --- 7. Join with All Genes ---
+  # This ensures genes with no valid F values are included
+  all_genes <- data.table(Gene_name = codon_counts$Gene_name)
+  f_bar_wide <- f_bar_wide[all_genes, on = "Gene_name"]
+  
+  # --- 8. Calculate Final ENC (Corrected) ---
+  # This section fixes the bug that caused ENC > 61.
+  # We cap the contribution of each class at its theoretical maximum ("no bias" value).
+  
+  # Start with 2 for Met and Trp
+  f_bar_wide[, ENC := 2.0] 
+  
+  # --- Class 2 (Max contribution = 18) ---
+  # Default to 9 (extreme bias)
+  f_bar_wide[, ENC_2 := 9.0] 
+  # Calculate if F2 is valid
+  f_bar_wide[!is.na(F2) & F2 > 0, ENC_2 := 9.0 / F2]
+  # Cap contribution at the max (18)
+  f_bar_wide[, ENC_2 := pmin(ENC_2, 18.0)]
+  
+  # --- Class 3 (Max contribution = 3) ---
+  f_bar_wide[, ENC_3 := 1.0] # Default
+  f_bar_wide[!is.na(F3) & F3 > 0, ENC_3 := 1.0 / F3]
+  f_bar_wide[, ENC_3 := pmin(ENC_3, 3.0)] # Cap at 3
+  
+  # --- Class 4 (Max contribution = 20) ---
+  f_bar_wide[, ENC_4 := 5.0] # Default
+  f_bar_wide[!is.na(F4) & F4 > 0, ENC_4 := 5.0 / F4]
+  f_bar_wide[, ENC_4 := pmin(ENC_4, 20.0)] # Cap at 20
+  
+  # --- Class 6 (Max contribution = 18) ---
+  f_bar_wide[, ENC_6 := 3.0] # Default
+  f_bar_wide[!is.na(F6) & F6 > 0, ENC_6 := 3.0 / F6]
+  f_bar_wide[, ENC_6 := pmin(ENC_6, 18.0)] # Cap at 18
+  
+  # Sum all contributions
+  f_bar_wide[, ENC := ENC + ENC_2 + ENC_3 + ENC_4 + ENC_6]
+  
+  # --- 9. Return Final Result ---
+  # Select only the columns we need
+  result <- f_bar_wide[, .(Gene_name, ENC)]
   
   return(result)
 }

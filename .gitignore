@@ -11,3 +11,5 @@ results/
 *.jpg
 Env
 ./results
+miscellanea_code
+data/bud_gene_expression_cpm_remapped.txt
