@@ -78,10 +78,6 @@ cub_results <- cub_summary(codon_usage, genetic_code_dna_long,
 create_aa_specific_logos(codon_usage, genetic_code_dna_long,
                          output_dir = "./results/codon_logos")
 
-# Create comprehensive codon logo
-create_comprehensive_codon_logo(codon_usage, genetic_code_dna_long,
-                               output_file = "./results/comprehensive_codon_logo.pdf")
-
 ## *****************************************************************************
 ## 5) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
@@ -625,15 +621,3 @@ p_cai_enc <- ggplot(exp_bud_enc_cai, aes(x = ENC, y = CAI, color = Expression_Gr
   theme_minimal(base_size = 12)
 
 ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
-cat("Scatter plot saved: ./results/CAI_vs_ENC_scatter.pdf\n")
-
-cat("\n=== CAI Analysis Complete ===\n")
-cat("Key findings:\n")
-cat("  - Higher CAI = codon usage more similar to highly expressed genes\n")
-cat("  - Lower ENC = stronger codon bias (less uniform usage)\n")
-cat("  - Expected pattern: highly expressed genes have higher CAI and lower ENC\n")
-cat("\nResults saved:\n")
-cat("  - ./results/expression_enc_cai.csv (all genes with CAI values)\n")
-cat("  - ./results/optimal_codons_weights.csv (relative adaptiveness per codon)\n")
-cat("  - ./results/CAI_by_expression_group.pdf (boxplot comparison)\n")
-cat("  - ./results/CAI_vs_ENC_scatter.pdf (relationship between metrics)\n")
