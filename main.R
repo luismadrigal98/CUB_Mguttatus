@@ -148,6 +148,31 @@ exp_bud_enc <- dplyr::left_join(exp_data_bud, enc_values,
   dplyr::rename(Gene_name = Remapped_Gene) |>
   na.omit()
 
+# Add gene length (CDS length in codons and nucleotides)
+cat("\n=== Adding Gene Length Information ===\n")
+
+# First, clean gene names in codon_usage to match exp_bud_enc
+# Calculate total codons from numeric columns only
+codon_columns <- names(codon_usage)[names(codon_usage) != "Gene_name"]
+
+gene_lengths <- codon_usage |>
+  mutate(
+    Gene_name_clean = sub("\\.1$", "", Gene_name),  # Remove .1 suffix
+    Total_Codons = rowSums(across(all_of(codon_columns)), na.rm = TRUE),
+    CDS_length_nt = Total_Codons * 3,  # nucleotides
+    CDS_length_aa = Total_Codons        # amino acids (codons)
+  ) |>
+  select(Gene_name_clean, Total_Codons, CDS_length_nt, CDS_length_aa) |>
+  rename(Gene_name = Gene_name_clean)
+
+exp_bud_enc <- exp_bud_enc |>
+  left_join(gene_lengths, by = "Gene_name")
+
+cat(sprintf("Added length for %d genes\n", sum(!is.na(exp_bud_enc$CDS_length_nt))))
+cat(sprintf("Mean CDS length: %.0f nt (%.0f codons)\n", 
+            mean(exp_bud_enc$CDS_length_nt, na.rm = TRUE),
+            mean(exp_bud_enc$Total_Codons, na.rm = TRUE)))
+
 cor(exp_bud_enc$ENC, exp_bud_enc$Expression)
 plot(exp_bud_enc$ENC, exp_bud_enc$Expression)
 lm(Expression ~ ENC, data = exp_bud_enc)
@@ -201,11 +226,44 @@ p_boxplot <- ggplot(exp_bud_enc, aes(x = Expression_Group, y = ENC, fill = Expre
 
 ggsave("./results/ENC_by_expression_group.pdf", p_boxplot, width = 8, height = 6)
 
-# Statistical tests
-cat("\n=== Wilcoxon Test: Top 5% vs Bottom 5% ===\n")
-wilcox_result <- wilcox.test(ENC ~ Expression_Group, 
-                              data = exp_bud_enc_extremes)
-print(wilcox_result)
+# Statistical tests for three groups
+cat("\n=== Kruskal-Wallis Test: ENC across All Three Groups ===\n")
+cat("H0: All three groups have the same median ENC\n")
+kw_test_enc <- kruskal.test(ENC ~ Expression_Group, data = exp_bud_enc)
+print(kw_test_enc)
+
+if (kw_test_enc$p.value < 0.05) {
+  cat("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
+  cat("\n=== Dunn's Test: Pairwise Comparisons with Bonferroni Correction ===\n")
+  
+  # Install and load dunn.test if not available
+  if (!require("dunn.test", quietly = TRUE)) {
+    cat("Installing dunn.test package...\n")
+    install.packages("dunn.test", repos = "https://cloud.r-project.org")
+    library(dunn.test)
+  }
+  
+  # Perform Dunn's test with Bonferroni correction
+  dunn_result_enc <- dunn.test::dunn.test(
+    x = exp_bud_enc$ENC,
+    g = exp_bud_enc$Expression_Group,
+    method = "bonferroni",
+    kw = TRUE,
+    label = TRUE,
+    wrap = FALSE,
+    table = TRUE,
+    list = FALSE,
+    altp = TRUE
+  )
+  
+  cat("\nInterpretation of pairwise comparisons:\n")
+  cat("  - Adjusted p-values account for multiple testing (Bonferroni)\n")
+  cat("  - p < 0.05 indicates significant difference between groups\n")
+  
+} else {
+  cat("\nNo significant difference among groups (p >= 0.05)\n")
+  cat("Post-hoc tests not necessary.\n")
+}
 
 cat("\n=== Summary Statistics ===\n")
 summary_stats <- exp_bud_enc %>%
@@ -219,13 +277,67 @@ summary_stats <- exp_bud_enc %>%
   )
 print(summary_stats)
 
-# Effect size (Cohen's d)
-top5_enc <- exp_bud_enc_extremes$ENC[exp_bud_enc_extremes$Expression_Group == "Top 5%"]
-bottom5_enc <- exp_bud_enc_extremes$ENC[exp_bud_enc_extremes$Expression_Group == "Bottom 5%"]
-cohens_d <- (mean(top5_enc) - mean(bottom5_enc)) / 
-  sqrt((sd(top5_enc)^2 + sd(bottom5_enc)^2) / 2)
-cat(sprintf("\nCohen's d effect size: %.3f\n", cohens_d))
-cat("(Small: 0.2, Medium: 0.5, Large: 0.8)\n")
+# Effect sizes for pairwise comparisons
+cat("\n=== Effect Sizes (Cohen's d) for Pairwise Comparisons ===\n")
+
+# Helper function to calculate Cohen's d
+cohens_d_calc <- function(x1, x2) {
+  m1 <- mean(x1, na.rm = TRUE)
+  m2 <- mean(x2, na.rm = TRUE)
+  s1 <- var(x1, na.rm = TRUE)
+  s2 <- var(x2, na.rm = TRUE)
+  pooled_sd <- sqrt((s1 + s2) / 2)
+  d <- (m1 - m2) / pooled_sd
+  return(d)
+}
+
+# Get ENC values for each group
+top5_enc <- exp_bud_enc |> filter(Expression_Group == "Top 5%") |> pull(ENC)
+middle_enc <- exp_bud_enc |> filter(Expression_Group == "Middle 90%") |> pull(ENC)
+bottom5_enc <- exp_bud_enc |> filter(Expression_Group == "Bottom 5%") |> pull(ENC)
+
+# Calculate effect sizes
+if (length(top5_enc) > 0 && length(middle_enc) > 0) {
+  d_top_middle <- cohens_d_calc(top5_enc, middle_enc)
+  cat(sprintf("Top 5%% vs Middle 90%%: d = %.3f\n", d_top_middle))
+}
+
+if (length(top5_enc) > 0 && length(bottom5_enc) > 0) {
+  d_top_bottom <- cohens_d_calc(top5_enc, bottom5_enc)
+  cat(sprintf("Top 5%% vs Bottom 5%%: d = %.3f\n", d_top_bottom))
+}
+
+if (length(middle_enc) > 0 && length(bottom5_enc) > 0) {
+  d_middle_bottom <- cohens_d_calc(middle_enc, bottom5_enc)
+  cat(sprintf("Middle 90%% vs Bottom 5%%: d = %.3f\n", d_middle_bottom))
+}
+
+cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
+
+# Gene length analysis
+cat("\n=== Gene Length by Expression Group ===\n")
+cat("Checking if gene length explains ENC patterns\n\n")
+length_stats <- exp_bud_enc %>%
+  group_by(Expression_Group) %>%
+  summarise(
+    n = n(),
+    mean_length_aa = mean(CDS_length_aa, na.rm = TRUE),
+    median_length_aa = median(CDS_length_aa, na.rm = TRUE),
+    sd_length_aa = sd(CDS_length_aa, na.rm = TRUE),
+    mean_length_nt = mean(CDS_length_nt, na.rm = TRUE)
+  )
+print(length_stats)
+
+# Test for length differences
+cat("\n=== Kruskal-Wallis Test: Gene Length across Groups ===\n")
+kw_length <- kruskal.test(CDS_length_aa ~ Expression_Group, data = exp_bud_enc)
+print(kw_length)
+
+# Correlation between length and ENC
+cat("\n=== Correlation: Gene Length vs ENC ===\n")
+cor_length_enc <- cor(exp_bud_enc$CDS_length_aa, exp_bud_enc$ENC, use = "complete.obs")
+cat(sprintf("Pearson r = %.4f\n", cor_length_enc))
+cat("Note: Negative correlation = shorter genes have lower ENC (artifact)\n")
 
 ## *****************************************************************************
 ## 8) Correspondence analysis over counts and PCA over RSCU ----
@@ -566,21 +678,89 @@ cai_by_group <- exp_bud_enc_cai |>
 
 print(cai_by_group)
 
-# Statistical test: Top 5% vs Bottom 5%
-cat("\n=== Wilcoxon Test: CAI in Top 5% vs Bottom 5% ===\n")
-cai_extremes <- exp_bud_enc_cai |>
-  filter(Expression_Group %in% c("Top 5% Expressed", "Bottom 95%"))
+# Statistical tests for three groups
+cat("\n=== Kruskal-Wallis Test: CAI across All Three Groups ===\n")
+cat("H0: All three groups have the same median CAI\n")
+kw_test <- kruskal.test(CAI ~ Expression_Group, data = exp_bud_enc_cai)
+print(kw_test)
 
-wilcox_cai <- wilcox.test(CAI ~ Expression_Group, data = cai_extremes)
-print(wilcox_cai)
+if (kw_test$p.value < 0.05) {
+  cat("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
+  cat("\n=== Dunn's Test: Pairwise Comparisons with Bonferroni Correction ===\n")
+  
+  # Install and load dunn.test if not available
+  if (!require("dunn.test", quietly = TRUE)) {
+    cat("Installing dunn.test package...\n")
+    install.packages("dunn.test", repos = "https://cloud.r-project.org")
+    library(dunn.test)
+  }
+  
+  # Perform Dunn's test with Bonferroni correction
+  dunn_result <- dunn.test::dunn.test(
+    x = exp_bud_enc_cai$CAI,
+    g = exp_bud_enc_cai$Expression_Group,
+    method = "bonferroni",
+    kw = TRUE,
+    label = TRUE,
+    wrap = FALSE,
+    table = TRUE,
+    list = FALSE,
+    altp = TRUE
+  )
+  
+  cat("\nInterpretation of pairwise comparisons:\n")
+  cat("  - Adjusted p-values account for multiple testing (Bonferroni)\n")
+  cat("  - p < 0.05 indicates significant difference between groups\n")
+  
+} else {
+  cat("\nNo significant difference among groups (p >= 0.05)\n")
+  cat("Post-hoc tests not necessary.\n")
+}
 
-# Effect size (Cohen's d)
-top_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Top 5% Expressed") |> pull(CAI)
-bottom_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Bottom 95%") |> pull(CAI)
-pooled_sd <- sqrt((var(top_cai, na.rm = TRUE) + var(bottom_cai, na.rm = TRUE)) / 2)
-cohens_d <- (mean(top_cai, na.rm = TRUE) - mean(bottom_cai, na.rm = TRUE)) / pooled_sd
-cat(sprintf("\nCohen's d (effect size): %.3f\n", cohens_d))
-cat("Interpretation: |d| < 0.2 = small, 0.5 = medium, 0.8 = large\n")
+# Additional pairwise effect sizes
+cat("\n=== Effect Sizes (Cohen's d) for Pairwise Comparisons ===\n")
+
+# Helper function to calculate Cohen's d
+cohens_d_calc <- function(x1, x2) {
+  m1 <- mean(x1, na.rm = TRUE)
+  m2 <- mean(x2, na.rm = TRUE)
+  s1 <- var(x1, na.rm = TRUE)
+  s2 <- var(x2, na.rm = TRUE)
+  pooled_sd <- sqrt((s1 + s2) / 2)
+  d <- (m1 - m2) / pooled_sd
+  return(d)
+}
+
+# Get CAI values for each group
+top_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Top 5%") |> pull(CAI)
+middle_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Middle 90%") |> pull(CAI)
+bottom_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Bottom 5%") |> pull(CAI)
+
+# If groups don't exist with new names, try old names
+if (length(top_cai) == 0) {
+  top_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Top 5% Expressed") |> pull(CAI)
+}
+if (length(bottom_cai) == 0) {
+  bottom_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Bottom 95%") |> pull(CAI)
+}
+
+# Calculate effect sizes
+if (length(top_cai) > 0 && length(middle_cai) > 0) {
+  d_top_middle <- cohens_d_calc(top_cai, middle_cai)
+  cat(sprintf("Top 5%% vs Middle 90%%: d = %.3f\n", d_top_middle))
+}
+
+if (length(top_cai) > 0 && length(bottom_cai) > 0) {
+  d_top_bottom <- cohens_d_calc(top_cai, bottom_cai)
+  cat(sprintf("Top 5%% vs Bottom 5%%: d = %.3f\n", d_top_bottom))
+}
+
+if (length(middle_cai) > 0 && length(bottom_cai) > 0) {
+  d_middle_bottom <- cohens_d_calc(middle_cai, bottom_cai)
+  cat(sprintf("Middle 90%% vs Bottom 5%%: d = %.3f\n", d_middle_bottom))
+}
+
+cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
 # Plot CAI by expression group
 library(ggplot2)
