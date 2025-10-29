@@ -162,7 +162,13 @@ exp_complete <- exp_complete |>
 exp_enc_data <- dplyr::left_join(exp_complete, enc_values, 
                                 by = dplyr::join_by(Gene == Gene_name)) |>
   dplyr::rename(Gene_name = Gene) |>
-  na.omit()
+  na.omit() |>
+  # Remove duplicates - keep first occurrence of each gene
+  # (duplicates come from bud expression having multiple entries per gene)
+  distinct(Gene_name, .keep_all = TRUE)
+
+cat(sprintf("Removed %d duplicate gene entries\n", 
+            nrow(dplyr::left_join(exp_complete, enc_values, by = dplyr::join_by(Gene == Gene_name))) - nrow(exp_enc_data)))
 
 # Add gene length (CDS length in codons and nucleotides)
 cat("\n=== Adding Gene Length Information ===\n")
@@ -699,6 +705,31 @@ cai_results <- calculate_cai(
 cai_values <- cai_results$cai_values
 w_table <- cai_results$w_table
 
+# 10.1) Making bar plot per aminoacid to show differences in use
+
+ggplot(data = w_table, mapping = aes(x = reorder(codon, relative_adaptiveness), 
+                                     y = relative_adaptiveness)) +
+  geom_segment(aes(xend = codon, y = 0, yend = relative_adaptiveness), 
+               color = "gray70", linewidth = 1) +
+  geom_point(aes(color = relative_adaptiveness), size = 4) +
+  scale_color_gradient2(
+    low = "#d73027", 
+    mid = "#fee090", 
+    high = "#1a9850", 
+    midpoint = 0.5,
+    name = "w"
+  ) +
+  geom_hline(yintercept = 1.0, linetype = "dashed", color = "black", alpha = 0.5) +
+  facet_wrap(~amino_acid, scales = "free", ncol = 4) +
+  coord_flip() +
+  theme_custom() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(face = "bold", size = 10)
+  ) +
+  labs(y = "Relative Adaptiveness (w)", x = "Codon",
+       title = "Codon Preference in Highly Expressed Genes")
+
 # Merge CAI with expression and ENC data
 exp_enc_data_cai <- exp_enc_data |>
   left_join(cai_values, by = "Gene_name")
@@ -806,13 +837,12 @@ if (length(middle_cai) > 0 && length(bottom_cai) > 0) {
 cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
 # Plot CAI by expression group
-library(ggplot2)
 p_cai_boxplot <- ggplot(exp_enc_data_cai, aes(x = Expression_Group, y = CAI, fill = Expression_Group)) +
   geom_boxplot(outlier.alpha = 0.3) +
   geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
   stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
-  scale_fill_manual(values = c("Top 5% Expressed" = "#E41A1C", 
-                                "Bottom 95%" = "#377EB8",
+  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
+                                "Bottom 5%" = "#377EB8",
                                 "Middle 90%" = "#999999")) +
   labs(title = "Codon Adaptation Index by Expression Level",
        subtitle = "Diamond = mean, box = median ± IQR. Higher CAI = more adapted to highly expressed genes",
@@ -826,22 +856,24 @@ cat("\nBoxplot saved: ./results/CAI_by_expression_group.pdf\n")
 
 # Correlation between CAI and other metrics
 cat("\n=== Correlations ===\n")
-cat(sprintf("CAI vs Expression: r = %.4f\n", cor(exp_enc_data_cai$CAI, exp_enc_data_cai$Expression, use = "complete.obs")))
+cat(sprintf("CAI vs Expression: r = %.4f\n", cor(exp_enc_data_cai$CAI, exp_enc_data_cai$High_exp, use = "complete.obs")))
 cat(sprintf("CAI vs ENC: r = %.4f\n", cor(exp_enc_data_cai$CAI, exp_enc_data_cai$ENC, use = "complete.obs")))
-cat(sprintf("ENC vs Expression: r = %.4f\n", cor(exp_enc_data_cai$ENC, exp_enc_data_cai$Expression, use = "complete.obs")))
+cat(sprintf("ENC vs Expression: r = %.4f\n", cor(exp_enc_data_cai$ENC, exp_enc_data_cai$High_exp, use = "complete.obs")))
 
 # Scatter plot: CAI vs ENC
 p_cai_enc <- ggplot(exp_enc_data_cai, aes(x = ENC, y = CAI, color = Expression_Group)) +
   geom_point(alpha = 0.3, size = 1) +
-  scale_color_manual(values = c("Top 5% Expressed" = "#E41A1C", 
-                                 "Bottom 95%" = "#377EB8",
+  # Add lm per group
+  geom_smooth(method = "lm") +
+  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
+                                 "Bottom 5%" = "#377EB8",
                                  "Middle 90%" = "#999999")) +
   labs(title = "CAI vs ENC by Expression Level",
        subtitle = "Lower ENC and Higher CAI indicate stronger codon bias",
        x = "ENC (Effective Number of Codons)",
        y = "CAI (Codon Adaptation Index)",
        color = "Expression Group") +
-  theme_minimal(base_size = 12)
+  theme_custom()
 
 ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
 

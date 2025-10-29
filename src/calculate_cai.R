@@ -55,13 +55,19 @@ calculate_gene_cai <- function(gene_codon_counts, w_values)
   #' @return CAI value (0 to 1)
   #' ___________________________________________________________________________
   
-  # Remove gene name if present
-  if ("Gene_name" %in% names(gene_codon_counts)) {
+  # Remove gene name if present and store codon names
+  codon_names <- names(gene_codon_counts)
+  if ("Gene_name" %in% codon_names) {
+    codon_names <- codon_names[codon_names != "Gene_name"]
     gene_codon_counts <- gene_codon_counts[names(gene_codon_counts) != "Gene_name"]
   }
   
+  # Convert to numeric (may be character from data frame)
+  gene_codon_counts <- as.numeric(gene_codon_counts)
+  names(gene_codon_counts) <- codon_names
+  
   # Get codons that are actually used in this gene (count > 0)
-  used_codons <- names(gene_codon_counts)[gene_codon_counts > 0]
+  used_codons <- names(gene_codon_counts)[gene_codon_counts > 0 & !is.na(gene_codon_counts)]
   
   if (length(used_codons) == 0) {
     return(NA)  # No codons found
