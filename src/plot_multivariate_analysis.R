@@ -70,12 +70,11 @@ plot_multivariate_analysis <- function(coord_data,
            y = paste(analysis_type, "Dimension", gsub("[^0-9]", "", dims[2])),
            color = group_var,
            fill = group_var) +
-      theme_minimal(base_size = 12) +
       theme(
         plot.title = element_text(hjust = 0.5, face = "bold"),
-        legend.position = "right",
-        panel.grid.minor = element_blank()
-      )
+        legend.position = "right"
+      )  +
+      theme_custom()
     
   } else if (plot_type == "bivariate_pairs") {
     # Pairwise bivariate plots with ellipses
@@ -100,7 +99,7 @@ plot_multivariate_analysis <- function(coord_data,
     ) +
       scale_color_manual(values = colors) +
       scale_fill_manual(values = colors) +
-      theme_minimal()
+      theme_custom()
     
   } else if (plot_type == "3D_static") {
     # 3D plot using scatterplot3d
@@ -203,7 +202,6 @@ plot_multivariate_analysis <- function(coord_data,
   return(p)
 }
 
-
 plot_variance_explained <- function(analysis_result, 
                                    analysis_type = "PCA",
                                    n_dims = 10,
@@ -249,7 +247,7 @@ plot_variance_explained <- function(analysis_result,
     labs(title = paste(analysis_type, "- Variance Explained by Each Dimension"),
          x = "Dimension",
          y = "Percentage of Variance Explained (%)") +
-    theme_minimal(base_size = 12) +
+    theme_custom() +
     theme(
       plot.title = element_text(hjust = 0.5, face = "bold"),
       axis.text.x = element_text(angle = 45, hjust = 1)
@@ -262,7 +260,6 @@ plot_variance_explained <- function(analysis_result,
   
   return(p)
 }
-
 
 create_biplot <- function(analysis_result,
                          coord_data,
@@ -352,7 +349,7 @@ create_biplot <- function(analysis_result,
          x = paste(analysis_type, "Dimension", dims[1]),
          y = paste(analysis_type, "Dimension", dims[2]),
          color = group_var) +
-    theme_minimal(base_size = 12) +
+    theme_custom() +
     theme(
       plot.title = element_text(hjust = 0.5, face = "bold"),
       legend.position = "right"

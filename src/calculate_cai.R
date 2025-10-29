@@ -1,15 +1,11 @@
-#!/usr/bin/env Rscript
-# calculate_cai.R
-# Calculate Codon Adaptation Index (CAI) for genes
-# CAI measures the degree of bias towards codons preferred in highly expressed genes
-
-#' Calculate relative adaptiveness (w) for codons from reference set
-#'
-#' @param reference_codon_counts Data frame with codon counts from highly expressed genes
-#'                               Columns: Gene_name, then one column per codon
-#' @param genetic_code Data frame mapping codons to amino acids
-#' @return Data frame with codon, amino_acid, frequency, and relative_adaptiveness (w)
 calculate_relative_adaptiveness <- function(reference_codon_counts, genetic_code) {
+  #' Calculate relative adaptiveness (w) for codons from reference set
+  #'
+  #' @param reference_codon_counts Data frame with codon counts from highly expressed genes
+  #'                               Columns: Gene_name, then one column per codon
+  #' @param genetic_code Data frame mapping codons to amino acids
+  #' @return Data frame with codon, amino_acid, frequency, and relative_adaptiveness (w)
+  #' ___________________________________________________________________________
   
   # Sum codon counts across all reference genes
   codon_sums <- colSums(reference_codon_counts[, -1], na.rm = TRUE)
@@ -20,6 +16,15 @@ calculate_relative_adaptiveness <- function(reference_codon_counts, genetic_code
     count = as.numeric(codon_sums),
     stringsAsFactors = FALSE
   )
+  
+  # Convert genetic_code to data frame if it's a named vector
+  if (is.vector(genetic_code)) {
+    genetic_code <- data.frame(
+      codon = names(genetic_code),
+      amino_acid = as.character(genetic_code),
+      stringsAsFactors = FALSE
+    )
+  }
   
   # Add amino acid information
   codon_freq <- codon_freq |>
@@ -41,13 +46,14 @@ calculate_relative_adaptiveness <- function(reference_codon_counts, genetic_code
   return(codon_freq)
 }
 
-
-#' Calculate CAI for a single gene
-#'
-#' @param gene_codon_counts Named vector of codon counts for one gene
-#' @param w_values Named vector of relative adaptiveness values (names = codons)
-#' @return CAI value (0 to 1)
-calculate_gene_cai <- function(gene_codon_counts, w_values) {
+calculate_gene_cai <- function(gene_codon_counts, w_values) 
+{
+  #' Calculate CAI for a single gene
+  #'
+  #' @param gene_codon_counts Named vector of codon counts for one gene
+  #' @param w_values Named vector of relative adaptiveness values (names = codons)
+  #' @return CAI value (0 to 1)
+  #' ___________________________________________________________________________
   
   # Remove gene name if present
   if ("Gene_name" %in% names(gene_codon_counts)) {
@@ -90,14 +96,15 @@ calculate_gene_cai <- function(gene_codon_counts, w_values) {
   return(cai)
 }
 
-
-#' Calculate CAI for all genes
-#'
-#' @param codon_counts Data frame with codon counts for all genes (first column = Gene_name)
-#' @param reference_genes Character vector of gene names for reference set (highly expressed)
-#' @param genetic_code Data frame mapping codons to amino acids
-#' @return Data frame with Gene_name and CAI
-calculate_cai <- function(codon_counts, reference_genes, genetic_code) {
+calculate_cai <- function(codon_counts, reference_genes, genetic_code) 
+  #' Calculate CAI for all genes
+  #'
+  #' @param codon_counts Data frame with codon counts for all genes (first column = Gene_name)
+  #' @param reference_genes Character vector of gene names for reference set (highly expressed)
+  #' @param genetic_code Data frame mapping codons to amino acids
+  #' @return Data frame with Gene_name and CAI
+  #' ___________________________________________________________________________
+{
   
   cat("\n=== Calculating Codon Adaptation Index (CAI) ===\n")
   

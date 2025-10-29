@@ -36,7 +36,7 @@ neutrality_plot <- function(gc_content, output_file = "neutrality_plot.pdf")
       geom_point(alpha = 0.3, size = 1) +
       geom_smooth(method = "lm", color = "red", se = TRUE) +
       geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "blue") +
-      theme_minimal() +
+      theme_custom() +
       labs(title = "Neutrality Plot (GC12 vs GC3)",
            subtitle = sprintf("r = %.3f, p < %.2e, slope = %.3f", 
                             cor_val, p_val, slope),
@@ -104,7 +104,7 @@ enc_plot <- function(enc_values, gc_content, output_file = "enc_plot.pdf")
     geom_point(alpha = 0.3, size = 1, color = "darkgray") +
     geom_line(data = expected_curve, aes(x = GC3s, y = ENC_expected), 
               color = "red", linewidth = 1) +
-    theme_minimal() +
+    theme_custom() +
     labs(title = "ENC Plot (Effective Number of Codons vs GC3s)",
          subtitle = "Red curve: expected ENC under mutation-drift equilibrium",
          x = "GC3s (GC content at synonymous 3rd positions)",
@@ -120,7 +120,6 @@ enc_plot <- function(enc_values, gc_content, output_file = "enc_plot.pdf")
   
   return(p)
 }
-
 
 pr2_bias_plot <- function(codon_counts, output_file = "pr2_plot.pdf")
 {
@@ -185,7 +184,7 @@ pr2_bias_plot <- function(codon_counts, output_file = "pr2_plot.pdf")
     geom_point(alpha = 0.3, size = 1) +
     geom_vline(xintercept = 0.5, linetype = "dashed", color = "red") +
     geom_hline(yintercept = 0.5, linetype = "dashed", color = "red") +
-    theme_minimal() +
+    theme_custom() +
     labs(title = "PR2 Bias Plot (Parity Rule 2)",
          subtitle = "Analysis of purine/pyrimidine bias at 3rd codon position",
          x = "A3/(A3+T3) - A vs T at 3rd position",

@@ -59,7 +59,7 @@ trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_
 codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long), 
                            parallel = T)
 
-## 3.2) Clean the codon usage object (remove the STOP codon)
+## 3.2) Clean the codon usage object (remove the STOP codon, alongside Trp and Met) ----
 
 codon_usage <- codon_usage |>
   trim_uninformative(genetic_code = genetic_code_dna_long)
@@ -74,31 +74,8 @@ message("Performing comprehensive codon usage bias analysis...")
 cub_results <- cub_summary(codon_usage, genetic_code_dna_long, 
                           output_dir = "./results")
 
-# Create amino acid-specific codon logos
-create_aa_specific_logos(codon_usage, genetic_code_dna_long,
-                         output_dir = "./results/codon_logos")
-
 ## *****************************************************************************
-## 5) tRNA abundance correlation analysis ----
-## _____________________________________________________________________________
-
-message("Analyzing correlation between codon usage and tRNA abundance...")
-
-# Perform tRNA-codon correlation analysis using filtered tRNA data and genes
-# with a ENC < 0.35
-
-tRNA_correlation_results <- tRNA_codon_correlation(
-  codon_counts = codon_usage,
-  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
-  genetic_code = genetic_code_dna_long,
-  output_dir = "./results/tRNA_analysis",
-  test_method = "spearman"  # Can also use "pearson" or "kendall"
-)
-
-message("tRNA correlation analysis complete!")
-
-## *****************************************************************************
-## 6) Additional analyses (optional) ----
+## 5) Additional analyses (optional) ----
 ## _____________________________________________________________________________
 
 ## Individual metric calculations (if needed separately):
@@ -123,35 +100,74 @@ gc_content <- calculate_gc_content(codon_usage)
 
 # Create specific visualizations
 visualize_codon_usage(codon_usage, genetic_code_dna_long,
-                     "custom_heatmap.pdf", type = "heatmap")
-neutrality_plot(gc_content, "custom_neutrality.pdf")
-enc_plot(enc_values, gc_content, "custom_enc.pdf")
-pr2_bias_plot(codon_usage, "custom_pr2.pdf")
+                     "results/custom_heatmap.pdf", type = "heatmap")
+neutrality_plot(gc_content, "results/custom_neutrality.pdf")
+enc_plot(enc_values, gc_content, "results/custom_enc.pdf")
+pr2_bias_plot(codon_usage, "results/custom_pr2.pdf")
 
 message("\nAnalysis complete! Check the './results' directory for all outputs.")
 
 ## *****************************************************************************
-## 7) Modeling relationship between ENC and Expression profiles ----
+## 6) Modeling relationship between ENC and Expression profiles ----
 ## _____________________________________________________________________________
 
 # Trimming suffix from ENC table in gene names
 enc_values[, Gene_name := sub("\\.1$", "", Gene_name)]
 
 exp_data_bud <- read.table(file = "./data/bud_gene_expression_cpm_remapped.txt",
-                       header = T)
+                       header = T) |>
+  dplyr::select(Remapped_Gene, Expression) |>
+  dplyr::rename(Gene = Remapped_Gene,
+                Exp_bud = Expression)
 
-# Combining CUB metric with expression profiles for buds
+exp_data_leaf <- read.table(file = "./data/leaf_gene_expression_mean_cpm_renamed.txt",
+                            header = T) |>
+  dplyr::rename(Exp_leaf = Expression)
 
-exp_bud_enc <- dplyr::left_join(exp_data_bud, enc_values, 
-                                by = dplyr::join_by(Remapped_Gene == Gene_name)) |>
-  dplyr::select(Remapped_Gene, Expression, ENC) |>
-  dplyr::rename(Gene_name = Remapped_Gene) |>
+# Combining CUB metric with expression profiles for buds and leafs
+
+exp_complete <- dplyr::full_join(exp_data_leaf, exp_data_bud, by = "Gene")
+
+exp_complete <- exp_complete |> 
+  dplyr::rowwise() |>
+  dplyr::mutate(
+    High_exp = max(Exp_leaf, Exp_bud, na.rm = TRUE),
+    
+    Source_High_exp = case_when(
+      # If both are NA, source is NA
+      is.na(Exp_leaf) & is.na(Exp_bud) ~ NA_character_,
+      
+      # If bud is NA, leaf must be the max
+      is.na(Exp_bud) ~ "Leaf",
+      
+      # If leaf is NA, bud must be the max
+      is.na(Exp_leaf) ~ "Bud",
+      
+      # If leaf is greater or equal (handles ties)
+      Exp_leaf >= Exp_bud ~ "Leaf",
+      
+      # Otherwise, bud must be greater
+      Exp_bud > Exp_leaf ~ "Bud"
+    )
+  ) |>
+  # Fix the -Inf from max(NA, NA, na.rm=T)
+  dplyr::mutate(
+    High_exp = if_else(is.infinite(High_exp), NA_real_, High_exp)
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(Source_High_exp = as.factor(Source_High_exp))
+
+# Add the ENC values per gene
+
+exp_enc_data <- dplyr::left_join(exp_complete, enc_values, 
+                                by = dplyr::join_by(Gene == Gene_name)) |>
+  dplyr::rename(Gene_name = Gene) |>
   na.omit()
 
 # Add gene length (CDS length in codons and nucleotides)
 cat("\n=== Adding Gene Length Information ===\n")
 
-# First, clean gene names in codon_usage to match exp_bud_enc
+# First, clean gene names in codon_usage to match exp_enc_data
 # Calculate total codons from numeric columns only
 codon_columns <- names(codon_usage)[names(codon_usage) != "Gene_name"]
 
@@ -165,52 +181,33 @@ gene_lengths <- codon_usage |>
   select(Gene_name_clean, Total_Codons, CDS_length_nt, CDS_length_aa) |>
   rename(Gene_name = Gene_name_clean)
 
-exp_bud_enc <- exp_bud_enc |>
+exp_enc_data <- exp_enc_data |>
   left_join(gene_lengths, by = "Gene_name")
 
-cat(sprintf("Added length for %d genes\n", sum(!is.na(exp_bud_enc$CDS_length_nt))))
+cat(sprintf("Added length for %d genes\n", sum(!is.na(exp_enc_data$CDS_length_nt))))
 cat(sprintf("Mean CDS length: %.0f nt (%.0f codons)\n", 
-            mean(exp_bud_enc$CDS_length_nt, na.rm = TRUE),
-            mean(exp_bud_enc$Total_Codons, na.rm = TRUE)))
+            mean(exp_enc_data$CDS_length_nt, na.rm = TRUE),
+            mean(exp_enc_data$Total_Codons, na.rm = TRUE)))
 
-cor(exp_bud_enc$ENC, exp_bud_enc$Expression)
-plot(exp_bud_enc$ENC, exp_bud_enc$Expression)
-lm(Expression ~ ENC, data = exp_bud_enc)
+log2exp <- log2(exp_enc_data$High_exp + 1)
+cor(x = exp_enc_data$ENC, y = log2exp)
+plot(exp_enc_data$ENC, log2exp)
+lm(log2(High_exp+1) ~ ENC, data = exp_enc_data)
 
 # Define expression groups: Top 5% vs Bottom 5% (extreme comparison)
 
-top_5_cutoff <- quantile(exp_bud_enc$Expression, probs = 0.95)
-bottom_5_cutoff <- quantile(exp_bud_enc$Expression, probs = 0.05)
+top_5_cutoff <- quantile(exp_enc_data$High_exp, probs = 0.95)
+bottom_5_cutoff <- quantile(exp_enc_data$High_exp, probs = 0.05)
 
-exp_bud_enc$Expression_Group <- case_when(
-  exp_bud_enc$Expression >= top_5_cutoff ~ "Top 5%",
-  exp_bud_enc$Expression <= bottom_5_cutoff ~ "Bottom 5%",
+exp_enc_data$Expression_Group <- case_when(
+  exp_enc_data$High_exp >= top_5_cutoff ~ "Top 5%",
+  exp_enc_data$High_exp <= bottom_5_cutoff ~ "Bottom 5%",
   TRUE ~ "Middle 90%"
 )
 
-# Also create a version with only extremes for clearer visualization
-exp_bud_enc_extremes <- exp_bud_enc |>
-  filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
-
-# Print the actual group names for verification
-cat("\n=== WARNING: Check Expression Group Names ===\n")
-cat("If you see different group names in Step 8 plots, re-run this Step 7!\n")
-cat("Expected names: Top 5%, Bottom 5%, Middle 90%\n")
-cat("Actual names in data:\n")
-print(table(exp_bud_enc$Expression_Group))
-cat("\n")
-
-# Statistical comparison
-cat("\n=== Expression Group Statistics ===\n")
-cat(sprintf("Top 5%% threshold: %.2f CPM\n", top_5_cutoff))
-cat(sprintf("Bottom 5%% threshold: %.2f CPM\n", bottom_5_cutoff))
-cat(sprintf("Top 5%% genes: %d\n", sum(exp_bud_enc$Expression_Group == "Top 5%")))
-cat(sprintf("Bottom 5%% genes: %d\n", sum(exp_bud_enc$Expression_Group == "Bottom 5%")))
-cat(sprintf("Middle 90%% genes: %d\n", sum(exp_bud_enc$Expression_Group == "Middle 90%")))
-
 # Boxplot comparison
-library(ggplot2)
-p_boxplot <- ggplot(exp_bud_enc, aes(x = Expression_Group, y = ENC, fill = Expression_Group)) +
+
+p_boxplot <- ggplot(exp_enc_data, aes(x = Expression_Group, y = ENC, fill = Expression_Group)) +
   geom_boxplot(outlier.alpha = 0.3) +
   geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
   stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
@@ -221,7 +218,7 @@ p_boxplot <- ggplot(exp_bud_enc, aes(x = Expression_Group, y = ENC, fill = Expre
        subtitle = "Diamond = mean, box = median ± IQR",
        y = "Effective Number of Codons (ENC)",
        x = "Expression Group") +
-  theme_minimal(base_size = 12) +
+  theme_custom() +
   theme(legend.position = "none")
 
 ggsave("./results/ENC_by_expression_group.pdf", p_boxplot, width = 8, height = 6)
@@ -229,7 +226,7 @@ ggsave("./results/ENC_by_expression_group.pdf", p_boxplot, width = 8, height = 6
 # Statistical tests for three groups
 cat("\n=== Kruskal-Wallis Test: ENC across All Three Groups ===\n")
 cat("H0: All three groups have the same median ENC\n")
-kw_test_enc <- kruskal.test(ENC ~ Expression_Group, data = exp_bud_enc)
+kw_test_enc <- kruskal.test(ENC ~ Expression_Group, data = exp_enc_data)
 print(kw_test_enc)
 
 if (kw_test_enc$p.value < 0.05) {
@@ -245,9 +242,9 @@ if (kw_test_enc$p.value < 0.05) {
   
   # Perform Dunn's test with Bonferroni correction
   dunn_result_enc <- dunn.test::dunn.test(
-    x = exp_bud_enc$ENC,
-    g = exp_bud_enc$Expression_Group,
-    method = "bonferroni",
+    x = exp_enc_data$ENC,
+    g = exp_enc_data$Expression_Group,
+    method = "bh",
     kw = TRUE,
     label = TRUE,
     wrap = FALSE,
@@ -255,25 +252,20 @@ if (kw_test_enc$p.value < 0.05) {
     list = FALSE,
     altp = TRUE
   )
-  
-  cat("\nInterpretation of pairwise comparisons:\n")
-  cat("  - Adjusted p-values account for multiple testing (Bonferroni)\n")
-  cat("  - p < 0.05 indicates significant difference between groups\n")
-  
 } else {
   cat("\nNo significant difference among groups (p >= 0.05)\n")
   cat("Post-hoc tests not necessary.\n")
 }
 
 cat("\n=== Summary Statistics ===\n")
-summary_stats <- exp_bud_enc %>%
+summary_stats <- exp_enc_data %>%
   group_by(Expression_Group) %>%
   summarise(
     n = n(),
     mean_ENC = mean(ENC, na.rm = TRUE),
     median_ENC = median(ENC, na.rm = TRUE),
     sd_ENC = sd(ENC, na.rm = TRUE),
-    mean_Expression = mean(Expression, na.rm = TRUE)
+    mean_Expression = mean(High_exp, na.rm = TRUE)
   )
 print(summary_stats)
 
@@ -292,9 +284,9 @@ cohens_d_calc <- function(x1, x2) {
 }
 
 # Get ENC values for each group
-top5_enc <- exp_bud_enc |> filter(Expression_Group == "Top 5%") |> pull(ENC)
-middle_enc <- exp_bud_enc |> filter(Expression_Group == "Middle 90%") |> pull(ENC)
-bottom5_enc <- exp_bud_enc |> filter(Expression_Group == "Bottom 5%") |> pull(ENC)
+top5_enc <- exp_enc_data |> filter(Expression_Group == "Top 5%") |> pull(ENC)
+middle_enc <- exp_enc_data |> filter(Expression_Group == "Middle 90%") |> pull(ENC)
+bottom5_enc <- exp_enc_data |> filter(Expression_Group == "Bottom 5%") |> pull(ENC)
 
 # Calculate effect sizes
 if (length(top5_enc) > 0 && length(middle_enc) > 0) {
@@ -317,7 +309,7 @@ cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium
 # Gene length analysis
 cat("\n=== Gene Length by Expression Group ===\n")
 cat("Checking if gene length explains ENC patterns\n\n")
-length_stats <- exp_bud_enc %>%
+length_stats <- exp_enc_data %>%
   group_by(Expression_Group) %>%
   summarise(
     n = n(),
@@ -330,14 +322,67 @@ print(length_stats)
 
 # Test for length differences
 cat("\n=== Kruskal-Wallis Test: Gene Length across Groups ===\n")
-kw_length <- kruskal.test(CDS_length_aa ~ Expression_Group, data = exp_bud_enc)
+kw_length <- kruskal.test(CDS_length_aa ~ Expression_Group, data = exp_enc_data)
 print(kw_length)
 
 # Correlation between length and ENC
 cat("\n=== Correlation: Gene Length vs ENC ===\n")
-cor_length_enc <- cor(exp_bud_enc$CDS_length_aa, exp_bud_enc$ENC, use = "complete.obs")
+cor_length_enc <- cor(exp_enc_data$CDS_length_aa, exp_enc_data$ENC, use = "complete.obs")
 cat(sprintf("Pearson r = %.4f\n", cor_length_enc))
-cat("Note: Negative correlation = shorter genes have lower ENC (artifact)\n")
+
+# Detrending the ENC and the length of genes
+
+exp_enc_data <- exp_enc_data |>
+  mutate(
+    ENC_residuals = resid(lm(ENC ~ CDS_length_aa, data = exp_enc_data))
+  )
+
+# Assesing significance of expression over the detrended residuals
+
+cat("\n=== Kruskal-Wallis Test: Detrended ENC Residuals across Groups ===\n")
+
+kw_detrended <- kruskal.test(ENC_residuals ~ Expression_Group, 
+                             data = exp_enc_data)
+
+# Plotting and assessing significance using Dunn
+
+print(kw_detrended)
+if (kw_detrended$p.value < 0.05) {
+  cat("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
+  cat("\n=== Dunn's Test: Pairwise Comparisons with Bonferroni Correction ===\n")
+  
+  # Perform Dunn's test with Bonferroni correction
+  dunn_result_detrended <- dunn.test::dunn.test(
+    x = exp_enc_data$ENC_residuals,
+    g = exp_enc_data$Expression_Group,
+    method = "bh",
+    kw = TRUE,
+    label = TRUE,
+    wrap = FALSE,
+    table = TRUE,
+    list = FALSE,
+    altp = TRUE
+  )
+} else {
+  cat("\nNo significant difference among groups (p >= 0.05)\n")
+  cat("Post-hoc tests not necessary.\n")
+}
+
+# Ploting box plot
+
+p_boxplot_detrended <- ggplot(exp_enc_data, aes(x = Expression_Group, y = ENC_residuals, fill = Expression_Group)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
+  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
+                                "Bottom 5%" = "#377EB8",
+                                "Middle 90%" = "#999999")) +
+  labs(title = "Detrended ENC Residuals by Expression Level",
+       subtitle = "Diamond = mean, box = median ± IQR",
+       y = "ENC Residuals (detrended)",
+       x = "Expression Group") +
+  theme_custom() +
+  theme(legend.position = "none")
 
 ## *****************************************************************************
 ## 8) Correspondence analysis over counts and PCA over RSCU ----
@@ -361,7 +406,7 @@ codon_usage_CA <- CA(X = codon_usage_m, graph = F)
 codon_usage_CA_coord <- as.data.frame(codon_usage_CA$row$coord) |>
   dplyr::mutate(Gene_name = sub("\\.1$", "", row.names(codon_usage_CA$row$coord)))
 
-codon_usage_CA_coord <- exp_bud_enc |>
+codon_usage_CA_coord <- exp_enc_data |>
   left_join(y = codon_usage_CA_coord, by = "Gene_name")
 
 # Rename dimensions to match plotting function expectations
@@ -379,17 +424,17 @@ cat("  Counts:", paste(table(codon_usage_CA_coord$Expression_Group), collapse = 
 
 # Create version with only extreme groups
 codon_usage_CA_coord_extremes <- codon_usage_CA_coord |>
-  filter(Expression_Group %in% c("Top 5% Expressed", "Bottom 95%")) |>  # Updated group names
+  filter(Expression_Group %in% c("Top 5%", "Bottom 5%")) |>  # Updated group names
   mutate(Expression_Group = as.character(Expression_Group))  # Ensure character type
 
 # Define colors for all groups
 # Note: Update these if you re-run Step 7 with new group names
-colors_all <- c("Top 5% Expressed" = "#E41A1C",  # Current name in data
-                "Bottom 95%" = "#377EB8",         # Current name in data
+colors_all <- c("Top 5%" = "#E41A1C",  # Current name in data
+                "Bottom 5%" = "#377EB8",         # Current name in data
                 "Middle 90%" = "#CCCCCC")         # Gray for middle (if exists)
 
-colors_extremes <- c("Top 5% Expressed" = "#E41A1C", 
-                     "Bottom 95%" = "#377EB8")
+colors_extremes <- c("Top 5%" = "#E41A1C", 
+                     "Bottom 5%" = "#377EB8")
 
 # Plot variance explained
 plot_variance_explained(codon_usage_CA, 
@@ -455,7 +500,7 @@ create_biplot(codon_usage_CA,
              coord_data = codon_usage_CA_coord_extremes,
              group_var = "Expression_Group",
              analysis_type = "CA",
-             dims = c(1, 2),
+             dims = c(1, 3),
              n_loadings = 20,
              colors = colors_extremes,
              output_file = "./results/CA_biplot_extremes_only.pdf")
@@ -487,7 +532,7 @@ rscu_PCA <- PCA(rscu_m, graph = F)
 rscu_PCA_coord <- as.data.frame(rscu_PCA$ind$coord) |>
   dplyr::mutate(Gene_name = sub("\\.1$", "", row.names(rscu_PCA$ind$coord)))
 
-rscu_PCA_coord <- exp_bud_enc |>
+rscu_PCA_coord <- exp_enc_data |>
   left_join(y = rscu_PCA_coord, by = "Gene_name")
 
 # Ensure Expression_Group is character (not factor) for color matching
@@ -495,7 +540,7 @@ rscu_PCA_coord$Expression_Group <- as.character(rscu_PCA_coord$Expression_Group)
 
 # Create version with only extreme groups
 rscu_PCA_coord_extremes <- rscu_PCA_coord |>
-  filter(Expression_Group %in% c("Top 5% Expressed", "Bottom 95%")) |>  # Updated group names
+  filter(Expression_Group %in% c("Top 5%", "Bottom 5%")) |>  # Updated group names
   mutate(Expression_Group = as.character(Expression_Group))  # Ensure character type
 
 # Plot variance explained
@@ -583,14 +628,6 @@ for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
               ifelse(wtest$p.value < 0.05, "***", "")))
 }
 
-message("\n=== Multivariate Analysis Complete ===")
-message("\nPlots saved to ./results/:")
-message("  - Variance explained plots (CA and PCA)")
-message("  - All groups comparison (Top 5%, Middle 90%, Bottom 5%)")
-message("  - Extremes only comparison (Top 5% vs Bottom 5%)")
-message("  - Biplots showing codon loadings (AT vs GC pattern)")
-message("\nCheck the statistical tests above for significance of group separation.")
-
 ## *****************************************************************************
 ## 9) Analyze codon loading patterns (AT vs GC bias) ----
 ## _____________________________________________________________________________
@@ -636,14 +673,20 @@ cat("CAI measures the degree of bias towards codons preferred in highly expresse
 cat("CAI ranges from 0 to 1, where higher values indicate stronger adaptation\n")
 cat("Higher CAI = more similar to codon usage in highly expressed genes\n\n")
 
-source("./src/calculate_cai.R")
-
 # Define reference set: Top 5% expressed genes
-reference_genes <- exp_bud_enc |>
+reference_genes <- exp_enc_data |>
   filter(Expression_Group == "Top 5%") |>
   pull(Gene_name)
 
 cat(sprintf("Using %d highly expressed genes as reference set\n", length(reference_genes)))
+
+# Remove .1 suffix from codon_usage gene names to match gene-level IDs
+# (codon_usage has transcript IDs like MgIM767.10G127000.1,
+#  expression data has gene IDs like MgIM767.10G127000)
+codon_usage <- codon_usage |>
+  mutate(Gene_name = sub("\\.1$", "", Gene_name))
+
+cat(sprintf("Converted codon usage transcript IDs to gene IDs\n"))
 
 # Calculate CAI for all genes
 cai_results <- calculate_cai(
@@ -657,16 +700,16 @@ cai_values <- cai_results$cai_values
 w_table <- cai_results$w_table
 
 # Merge CAI with expression and ENC data
-exp_bud_enc_cai <- exp_bud_enc |>
+exp_enc_data_cai <- exp_enc_data |>
   left_join(cai_values, by = "Gene_name")
 
 # Save results
-write.csv(exp_bud_enc_cai, "./results/expression_enc_cai.csv", row.names = FALSE)
+write.csv(exp_enc_data_cai, "./results/expression_enc_cai.csv", row.names = FALSE)
 write.csv(w_table, "./results/optimal_codons_weights.csv", row.names = FALSE)
 
 cat("\n=== CAI vs Expression Level ===\n")
 # Compare CAI across expression groups
-cai_by_group <- exp_bud_enc_cai |>
+cai_by_group <- exp_enc_data_cai |>
   group_by(Expression_Group) |>
   summarise(
     n = n(),
@@ -681,7 +724,7 @@ print(cai_by_group)
 # Statistical tests for three groups
 cat("\n=== Kruskal-Wallis Test: CAI across All Three Groups ===\n")
 cat("H0: All three groups have the same median CAI\n")
-kw_test <- kruskal.test(CAI ~ Expression_Group, data = exp_bud_enc_cai)
+kw_test <- kruskal.test(CAI ~ Expression_Group, data = exp_enc_data_cai)
 print(kw_test)
 
 if (kw_test$p.value < 0.05) {
@@ -697,8 +740,8 @@ if (kw_test$p.value < 0.05) {
   
   # Perform Dunn's test with Bonferroni correction
   dunn_result <- dunn.test::dunn.test(
-    x = exp_bud_enc_cai$CAI,
-    g = exp_bud_enc_cai$Expression_Group,
+    x = exp_enc_data_cai$CAI,
+    g = exp_enc_data_cai$Expression_Group,
     method = "bonferroni",
     kw = TRUE,
     label = TRUE,
@@ -732,16 +775,16 @@ cohens_d_calc <- function(x1, x2) {
 }
 
 # Get CAI values for each group
-top_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Top 5%") |> pull(CAI)
-middle_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Middle 90%") |> pull(CAI)
-bottom_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Bottom 5%") |> pull(CAI)
+top_cai <- exp_enc_data_cai |> filter(Expression_Group == "Top 5%") |> pull(CAI)
+middle_cai <- exp_enc_data_cai |> filter(Expression_Group == "Middle 90%") |> pull(CAI)
+bottom_cai <- exp_enc_data_cai |> filter(Expression_Group == "Bottom 5%") |> pull(CAI)
 
 # If groups don't exist with new names, try old names
 if (length(top_cai) == 0) {
-  top_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Top 5% Expressed") |> pull(CAI)
+  top_cai <- exp_enc_data_cai |> filter(Expression_Group == "Top 5% Expressed") |> pull(CAI)
 }
 if (length(bottom_cai) == 0) {
-  bottom_cai <- exp_bud_enc_cai |> filter(Expression_Group == "Bottom 95%") |> pull(CAI)
+  bottom_cai <- exp_enc_data_cai |> filter(Expression_Group == "Bottom 95%") |> pull(CAI)
 }
 
 # Calculate effect sizes
@@ -764,7 +807,7 @@ cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium
 
 # Plot CAI by expression group
 library(ggplot2)
-p_cai_boxplot <- ggplot(exp_bud_enc_cai, aes(x = Expression_Group, y = CAI, fill = Expression_Group)) +
+p_cai_boxplot <- ggplot(exp_enc_data_cai, aes(x = Expression_Group, y = CAI, fill = Expression_Group)) +
   geom_boxplot(outlier.alpha = 0.3) +
   geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
   stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
@@ -783,12 +826,12 @@ cat("\nBoxplot saved: ./results/CAI_by_expression_group.pdf\n")
 
 # Correlation between CAI and other metrics
 cat("\n=== Correlations ===\n")
-cat(sprintf("CAI vs Expression: r = %.4f\n", cor(exp_bud_enc_cai$CAI, exp_bud_enc_cai$Expression, use = "complete.obs")))
-cat(sprintf("CAI vs ENC: r = %.4f\n", cor(exp_bud_enc_cai$CAI, exp_bud_enc_cai$ENC, use = "complete.obs")))
-cat(sprintf("ENC vs Expression: r = %.4f\n", cor(exp_bud_enc_cai$ENC, exp_bud_enc_cai$Expression, use = "complete.obs")))
+cat(sprintf("CAI vs Expression: r = %.4f\n", cor(exp_enc_data_cai$CAI, exp_enc_data_cai$Expression, use = "complete.obs")))
+cat(sprintf("CAI vs ENC: r = %.4f\n", cor(exp_enc_data_cai$CAI, exp_enc_data_cai$ENC, use = "complete.obs")))
+cat(sprintf("ENC vs Expression: r = %.4f\n", cor(exp_enc_data_cai$ENC, exp_enc_data_cai$Expression, use = "complete.obs")))
 
 # Scatter plot: CAI vs ENC
-p_cai_enc <- ggplot(exp_bud_enc_cai, aes(x = ENC, y = CAI, color = Expression_Group)) +
+p_cai_enc <- ggplot(exp_enc_data_cai, aes(x = ENC, y = CAI, color = Expression_Group)) +
   geom_point(alpha = 0.3, size = 1) +
   scale_color_manual(values = c("Top 5% Expressed" = "#E41A1C", 
                                  "Bottom 95%" = "#377EB8",
@@ -801,3 +844,24 @@ p_cai_enc <- ggplot(exp_bud_enc_cai, aes(x = ENC, y = CAI, color = Expression_Gr
   theme_minimal(base_size = 12)
 
 ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
+
+## *****************************************************************************
+## xx) tRNA abundance correlation analysis ----
+## _____________________________________________________________________________
+
+# For this analysis, we need to search the expression profiles for the tRNAs ...
+
+message("Analyzing correlation between codon usage and tRNA abundance...")
+
+# Perform tRNA-codon correlation analysis using filtered tRNA data and genes
+# with a ENC < 0.35
+
+tRNA_correlation_results <- tRNA_codon_correlation(
+  codon_counts = codon_usage,
+  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
+  genetic_code = genetic_code_dna_long,
+  output_dir = "./results/tRNA_analysis",
+  test_method = "spearman"  # Can also use "pearson" or "kendall"
+)
+
+message("tRNA correlation analysis complete!")

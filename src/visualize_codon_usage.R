@@ -50,10 +50,9 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
       geom_tile(color = "white", linewidth = 0.5) +
       scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
                           midpoint = 1, name = "RSCU") +
-      theme_minimal() +
+      theme_custom() +
       theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
-            axis.text.y = element_text(size = 10),
-            panel.grid = element_blank()) +
+            axis.text.y = element_text(size = 10)) +
       labs(title = "Genome-wide Codon Usage Bias",
            x = "Codon", y = "Amino Acid") +
       facet_grid(. ~ AA, scales = "free_x", space = "free_x")
@@ -66,7 +65,7 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
     p <- ggplot(plot_data, aes(x = Codon, y = RSCU, fill = AA)) +
       geom_bar(stat = "identity") +
       facet_wrap(~ AA, scales = "free_x", ncol = 5) +
-      theme_minimal() +
+      theme_custom() +
       theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
             legend.position = "none") +
       geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
@@ -79,7 +78,6 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
   message(paste("Plot saved to:", output_file))
   return(invisible(plot_data))
 }
-
 
 create_codon_logo <- function(codon_counts, genetic_code, amino_acid,
                               output_file = NULL)
@@ -150,7 +148,7 @@ create_codon_logo <- function(codon_counts, genetic_code, amino_acid,
     geom_bar(stat = "identity", position = "stack", width = 0.8) +
     scale_fill_manual(values = c("A" = "#109648", "T" = "#F00000", 
                                   "G" = "#F59E00", "C" = "#255FBE")) +
-    theme_minimal() +
+    theme_custom() +
     labs(title = paste("Codon Usage Pattern for", amino_acid),
          x = "Codon Position", y = "Frequency") +
     scale_x_continuous(breaks = 1:3) +
