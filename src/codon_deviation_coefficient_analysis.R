@@ -62,15 +62,20 @@ get_positional_composition_from_counts <- function(codon_counts, genetic_code) {
   
   # Count nucleotides at each position weighted by codon frequency
   for (codon in names(codon_counts)) {
-    if (nchar(codon) == 3 && codon_counts[codon] > 0) {
-      bases <- strsplit(codon, "")[[1]]
+    if (nchar(codon) == 3) {
       count <- codon_counts[codon]
+      
+      # Skip if count is NA or 0
+      if (is.na(count) || count == 0) next
+      
+      bases <- strsplit(codon, "")[[1]]
       
       # Map base letters to variable names to avoid R conflicts
       base1 <- paste0(bases[1], "i")
       base2 <- paste0(bases[2], "i")
       base3 <- paste0(bases[3], "i")
       
+      # Add count to each position, with NA protection
       pos1_counts[base1] <- pos1_counts[base1] + count
       pos2_counts[base2] <- pos2_counts[base2] + count
       pos3_counts[base3] <- pos3_counts[base3] + count
@@ -81,14 +86,28 @@ get_positional_composition_from_counts <- function(codon_counts, genetic_code) {
   calc_gc <- function(counts) {
     total <- sum(counts)
     if (total == 0) return(0.5)
-    (counts["Gi"] + counts["Ci"]) / total
+    gc <- (counts["Gi"] + counts["Ci"]) / total
+    # Check for NA
+    if (is.na(gc)) {
+      warning(sprintf("NA in GC calculation: Gi=%s, Ci=%s, total=%s", 
+                     counts["Gi"], counts["Ci"], total))
+      return(0.5)
+    }
+    return(gc)
   }
   
   # Calculate purine content (R) for each position
   calc_purine <- function(counts) {
     total <- sum(counts)
     if (total == 0) return(0.5)
-    (counts["Ai"] + counts["Gi"]) / total
+    purine <- (counts["Ai"] + counts["Gi"]) / total
+    # Check for NA
+    if (is.na(purine)) {
+      warning(sprintf("NA in purine calculation: Ai=%s, Gi=%s, total=%s", 
+                     counts["Ai"], counts["Gi"], total))
+      return(0.5)
+    }
+    return(purine)
   }
   
   list(
@@ -209,6 +228,15 @@ generate_random_codon_counts <- function(comp, total_codons, genetic_code) {
   nuc2 <- calc_expected_nucleotides(comp$S2, comp$R2)
   nuc3 <- calc_expected_nucleotides(comp$S3, comp$R3)
   
+  # Check for NA values in nucleotide frequencies
+  if (any(is.na(c(nuc1, nuc2, nuc3)))) {
+    warning("NA values in nucleotide frequencies, using uniform distribution")
+    sense_codons <- get_sense_codons(genetic_code)
+    uniform_counts <- rep(total_codons %/% length(sense_codons), length(sense_codons))
+    names(uniform_counts) <- sense_codons
+    return(uniform_counts)
+  }
+  
   # Get sense codons
   sense_codons <- get_sense_codons(genetic_code)
   
@@ -222,6 +250,14 @@ generate_random_codon_counts <- function(comp, total_codons, genetic_code) {
     base2 <- paste0(bases[2], "i")
     base3 <- paste0(bases[3], "i")
     expected_freqs[codon] <- nuc1[base1] * nuc2[base2] * nuc3[base3]
+  }
+  
+  # Check for NA or zero sum in expected frequencies
+  if (any(is.na(expected_freqs)) || sum(expected_freqs) == 0) {
+    warning("Invalid expected frequencies, using uniform distribution")
+    uniform_counts <- rep(total_codons %/% length(sense_codons), length(sense_codons))
+    names(uniform_counts) <- sense_codons
+    return(uniform_counts)
   }
   
   # Normalize frequencies
@@ -242,14 +278,30 @@ generate_random_codon_counts <- function(comp, total_codons, genetic_code) {
 #' @return List containing CDC value, p-value, and bootstrap distribution
 calculate_cdc_single <- function(codon_counts, genetic_code, n_bootstrap = 1000) {
   
-  # Remove Gene_name if present
-  if ("Gene_name" %in% names(codon_counts)) {
-    codon_counts <- codon_counts[names(codon_counts) != "Gene_name"]
+  # Handle data.frame/data.table row input
+  if (is.data.frame(codon_counts)) {
+    # Convert single row data.frame to named vector
+    # Get column names excluding Gene_name
+    codon_cols <- names(codon_counts)[names(codon_counts) != "Gene_name"]
+    
+    # Extract values as numeric vector - universal approach for data.table and data.frame
+    # Convert to standard data.frame first to avoid data.table syntax issues
+    codon_counts_df <- as.data.frame(codon_counts)
+    codon_values <- as.numeric(unlist(codon_counts_df[1, codon_cols]))
+    names(codon_values) <- codon_cols
+    codon_counts <- codon_values
+    
+  } else {
+    # Handle named vector input
+    if ("Gene_name" %in% names(codon_counts)) {
+      codon_counts <- codon_counts[names(codon_counts) != "Gene_name"]
+    }
+    
+    # Convert to numeric while preserving names
+    count_names <- names(codon_counts)
+    codon_counts <- as.numeric(codon_counts)
+    names(codon_counts) <- count_names
   }
-  
-  # Convert to numeric
-  codon_counts <- as.numeric(codon_counts)
-  names(codon_counts) <- names(codon_counts)
   
   # Get total number of codons
   total_codons <- sum(codon_counts, na.rm = TRUE)
@@ -262,9 +314,22 @@ calculate_cdc_single <- function(codon_counts, genetic_code, n_bootstrap = 1000)
   # Calculate positional composition from codon counts
   comp <- get_positional_composition_from_counts(codon_counts, genetic_code)
   
+  # Check for invalid composition values
+  comp_values <- unlist(comp)
+  if (any(is.na(comp_values)) || any(comp_values < 0) || any(comp_values > 1)) {
+    warning("Invalid positional composition values")
+    return(list(CDC = NA, p_value = NA, bootstrap_distribution = NULL))
+  }
+  
   # Calculate expected and observed codon usage
   expected <- calc_expected_codon_usage(comp, genetic_code)
   observed <- calc_observed_codon_usage(codon_counts, genetic_code)
+  
+  # Check for NA values in expected or observed
+  if (any(is.na(expected)) || any(is.na(observed))) {
+    warning("NA values in expected or observed codon usage")
+    return(list(CDC = NA, p_value = NA, bootstrap_distribution = NULL))
+  }
   
   # Calculate CDC
   cdc_value <- calc_cdc(expected, observed)
@@ -308,6 +373,8 @@ calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000) 
   
   cat(sprintf("\n=== Calculating CDC for %d genes ===\n", nrow(codon_usage_df)))
   cat(sprintf("Bootstrap replicates per gene: %d\n", n_bootstrap))
+  cat(sprintf("Data structure: %s\n", class(codon_usage_df)[1]))
+  cat(sprintf("Columns: %s\n", paste(head(names(codon_usage_df), 10), collapse = ", ")))
   
   # Initialize results
   results <- data.frame(
@@ -325,7 +392,8 @@ calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000) 
     }
     
     # Extract codon counts for this gene
-    gene_counts <- codon_usage_df[i, ]
+    # Convert single row to named vector to avoid data.table issues
+    gene_counts <- codon_usage_df[i, , drop = FALSE]
     
     # Calculate CDC
     cdc_result <- calculate_cdc_single(gene_counts, genetic_code, n_bootstrap)

@@ -898,3 +898,11 @@ tRNA_correlation_results <- tRNA_codon_correlation(
 )
 
 message("tRNA correlation analysis complete!")
+
+## *****************************************************************************
+## xx) CDC-based analysis ----
+## _____________________________________________________________________________
+
+# Full integration with your pipeline
+cdc_results <- integrate_cdc_analysis(codon_usage, genetic_code_dna_long, 
+                                      exp_enc_data)
