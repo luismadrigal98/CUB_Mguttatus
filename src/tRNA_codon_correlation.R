@@ -1,6 +1,9 @@
 tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
                                    output_dir = "./results", 
-                                   test_method = "spearman")
+                                   test_method = "spearman",
+                                   mode = "by.expression",
+                                   ann = NULL,
+                                   expression_data = NULL)
 {
   #' Analyze correlation between codon usage and tRNA abundance
   #' 
@@ -13,6 +16,12 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   #' @param genetic_code Named vector mapping codons to amino acids
   #' @param output_dir Directory for output files
   #' @param test_method Correlation method: "spearman", "pearson", or "kendall"
+  #' @param mode Whether to perform the correlation analysis relative to the number
+  #' of copies of a given transcript or by expression profiles of the genes that
+  #' code for the tRNA. In such cases, an annotation file and expression data
+  #' must be provided.
+  #' @param ann Data table with gene annotations (required if mode is "by.expression")
+  #' @param expression_data Data table with gene expression values.
   #' 
   #' @return List with correlation results, plots, and statistics
   #' ___________________________________________________________________________

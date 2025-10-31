@@ -893,7 +893,8 @@ tRNA_correlation_results <- tRNA_codon_correlation(
   tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
   genetic_code = genetic_code_dna_long,
   output_dir = "./results/tRNA_analysis",
-  test_method = "spearman"  # Can also use "pearson" or "kendall"
+  test_method = "spearman",
+  mode = "by.copy.number"
 )
 
 message("tRNA correlation analysis complete!")
