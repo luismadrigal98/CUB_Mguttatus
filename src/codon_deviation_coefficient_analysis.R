@@ -122,6 +122,10 @@ get_positional_composition_from_counts <- function(codon_counts, genetic_code) {
 #' @param R Purine content at position i
 #' @return Named vector with expected frequencies of A, T, G, C
 calc_expected_nucleotides <- function(S, R) {
+  # Strip names from S and R to avoid name concatenation
+  S <- as.numeric(S)
+  R <- as.numeric(R)
+  
   c(
     Ai = (1 - S) * R,
     Ti = (1 - S) * (1 - R),
@@ -289,6 +293,7 @@ calculate_cdc_single <- function(codon_counts, genetic_code, n_bootstrap = 1000)
     codon_counts_df <- as.data.frame(codon_counts)
     codon_values <- as.numeric(unlist(codon_counts_df[1, codon_cols]))
     names(codon_values) <- codon_cols
+    
     codon_counts <- codon_values
     
   } else {
@@ -334,17 +339,36 @@ calculate_cdc_single <- function(codon_counts, genetic_code, n_bootstrap = 1000)
   # Calculate CDC
   cdc_value <- calc_cdc(expected, observed)
   
-  # Bootstrap resampling
-  bootstrap_cdc <- numeric(n_bootstrap)
+  # Bootstrap resampling - vectorized for speed
+  sense_codons <- get_sense_codons(genetic_code)
+  n_codons <- length(sense_codons)
   
-  for (i in 1:n_bootstrap) {
-    # Generate random codon counts with same composition and total
-    random_counts <- generate_random_codon_counts(comp, total_codons, genetic_code)
-    
-    # Calculate CDC for random counts
-    random_observed <- calc_observed_codon_usage(random_counts, genetic_code)
-    bootstrap_cdc[i] <- calc_cdc(expected, random_observed)
+  # Pre-calculate expected frequencies once
+  nuc1 <- calc_expected_nucleotides(comp$S1, comp$R1)
+  nuc2 <- calc_expected_nucleotides(comp$S2, comp$R2)
+  nuc3 <- calc_expected_nucleotides(comp$S3, comp$R3)
+  
+  expected_freqs <- numeric(n_codons)
+  names(expected_freqs) <- sense_codons
+  
+  for (codon in sense_codons) {
+    bases <- strsplit(codon, "")[[1]]
+    base1 <- paste0(bases[1], "i")
+    base2 <- paste0(bases[2], "i")
+    base3 <- paste0(bases[3], "i")
+    expected_freqs[codon] <- nuc1[base1] * nuc2[base2] * nuc3[base3]
   }
+  expected_freqs <- expected_freqs / sum(expected_freqs)
+  
+  # Generate all bootstrap samples at once using rmultinom
+  random_counts_matrix <- rmultinom(n_bootstrap, total_codons, expected_freqs)
+  
+  # Calculate CDC for all bootstrap samples - vectorized
+  bootstrap_cdc <- apply(random_counts_matrix, 2, function(counts) {
+    random_observed <- counts / sum(counts)
+    names(random_observed) <- sense_codons
+    calc_cdc(expected, random_observed)
+  })
   
   # Calculate two-sided p-value
   p_lower <- sum(bootstrap_cdc <= cdc_value) / n_bootstrap
@@ -363,47 +387,70 @@ calculate_cdc_single <- function(codon_counts, genetic_code, n_bootstrap = 1000)
   )
 }
 
-#' Calculate CDC for all genes in codon usage data frame
+#' Calculate CDC for all genes in codon usage data frame (optimized with parallel processing)
 #'
 #' @param codon_usage_df Data frame with Gene_name column and codon count columns
 #' @param genetic_code Named vector mapping codons to amino acids
 #' @param n_bootstrap Number of bootstrap replicates per gene (default: 1000)
+#' @param n_cores Number of cores for parallel processing (default: detect available)
 #' @return Data frame with Gene_name, CDC, and p_value columns
-calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000) {
+calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000, n_cores = NULL) {
   
   cat(sprintf("\n=== Calculating CDC for %d genes ===\n", nrow(codon_usage_df)))
   cat(sprintf("Bootstrap replicates per gene: %d\n", n_bootstrap))
   cat(sprintf("Data structure: %s\n", class(codon_usage_df)[1]))
   cat(sprintf("Columns: %s\n", paste(head(names(codon_usage_df), 10), collapse = ", ")))
   
-  # Initialize results
-  results <- data.frame(
-    Gene_name = codon_usage_df$Gene_name,
-    CDC = numeric(nrow(codon_usage_df)),
-    p_value = numeric(nrow(codon_usage_df)),
-    stringsAsFactors = FALSE
-  )
+  # Setup parallel processing
+  if (is.null(n_cores)) {
+    n_cores <- parallel::detectCores() - 1
+  }
+  n_cores <- max(1, min(n_cores, parallel::detectCores()))
   
-  # Calculate CDC for each gene
-  for (i in seq_len(nrow(codon_usage_df))) {
-    if (i %% 1000 == 0) {
-      cat(sprintf("  Processed %d / %d genes (%.1f%%)\n", 
-                  i, nrow(codon_usage_df), 100 * i / nrow(codon_usage_df)))
-    }
+  cat(sprintf("Using %d cores for parallel processing\n", n_cores))
+  
+  # Convert to standard data.frame to avoid data.table issues in parallel
+  codon_usage_df <- as.data.frame(codon_usage_df)
+  
+  # Setup parallel backend
+  cl <- parallel::makeCluster(n_cores)
+  on.exit(parallel::stopCluster(cl))
+  
+  # Export necessary objects to cluster
+  parallel::clusterExport(cl, c("calculate_cdc_single", "get_positional_composition_from_counts",
+                                 "calc_expected_codon_usage", "calc_observed_codon_usage",
+                                 "calc_cdc", "generate_random_codon_counts",
+                                 "calc_expected_nucleotides", "get_sense_codons"),
+                          envir = environment())
+  
+  # Calculate CDC for each gene in parallel with progress
+  cat("Processing genes...\n")
+  start_time <- Sys.time()
+  
+  results_list <- parallel::parLapplyLB(cl, seq_len(nrow(codon_usage_df)), function(i) {
+    # Progress reporting handled by main thread, not workers
     
     # Extract codon counts for this gene
-    # Convert single row to named vector to avoid data.table issues
     gene_counts <- codon_usage_df[i, , drop = FALSE]
     
     # Calculate CDC
     cdc_result <- calculate_cdc_single(gene_counts, genetic_code, n_bootstrap)
     
-    # Store results
-    results$CDC[i] <- cdc_result$CDC
-    results$p_value[i] <- cdc_result$p_value
-  }
+    # Return just the essentials
+    list(CDC = cdc_result$CDC, p_value = cdc_result$p_value)
+  })
   
-  cat("CDC calculation complete!\n")
+  # Combine results
+  results <- data.frame(
+    Gene_name = codon_usage_df$Gene_name,
+    CDC = sapply(results_list, function(x) x$CDC),
+    p_value = sapply(results_list, function(x) x$p_value),
+    stringsAsFactors = FALSE
+  )
+  
+  elapsed_time <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+  cat(sprintf("CDC calculation complete in %.1f seconds (%.2f genes/sec)!\n", 
+              elapsed_time, nrow(codon_usage_df) / elapsed_time))
   
   # Summary statistics
   cat("\n=== CDC Summary Statistics ===\n")
@@ -455,8 +502,9 @@ plot_cdc_bootstrap <- function(cdc_result) {
 #' @param genetic_code Named vector from main analysis
 #' @param expression_data Optional: data frame with Gene_name and expression info
 #' @param n_bootstrap Number of bootstrap replicates (default: 100 for speed)
+#' @param n_cores Number of cores for parallel processing (default: auto-detect)
 #' @return Data frame with CDC results, optionally merged with expression data
-integrate_cdc_analysis <- function(codon_usage, genetic_code, expression_data = NULL, n_bootstrap = 100) {
+integrate_cdc_analysis <- function(codon_usage, genetic_code, expression_data = NULL, n_bootstrap = 100, n_cores = NULL) {
   
   cat("\n=== Integrating CDC Analysis with Main Pipeline ===\n")
   
@@ -467,7 +515,7 @@ integrate_cdc_analysis <- function(codon_usage, genetic_code, expression_data = 
   }
   
   # Calculate CDC for all genes
-  cdc_results <- calculate_cdc_all(codon_usage, genetic_code, n_bootstrap)
+  cdc_results <- calculate_cdc_all(codon_usage, genetic_code, n_bootstrap, n_cores)
   
   # Merge with expression data if provided
   if (!is.null(expression_data)) {

@@ -905,4 +905,7 @@ message("tRNA correlation analysis complete!")
 
 # Full integration with your pipeline
 cdc_results <- integrate_cdc_analysis(codon_usage, genetic_code_dna_long, 
-                                      exp_enc_data)
+                                      exp_enc_data, n_bootstrap = 10000,
+                                      n_cores = 10)
+
+save.image('Env')
