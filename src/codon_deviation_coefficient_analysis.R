@@ -416,11 +416,12 @@ calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000, 
   cl <- parallel::makeCluster(n_cores)
   on.exit(parallel::stopCluster(cl))
   
-  # Export necessary objects to cluster
+  # Export necessary objects and data to cluster
   parallel::clusterExport(cl, c("calculate_cdc_single", "get_positional_composition_from_counts",
                                  "calc_expected_codon_usage", "calc_observed_codon_usage",
                                  "calc_cdc", "generate_random_codon_counts",
-                                 "calc_expected_nucleotides", "get_sense_codons"),
+                                 "calc_expected_nucleotides", "get_sense_codons",
+                                 "genetic_code"),
                           envir = environment())
   
   # Calculate CDC for each gene in parallel with progress
@@ -448,6 +449,9 @@ calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000, 
     stringsAsFactors = FALSE
   )
   
+  # Apply FDR correction for multiple testing
+  results$p_adj <- p.adjust(results$p_value, method = "BH")
+  
   elapsed_time <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
   cat(sprintf("CDC calculation complete in %.1f seconds (%.2f genes/sec)!\n", 
               elapsed_time, nrow(codon_usage_df) / elapsed_time))
@@ -459,11 +463,15 @@ calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000, 
   cat(sprintf("SD CDC: %.4f\n", sd(results$CDC, na.rm = TRUE)))
   cat(sprintf("Range: %.4f - %.4f\n", min(results$CDC, na.rm = TRUE), max(results$CDC, na.rm = TRUE)))
   
-  # Significance summary
-  sig_count <- sum(results$p_value < 0.05, na.rm = TRUE)
-  cat(sprintf("\nSignificant CDC values (p < 0.05): %d / %d (%.1f%%)\n", 
-              sig_count, sum(!is.na(results$p_value)), 
-              100 * sig_count / sum(!is.na(results$p_value))))
+  # Significance summary - uncorrected and FDR-corrected
+  sig_count_raw <- sum(results$p_value < 0.05, na.rm = TRUE)
+  sig_count_fdr <- sum(results$p_adj < 0.05, na.rm = TRUE)
+  n_valid <- sum(!is.na(results$p_value))
+  
+  cat(sprintf("\nSignificant CDC values (uncorrected p < 0.05): %d / %d (%.1f%%)\n", 
+              sig_count_raw, n_valid, 100 * sig_count_raw / n_valid))
+  cat(sprintf("Significant CDC values (FDR-adjusted q < 0.05): %d / %d (%.1f%%)\n", 
+              sig_count_fdr, n_valid, 100 * sig_count_fdr / n_valid))
   
   return(results)
 }
