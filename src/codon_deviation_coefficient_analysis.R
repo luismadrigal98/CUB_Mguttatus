@@ -538,8 +538,9 @@ integrate_cdc_analysis <- function(codon_usage, genetic_code, expression_data = 
 #' @param codon_usage Data frame with codon counts
 #' @param genetic_code Named vector mapping codons to amino acids
 #' @param n_genes Number of genes to analyze (for testing)
+#' @param n_cores Number of cores for parallel processing (default: auto-detect)
 #' @return Data frame with CDC results for subset of genes
-quick_cdc_test <- function(codon_usage, genetic_code, n_genes = 100) {
+quick_cdc_test <- function(codon_usage, genetic_code, n_genes = 100, n_cores = NULL) {
   
   cat(sprintf("\n=== Quick CDC Test (%d genes, 50 bootstrap replicates each) ===\n", n_genes))
   
@@ -552,7 +553,7 @@ quick_cdc_test <- function(codon_usage, genetic_code, n_genes = 100) {
   }
   
   # Calculate CDC with reduced bootstrap
-  cdc_results <- calculate_cdc_all(codon_subset, genetic_code, n_bootstrap = 50)
+  cdc_results <- calculate_cdc_all(codon_subset, genetic_code, n_bootstrap = 50, n_cores = n_cores)
   
   return(cdc_results)
 }
