@@ -20,7 +20,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'stringi', 'foreach', 'doParallel',
                         'doFuture', 'ggplot2', 'grid', 'gridExtra',
                         'ggseqlogo', 'FactoMineR',
-                        'factoextra', 'dplyr')
+                        'factoextra', 'dplyr', 'GenomicFeatures')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -881,23 +881,117 @@ ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
 ## xx) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
 
-# For this analysis, we need to search the expression profiles for the tRNAs ...
+cat("\n")
+cat("╔══════════════════════════════════════════════════════════════════╗\n")
+cat("║  tRNA Abundance and Codon Usage Correlation Analysis            ║\n")
+cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
 
-message("Analyzing correlation between codon usage and tRNA abundance...")
+# Load tRNA correlation functions
+source("./src/tRNA_codon_correlation.R")
+source("./src/get_codon_supply_map.R")
 
-# Perform tRNA-codon correlation analysis using filtered tRNA data and genes
-# with a ENC < 0.35
+# Analysis 1: By tRNA gene copy number (traditional approach)
+cat("=== Analysis 1: tRNA Gene Copy Number ===\n")
+cat("Analyzing correlation using tRNA gene counts (traditional approach)\n\n")
 
-tRNA_correlation_results <- tRNA_codon_correlation(
+tRNA_copynumber_results <- tRNA_codon_correlation(
   codon_counts = codon_usage,
   tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
   genetic_code = genetic_code_dna_long,
-  output_dir = "./results/tRNA_analysis",
+  output_dir = "./results/tRNA_analysis_copynumber",
   test_method = "spearman",
   mode = "by.copy.number"
 )
 
-message("tRNA correlation analysis complete!")
+cat("\n✓ tRNA copy number correlation analysis complete!\n")
+
+# Analysis 2: By tRNA expression levels (all genes)
+cat("\n=== Analysis 2: tRNA Expression Levels (All Genes) ===\n")
+cat("Analyzing correlation using tRNA gene expression from RNA-seq\n\n")
+
+# Prepare expression data
+expression_df <- exp_enc_data %>%
+  select(Gene_name, Expression = High_exp)
+
+tRNA_expression_all_results <- tRNA_codon_correlation(
+  codon_counts = codon_usage,
+  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
+  genetic_code = genetic_code_dna_long,
+  output_dir = "./results/tRNA_analysis_expression_all",
+  test_method = "spearman",
+  mode = "by.expression",
+  ann = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
+  expression_data = expression_df
+)
+
+cat("\n✓ tRNA expression correlation analysis (all genes) complete!\n")
+
+# Analysis 3: By tRNA expression levels (top 5% expressed genes only)
+cat("\n=== Analysis 3: tRNA Expression Levels (Top 5% Genes) ===\n")
+cat("Analyzing correlation for highly expressed genes only\n\n")
+
+# Filter to top 5% genes
+top5_threshold <- quantile(exp_enc_data$High_exp, probs = 0.95, na.rm = TRUE)
+top5_genes <- exp_enc_data %>%
+  filter(High_exp >= top5_threshold) %>%
+  pull(Gene_name)
+
+codon_usage_top5 <- codon_usage %>%
+  filter(Gene_name %in% top5_genes)
+
+cat(sprintf("Analyzing %d genes in top 5%% (expression >= %.2f)\n", 
+            nrow(codon_usage_top5), top5_threshold))
+
+tRNA_expression_top5_results <- tRNA_codon_correlation(
+  codon_counts = codon_usage_top5,
+  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
+  genetic_code = genetic_code_dna_long,
+  output_dir = "./results/tRNA_analysis_expression_top5",
+  test_method = "spearman",
+  mode = "by.expression",
+  ann = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
+  expression_data = expression_df
+)
+
+cat("\n✓ tRNA expression correlation analysis (top 5%) complete!\n")
+
+# Summary of all three analyses
+cat("\n")
+cat("╔══════════════════════════════════════════════════════════════════╗\n")
+cat("║  Summary of tRNA-Codon Correlation Results                      ║\n")
+cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
+
+cat("1. tRNA Gene Copy Number (all genes):\n")
+if (!is.null(tRNA_copynumber_results$correlation_results$overall)) {
+  cor_val <- tRNA_copynumber_results$correlation_results$overall$estimate
+  p_val <- tRNA_copynumber_results$correlation_results$overall$p.value
+  cat(sprintf("   Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
+} else {
+  cat("   No correlation computed\n")
+}
+
+cat("\n2. tRNA Expression (all genes):\n")
+if (!is.null(tRNA_expression_all_results$correlation_results$overall)) {
+  cor_val <- tRNA_expression_all_results$correlation_results$overall$estimate
+  p_val <- tRNA_expression_all_results$correlation_results$overall$p.value
+  cat(sprintf("   Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
+} else {
+  cat("   No correlation computed\n")
+}
+
+cat("\n3. tRNA Expression (top 5% genes):\n")
+if (!is.null(tRNA_expression_top5_results$correlation_results$overall)) {
+  cor_val <- tRNA_expression_top5_results$correlation_results$overall$estimate
+  p_val <- tRNA_expression_top5_results$correlation_results$overall$p.value
+  cat(sprintf("   Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
+} else {
+  cat("   No correlation computed\n")
+}
+
+cat("\nResults saved to:\n")
+cat("  - ./results/tRNA_analysis_copynumber/\n")
+cat("  - ./results/tRNA_analysis_expression_all/\n")
+cat("  - ./results/tRNA_analysis_expression_top5/\n\n")
 
 ## *****************************************************************************
 ## xx) CDC-based analysis ----
@@ -907,5 +1001,108 @@ message("tRNA correlation analysis complete!")
 cdc_results <- integrate_cdc_analysis(codon_usage, genetic_code_dna_long, 
                                       exp_enc_data, n_bootstrap = 10000,
                                       n_cores = 10)
+
+## *****************************************************************************
+## xx) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
+## _____________________________________________________________________________
+
+cat("\n=== SELECTION COEFFICIENT ANALYSIS ===\n")
+cat("Estimating population-scaled selection (S = 4Nes) using Hershberg & Petrov model\n\n")
+
+# Load selection coefficient functions
+source("./src/selection_coefficient_analysis.R")
+
+# Get preferred codons from CAI analysis (w = 1.0)
+preferred_codons <- cai_results$w_table |>
+  filter(relative_adaptiveness == 1.0, amino_acid != "STOP") |>
+  pull(codon)
+
+cat(sprintf("Using %d optimal codons as 'preferred' codons:\n", length(preferred_codons)))
+cat(paste(preferred_codons, collapse = ", "), "\n")
+
+# Prepare expression data (using High_exp from bud tissue as primary metric)
+expression_df <- exp_enc_data |>
+  select(Gene_name, Expression = High_exp)
+
+# Calculate selection coefficients for all genes
+selection_results <- calculate_selection_coefficients(
+  codon_usage = codon_usage,
+  expression_data = expression_df,
+  preferred_codons = preferred_codons,
+  genetic_code = genetic_code_dna_long,
+  low_expr_quantile = 0.10  # Use bottom 10% to estimate mutation bias
+)
+
+# Sensitivity analysis: How does s vary with different Ne values?
+# Literature estimates for M. guttatus Ne: ~200,000 - 500,000
+Ne_sensitivity <- analyze_Ne_sensitivity(
+  selection_results,
+  Ne_values = c(1e5, 2e5, 3e5, 5e5, 1e6)
+)
+
+# Create visualizations
+cat("\nGenerating plots...\n")
+plot_S_vs_expression(selection_results, "./results/S_vs_expression.pdf")
+plot_S_distribution(selection_results, "./results/S_distribution.pdf")
+
+# Compare S between expression groups
+selection_with_groups <- selection_results |>
+  left_join(exp_enc_data |> select(Gene_name, Expression_Group), by = "Gene_name")
+
+cat("\n=== S by Expression Group ===\n")
+S_by_group <- selection_with_groups |>
+  group_by(Expression_Group) |>
+  summarize(
+    n = n(),
+    mean_S = mean(S, na.rm = TRUE),
+    median_S = median(S, na.rm = TRUE),
+    sd_S = sd(S, na.rm = TRUE)
+  )
+print(S_by_group)
+
+# Statistical test
+kw_S <- kruskal.test(S ~ Expression_Group, data = selection_with_groups)
+cat("\nKruskal-Wallis test for S across expression groups:\n")
+print(kw_S)
+
+# Key biological interpretation
+cat("\n=== BIOLOGICAL INTERPRETATION ===\n")
+M <- attr(selection_results, "mutation_bias")
+cat(sprintf("Mutation bias (M = μ_p/μ_u): %.4f\n", M))
+if (M > 1) {
+  cat("  → Mutation pressure OPPOSES preferred codons (selection maintains them)\n")
+} else {
+  cat("  → Mutation pressure FAVORS preferred codons (selection reinforced by mutation)\n")
+}
+
+median_S <- median(selection_results$S, na.rm = TRUE)
+cat(sprintf("\nMedian S = 4Nes: %.4f\n", median_S))
+
+# For Ne = 300,000 (midpoint estimate)
+Ne_midpoint <- 3e5
+s_midpoint <- calculate_s_from_S(median_S, Ne_midpoint)
+cat(sprintf("\nAssuming Ne = %s:\n", format(Ne_midpoint, scientific = FALSE)))
+cat(sprintf("  Median s = %.2e\n", s_midpoint))
+cat(sprintf("  s·Ne = %.2f\n", s_midpoint * Ne_midpoint))
+
+if (abs(s_midpoint * Ne_midpoint) < 2) {
+  cat("\n✓ This confirms WEAK SELECTION regime (s·Ne ~ 1)\n")
+  cat("  → Selection and drift are of comparable magnitude\n")
+  cat("  → Consistent with intermediate codon bias patterns\n")
+} else {
+  cat("\n  Selection is relatively strong (s·Ne >> 1)\n")
+}
+
+# Save results
+write.table(selection_results, 
+            "./results/selection_coefficients.csv",
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.table(Ne_sensitivity,
+            "./results/Ne_sensitivity_analysis.csv", 
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+cat("\n✓ Selection coefficient analysis complete!\n")
+cat("  Results saved to ./results/selection_coefficients.csv\n")
 
 save.image('Env')

@@ -1,3 +1,149 @@
+# Helper Functions for tRNA Expression Analysis
+
+map_tRNA_to_geneIDs <- function(trna_data, gff3_file) {
+  #' Map tRNA coordinates to Gene IDs from GFF3 annotation
+  #' 
+  #' @param trna_data Data table with tRNA coordinates
+  #' @param gff3_file Path to GFF3 file
+  #' @return Data table with Gene_ID column added
+  
+  require(data.table)
+  
+  cat(sprintf("  Loading %d tRNA predictions\n", nrow(trna_data)))
+  
+  # Read GFF3 - standard 9 columns, skip comment lines
+  gff3 <- fread(cmd = paste("grep -v '^#'", gff3_file), 
+                sep = "\t", header = FALSE)
+  
+  # Set standard GFF3 column names
+  setnames(gff3, c("Chr", "source", "type", "start", "end", "score", "strand", "phase", "attributes"))
+  
+  # Filter for gene features only
+  gff3_genes <- gff3[type == "gene"]
+  
+  # Extract gene ID from attributes column
+  gff3_genes[, Gene_ID := sub("ID=([^;]+).*", "\\1", attributes)]
+  
+  # Convert coordinates to numeric
+  gff3_genes[, Start := as.numeric(start)]
+  gff3_genes[, End := as.numeric(end)]
+  
+  cat(sprintf("  Loaded %d gene annotations\n", nrow(gff3_genes)))
+  
+  # Add Gene_ID column
+  trna_data[, Gene_ID := NA_character_]
+  
+  # Find overlaps
+  for (i in seq_len(nrow(trna_data))) {
+    chr <- trna_data$Sequence_name[i]
+    start <- min(trna_data$tRNA_start[i], trna_data$tRNA_end[i])
+    end <- max(trna_data$tRNA_start[i], trna_data$tRNA_end[i])
+    
+    overlaps <- gff3_genes[Chr == chr & Start <= end & End >= start]
+    
+    if (nrow(overlaps) > 0) {
+      trna_data$Gene_ID[i] <- overlaps$Gene_ID[1]
+    }
+  }
+  
+  matched <- sum(!is.na(trna_data$Gene_ID))
+  cat(sprintf("  Matched %d / %d tRNAs to gene IDs (%.1f%%)\n", 
+              matched, nrow(trna_data), 100 * matched / nrow(trna_data)))
+  
+  return(trna_data)
+}
+
+get_tRNA_expression <- function(trna_with_ids, expression_data) {
+  #' Get tRNA expression levels from expression data
+  #'
+  #' @param trna_with_ids Data table with Gene_ID column
+  #' @param expression_data Data frame with Gene_name and Expression
+  #' @return Data table with Expression column added
+  
+  # Clean Gene_ID formatting
+  trna_with_ids[, Gene_ID_clean := sub("\\.v2\\.1$", "", Gene_ID)]
+  expression_dt <- as.data.table(expression_data)
+  expression_dt[, Gene_name_clean := sub("\\.v2\\.1$", "", Gene_name)]
+  expression_dt[, Gene_name_clean := sub("\\.1$", "", Gene_name_clean)]
+  
+  # Merge
+  trna_expr <- merge(trna_with_ids, expression_dt, 
+                     by.x = "Gene_ID_clean", by.y = "Gene_name_clean",
+                     all.x = TRUE)
+  
+  with_expr <- sum(!is.na(trna_expr$Expression))
+  cat(sprintf("  Found expression for %d / %d tRNAs (%.1f%%)\n",
+              with_expr, nrow(trna_expr), 100 * with_expr / nrow(trna_expr)))
+  
+  if (with_expr > 0) {
+    cat(sprintf("  Expression range: %.2f - %.2f (mean: %.2f)\n",
+                min(trna_expr$Expression, na.rm = TRUE),
+                max(trna_expr$Expression, na.rm = TRUE),
+                mean(trna_expr$Expression, na.rm = TRUE)))
+  }
+  
+  return(trna_expr)
+}
+
+calculate_codon_supply_from_expression <- function(trna_expr) {
+  #' Calculate codon supply from tRNA expression levels
+  #'
+  #' @param trna_expr Data table with Anticodon and Expression columns
+  #' @return Data table with Codon and tRNA_abundance columns
+  
+  require(data.table)
+  
+  # Filter tRNAs with expression data
+  trna_with_expr <- trna_expr[!is.na(Expression)]
+  
+  # Standard wobble rules
+  wobble_rules <- list(
+    "G" = c("T", "C"),
+    "C" = c("G"),
+    "A" = c("T"),
+    "T" = c("A", "G")
+  )
+  
+  complement <- c("A" = "T", "T" = "A", "G" = "C", "C" = "G")
+  
+  # Map anticodons to codons with expression weights
+  codon_expr_list <- list()
+  
+  for (i in seq_len(nrow(trna_with_expr))) {
+    anticodon <- trna_with_expr$Anticodon[i]
+    expr <- trna_with_expr$Expression[i]
+    
+    ac_1 <- substr(anticodon, 1, 1)
+    ac_2 <- substr(anticodon, 2, 2)
+    ac_3 <- substr(anticodon, 3, 3)
+    
+    codon_1 <- complement[ac_3]
+    codon_2 <- complement[ac_2]
+    codon_3_list <- wobble_rules[[ac_1]]
+    
+    if (!is.null(codon_3_list)) {
+      for (c3 in codon_3_list) {
+        codon <- paste0(codon_1, codon_2, c3)
+        codon_expr_list[[length(codon_expr_list) + 1]] <- data.table(
+          Codon = codon,
+          tRNA_expr = expr
+        )
+      }
+    }
+  }
+  
+  codon_expr_dt <- rbindlist(codon_expr_list)
+  
+  # Sum expression for codons recognized by multiple tRNAs
+  codon_supply <- codon_expr_dt[, .(tRNA_abundance = sum(tRNA_expr)), by = Codon]
+  
+  cat(sprintf("  Calculated expression for %d codons\n", nrow(codon_supply)))
+  
+  return(codon_supply)
+}
+
+# Main Function
+
 tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
                                    output_dir = "./results", 
                                    test_method = "spearman",
@@ -9,19 +155,20 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   #' 
   #' @description Performs statistical tests to examine if codon usage bias
   #' can be explained by tRNA gene abundance. Calculates correlations between
-  #' codon usage frequencies and tRNA gene copy numbers.
+  #' codon usage frequencies and tRNA gene copy numbers (mode="by.copy.number")
+  #' or tRNA gene expression levels (mode="by.expression").
   #' 
   #' @param codon_counts Data table with codon counts per gene
   #' @param tRNA_file Path to filtered tRNA annotation file (tab-separated)
   #' @param genetic_code Named vector mapping codons to amino acids
   #' @param output_dir Directory for output files
   #' @param test_method Correlation method: "spearman", "pearson", or "kendall"
-  #' @param mode Whether to perform the correlation analysis relative to the number
-  #' of copies of a given transcript or by expression profiles of the genes that
-  #' code for the tRNA. In such cases, an annotation file and expression data
-  #' must be provided.
-  #' @param ann Data table with gene annotations (required if mode is "by.expression")
-  #' @param expression_data Data table with gene expression values.
+  #' @param mode "by.copy.number" (uses tRNA gene counts) or "by.expression" 
+  #' (uses tRNA expression levels from RNA-seq)
+  #' @param ann Path to GFF3 file (required if mode is "by.expression") for 
+  #' mapping tRNA coordinates to gene IDs
+  #' @param expression_data Data frame with Gene_name and Expression columns
+  #' (required if mode is "by.expression")
   #' 
   #' @return List with correlation results, plots, and statistics
   #' ___________________________________________________________________________
@@ -29,12 +176,39 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   require(data.table)
   require(ggplot2)
   
-  # Read tRNA data and get GCN for each anticodon
+  # Read tRNA data
   trna_data <- fread(tRNA_file)
-  trna_counts <- trna_data[, .(tRNA_count = .N), by = Anticodon]
   
-  # Calculate codon supply based on wobble rules
-  codon_supply <- get_codon_supply_map(trna_counts)
+  # Determine tRNA abundance metric based on mode
+  if (mode == "by.expression") {
+    cat("\n=== Using tRNA Expression Levels ===\n")
+    
+    # Check required inputs
+    if (is.null(ann) || is.null(expression_data)) {
+      stop("Mode 'by.expression' requires both 'ann' (GFF3 path) and 'expression_data'")
+    }
+    
+    # Map tRNA coordinates to Gene IDs from GFF3
+    cat("Mapping tRNA coordinates to gene IDs...\n")
+    trna_with_ids <- map_tRNA_to_geneIDs(trna_data, ann)
+    
+    # Get tRNA expression levels
+    cat("Extracting tRNA expression levels...\n")
+    trna_expr <- get_tRNA_expression(trna_with_ids, expression_data)
+    
+    # Calculate codon supply based on expression
+    codon_supply <- calculate_codon_supply_from_expression(trna_expr)
+    
+  } else {
+    cat("\n=== Using tRNA Gene Copy Numbers ===\n")
+    
+    # Original behavior: count tRNA genes per anticodon
+    trna_counts <- trna_data[, .(tRNA_count = .N), by = Anticodon]
+    
+    # Calculate codon supply based on wobble rules
+    codon_supply <- get_codon_supply_map(trna_counts)
+    setnames(codon_supply, "tRNA_supply", "tRNA_abundance")
+  }
   
   # Calculate genome-wide codon usage (from the input subset)
   codon_cols <- setdiff(names(codon_counts), "Gene_name")
@@ -53,10 +227,15 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
                                    analysis_data$AA != "Trp" &
                                    analysis_data$AA != "Met", ]
   
-  # Merge with tRNA supply data
-  analysis_data <- merge(analysis_data, codon_supply[, .(Codon, tRNA_supply)], 
+  # Merge with tRNA abundance data (either from expression or copy number)
+  abundance_col <- if (mode == "by.expression") "tRNA_abundance" else "tRNA_abundance"
+  merge_cols <- c("Codon", abundance_col)
+  analysis_data <- merge(analysis_data, codon_supply[, ..merge_cols], 
                          by = "Codon", all.x = TRUE)
-  analysis_data$tRNA_supply[is.na(analysis_data$tRNA_supply)] <- 0
+  analysis_data[[abundance_col]][is.na(analysis_data[[abundance_col]])] <- 0
+  
+  # Rename for consistency
+  names(analysis_data)[names(analysis_data) == abundance_col] <- "tRNA_supply"
   
   # Calculate relative frequencies (RSCU)
   analysis_dt <- as.data.table(analysis_data)
