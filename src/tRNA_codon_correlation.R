@@ -96,15 +96,18 @@ calculate_codon_supply_from_expression <- function(trna_expr) {
   # Filter tRNAs with expression data
   trna_with_expr <- trna_expr[!is.na(Expression)]
   
-  # Standard wobble rules
+  # Extended wobble rules including inosine (I) modifications
+  # Inosine at wobble position can pair with U, C, or A
+  # A at wobble is often modified to I in eukaryotes
   wobble_rules <- list(
-    "G" = c("T", "C"),
-    "C" = c("G"),
-    "A" = c("T"),
-    "T" = c("A", "G")
+    "G" = c("T", "C"),           # G pairs with U/C
+    "C" = c("G"),                # C pairs with G only
+    "A" = c("T", "C", "A"),      # A (often modified to I) pairs with U/C/A
+    "T" = c("A", "G"),           # U pairs with A/G
+    "I" = c("T", "C", "A")       # Inosine pairs with U/C/A
   )
   
-  complement <- c("A" = "T", "T" = "A", "G" = "C", "C" = "G")
+  complement <- c("A" = "T", "T" = "A", "G" = "C", "C" = "G", "I" = "I")
   
   # Map anticodons to codons with expression weights
   codon_expr_list <- list()
@@ -141,6 +144,150 @@ calculate_codon_supply_from_expression <- function(trna_expr) {
   
   return(codon_supply)
 }
+
+#' Calculate tRNA Adaptation Index (tAI) for genes
+#'
+#' @param codon_counts Data table with gene codon counts
+#' @param codon_supply Data table with Codon and tRNA_abundance columns
+#' @param genetic_code Named vector mapping codons to amino acids
+#' @return Data table with Gene_name and tAI
+calculate_tAI <- function(codon_counts, codon_supply, genetic_code) {
+  #' tAI = geometric mean of tRNA abundances weighted by codon usage
+  #' Based on dos Reis et al. 2004, Nucleic Acids Research
+  
+  require(data.table)
+  
+  cat("\n=== Calculating tRNA Adaptation Index (tAI) ===\n")
+  
+  # Create tRNA weights (relative abundance)
+  # Add pseudocount to avoid zeros
+  codon_weights <- codon_supply
+  codon_weights$tRNA_weight <- codon_weights$tRNA_abundance + 1
+  
+  # Normalize weights (0-1 scale)
+  max_weight <- max(codon_weights$tRNA_weight, na.rm = TRUE)
+  codon_weights$tRNA_weight <- codon_weights$tRNA_weight / max_weight
+  
+  # Create lookup table
+  weight_lookup <- setNames(codon_weights$tRNA_weight, codon_weights$Codon)
+  
+  # Calculate tAI for each gene
+  codon_cols <- setdiff(names(codon_counts), "Gene_name")
+  
+  tAI_results <- data.table(
+    Gene_name = codon_counts$Gene_name,
+    tAI = numeric(nrow(codon_counts))
+  )
+  
+  cat(sprintf("Calculating tAI for %d genes...\n", nrow(codon_counts)))
+  
+  for (i in seq_len(nrow(codon_counts))) {
+    gene_codons <- as.numeric(codon_counts[i, codon_cols, with = FALSE])
+    names(gene_codons) <- codon_cols
+    
+    # Get sense codons (exclude STOP, Met, Trp)
+    sense_codons <- names(genetic_code)[genetic_code != "STOP" & 
+                                         genetic_code != "Met" & 
+                                         genetic_code != "Trp"]
+    gene_codons <- gene_codons[names(gene_codons) %in% sense_codons]
+    
+    # Get used codons
+    used_codons <- names(gene_codons)[gene_codons > 0]
+    
+    if (length(used_codons) == 0) {
+      tAI_results$tAI[i] <- NA
+      next
+    }
+    
+    # Get weights for used codons
+    weights <- weight_lookup[used_codons]
+    counts <- gene_codons[used_codons]
+    
+    # Handle missing weights
+    weights[is.na(weights)] <- 0.01  # Small pseudocount
+    
+    # tAI = geometric mean weighted by codon counts
+    # log(tAI) = sum(n_i * log(w_i)) / sum(n_i)
+    log_tAI <- sum(counts * log(weights)) / sum(counts)
+    tAI_results$tAI[i] <- exp(log_tAI)
+  }
+  
+  cat(sprintf("tAI range: %.4f - %.4f (mean: %.4f)\n",
+              min(tAI_results$tAI, na.rm = TRUE),
+              max(tAI_results$tAI, na.rm = TRUE),
+              mean(tAI_results$tAI, na.rm = TRUE)))
+  
+  return(tAI_results)
+}
+
+
+#' Analyze tAI vs gene expression correlation
+#'
+#' @param tAI_results Data table from calculate_tAI()
+#' @param expression_data Data frame with Gene_name and Expression
+#' @param output_dir Directory for output files
+#' @return List with correlation results and plot
+analyze_tAI_expression <- function(tAI_results, expression_data, output_dir = "./results") {
+  
+  require(ggplot2)
+  require(data.table)
+  
+  cat("\n=== Analyzing tAI vs Gene Expression ===\n")
+  
+  # Merge tAI with expression
+  analysis_data <- merge(tAI_results, expression_data, by = "Gene_name")
+  analysis_data <- analysis_data[!is.na(tAI) & !is.na(Expression)]
+  
+  cat(sprintf("Analyzing %d genes with both tAI and expression\n", nrow(analysis_data)))
+  
+  # Log-transform expression for better correlation
+  analysis_data$log_Expression <- log10(analysis_data$Expression + 1)
+  
+  # Correlations
+  cor_pearson <- cor.test(analysis_data$tAI, analysis_data$log_Expression, method = "pearson")
+  cor_spearman <- cor.test(analysis_data$tAI, analysis_data$log_Expression, method = "spearman")
+  
+  cat(sprintf("Pearson r = %.4f (p = %.2e)\n", cor_pearson$estimate, cor_pearson$p.value))
+  cat(sprintf("Spearman ρ = %.4f (p = %.2e)\n", cor_spearman$estimate, cor_spearman$p.value))
+  
+  # Create plot
+  p <- ggplot(analysis_data, aes(x = tAI, y = log_Expression)) +
+    geom_hex(bins = 50) +
+    geom_smooth(method = "lm", color = "red", linewidth = 1.5, se = TRUE) +
+    scale_fill_viridis_c(option = "plasma") +
+    labs(
+      title = "tRNA Adaptation Index vs Gene Expression",
+      subtitle = sprintf("Pearson r = %.3f (p = %.2e), Spearman ρ = %.3f (p = %.2e)\n%d genes",
+                        cor_pearson$estimate, cor_pearson$p.value,
+                        cor_spearman$estimate, cor_spearman$p.value,
+                        nrow(analysis_data)),
+      x = "tRNA Adaptation Index (tAI)",
+      y = "log10(Expression + 1)",
+      fill = "Gene\nDensity"
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 10)
+    )
+  
+  # Save plot
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  ggsave(file.path(output_dir, "tAI_vs_expression.pdf"), p, width = 10, height = 8)
+  
+  # Save data
+  fwrite(analysis_data, file.path(output_dir, "tAI_expression_data.csv"))
+  
+  cat(sprintf("Results saved to %s\n", output_dir))
+  
+  return(list(
+    data = analysis_data,
+    pearson = cor_pearson,
+    spearman = cor_spearman,
+    plot = p
+  ))
+}
+
 
 # Main Function
 
@@ -375,18 +522,50 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   # Save analysis data
   fwrite(analysis_dt, file.path(output_dir, "tRNA_codon_analysis_data.csv"))
   
-  message("tRNA-codon correlation analysis complete!")
+  # Calculate tAI if expression data provided
+  tAI_results <- NULL
+  if (!is.null(expression_data) && mode == "by.expression") {
+    cat("\n")
+    tAI_results <- calculate_tAI(codon_counts, codon_supply, genetic_code)
+    
+    # Analyze tAI vs expression
+    tAI_analysis <- analyze_tAI_expression(tAI_results, expression_data, output_dir)
+  }
+  
+  # Extract significant per-AA correlations for summary
+  significant_aa <- NULL
+  if (length(aa_correlations) > 0 && nrow(aa_cor_data) > 0) {
+    significant_aa <- aa_cor_data[aa_cor_data$Significant, ]
+    if (nrow(significant_aa) > 0) {
+      cat(sprintf("\n%d amino acids show significant correlation (p < 0.05):\n", 
+                  nrow(significant_aa)))
+      for (i in 1:nrow(significant_aa)) {
+        cat(sprintf("  %s: ρ = %.3f (p = %.3f)\n", 
+                    significant_aa$AA[i], 
+                    significant_aa$Correlation[i],
+                    significant_aa$P_value[i]))
+      }
+    }
+  }
+  
+  message("\ntRNA-codon correlation analysis complete!")
   message(paste("Results saved to:", output_dir))
   
   # Return results
   result_list <- list(
     correlation_results = correlation_results,
     analysis_data = analysis_dt,
-    plots = list(overall = p1)
+    plots = list(overall = p1),
+    significant_amino_acids = significant_aa,
+    codon_supply = codon_supply
   )
   
   if (!is.null(p2)) result_list$plots$by_aa <- p2
   if (!is.null(p3)) result_list$plots$significant <- p3
+  if (!is.null(tAI_results)) {
+    result_list$tAI_results = tAI_results
+    result_list$tAI_analysis = tAI_analysis
+  }
   
   return(result_list)
 }

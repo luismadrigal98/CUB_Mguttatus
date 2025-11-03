@@ -6,13 +6,15 @@ get_codon_supply_map <- function(trna_counts)
   #' @return A data.table with 'Codon' and 'tRNA_supply'
   #' ___________________________________________________________________________
 
-  # Standard DNA-based wobble rules for anticodon 1st base -> codon 3rd base
+  # Extended wobble rules including inosine modifications
   # (Anticodon T = RNA U)
+  # A at wobble position is often deaminated to Inosine in eukaryotes
   wobble_rules <- list(
-    "G" = c("T", "C"),  # Anticodon G pairs with Codon T or C
-    "C" = c("G"),       # Anticodon C pairs with Codon G
-    "A" = c("T"),       # Anticodon A (often modified to I) pairs with T (U)
-    "T" = c("A", "G")   # Anticodon T (U) pairs with Codon A or G
+    "G" = c("T", "C"),      # Anticodon G pairs with Codon U/C
+    "C" = c("G"),           # Anticodon C pairs with Codon G only
+    "A" = c("T", "C", "A"), # Anticodon A (often modified to I) pairs with U/C/A
+    "T" = c("A", "G"),      # Anticodon U pairs with Codon A/G
+    "I" = c("T", "C", "A")  # Inosine pairs with U/C/A
   )
   
   # Standard complement for bases 2 and 3

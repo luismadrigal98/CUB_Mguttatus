@@ -47,6 +47,8 @@ genetic_code_dna_long <- c(
   "GGT"="Gly", "GGC"="Gly", "GGA"="Gly", "GGG"="Gly"
 )
 
+# Preferred codons in three additional model plants
+
 ## *****************************************************************************
 ## 3) Load the data ----
 ## _____________________________________________________________________________
@@ -911,7 +913,7 @@ cat("Analyzing correlation using tRNA gene expression from RNA-seq\n\n")
 
 # Prepare expression data
 expression_df <- exp_enc_data %>%
-  select(Gene_name, Expression = High_exp)
+  dplyr::select(Gene_name, Expression = High_exp)
 
 tRNA_expression_all_results <- tRNA_codon_correlation(
   codon_counts = codon_usage,
@@ -962,35 +964,63 @@ cat("║  Summary of tRNA-Codon Correlation Results                      ║\n")
 cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
 
 cat("1. tRNA Gene Copy Number (all genes):\n")
+cat("   RSCU vs tRNA Supply:\n")
 if (!is.null(tRNA_copynumber_results$correlation_results$overall)) {
   cor_val <- tRNA_copynumber_results$correlation_results$overall$estimate
   p_val <- tRNA_copynumber_results$correlation_results$overall$p.value
-  cat(sprintf("   Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
+  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
+  if (!is.null(tRNA_copynumber_results$significant_amino_acids) && 
+      nrow(tRNA_copynumber_results$significant_amino_acids) > 0) {
+    cat(sprintf("     %d amino acids significant (p < 0.05)\n", 
+                nrow(tRNA_copynumber_results$significant_amino_acids)))
+  }
 } else {
-  cat("   No correlation computed\n")
+  cat("     No correlation computed\n")
 }
 
 cat("\n2. tRNA Expression (all genes):\n")
+cat("   RSCU vs tRNA Expression:\n")
 if (!is.null(tRNA_expression_all_results$correlation_results$overall)) {
   cor_val <- tRNA_expression_all_results$correlation_results$overall$estimate
   p_val <- tRNA_expression_all_results$correlation_results$overall$p.value
-  cat(sprintf("   Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
-} else {
-  cat("   No correlation computed\n")
+  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
+  if (!is.null(tRNA_expression_all_results$significant_amino_acids) && 
+      nrow(tRNA_expression_all_results$significant_amino_acids) > 0) {
+    cat(sprintf("     %d amino acids significant (p < 0.05)\n", 
+                nrow(tRNA_expression_all_results$significant_amino_acids)))
+  }
+}
+if (!is.null(tRNA_expression_all_results$tAI_analysis)) {
+  cat("   tAI vs Gene Expression:\n")
+  cor_val <- tRNA_expression_all_results$tAI_analysis$spearman$estimate
+  p_val <- tRNA_expression_all_results$tAI_analysis$spearman$p.value
+  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
 }
 
 cat("\n3. tRNA Expression (top 5% genes):\n")
+cat("   RSCU vs tRNA Expression:\n")
 if (!is.null(tRNA_expression_top5_results$correlation_results$overall)) {
   cor_val <- tRNA_expression_top5_results$correlation_results$overall$estimate
   p_val <- tRNA_expression_top5_results$correlation_results$overall$p.value
-  cat(sprintf("   Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
-} else {
-  cat("   No correlation computed\n")
+  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
+  if (!is.null(tRNA_expression_top5_results$significant_amino_acids) && 
+      nrow(tRNA_expression_top5_results$significant_amino_acids) > 0) {
+    cat(sprintf("     %d amino acids significant (p < 0.05)\n", 
+                nrow(tRNA_expression_top5_results$significant_amino_acids)))
+  }
+}
+if (!is.null(tRNA_expression_top5_results$tAI_analysis)) {
+  cat("   tAI vs Gene Expression:\n")
+  cor_val <- tRNA_expression_top5_results$tAI_analysis$spearman$estimate
+  p_val <- tRNA_expression_top5_results$tAI_analysis$spearman$p.value
+  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
 }
 
 cat("\nResults saved to:\n")
 cat("  - ./results/tRNA_analysis_copynumber/\n")
 cat("  - ./results/tRNA_analysis_expression_all/\n")
+cat("    • tRNA_codon_correlations.csv (per-AA correlations)\n")
+cat("    • tAI_vs_expression.pdf (gene-level adaptation)\n")
 cat("  - ./results/tRNA_analysis_expression_top5/\n\n")
 
 ## *****************************************************************************

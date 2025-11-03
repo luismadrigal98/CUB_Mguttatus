@@ -1,0 +1,22 @@
+Group,Amino_Acid,Arabidopsis_thaliana,Populus_trichocarpa,Physcomitrella_patens,Synonymous_Codons
+Non-polar aliphatic,Met,AUG,AUG,AUG,1
+Non-polar aliphatic,Ile,AUU,AUU,AUC,3
+Non-polar aliphatic,Val,GUU,GUU,GUG,4
+Non-polar aliphatic,Ala,GCU,GCU,GCU,4
+Non-polar aliphatic,Gly,GGA,GGA,GGA,4
+Non-polar aliphatic,Leu,CUU,CUU,UUG,6
+Non-polar aromatic,Trp,UGG,UGG,UGG,1
+Non-polar aromatic,Phe,UUU,UUU,UUC,2
+Non-polar aromatic,Tyr,UAU,UAU,UAC,2
+Polar acidic,Asp,GAU,GAU,GAU,2
+Polar acidic,Glu,GAA,GAA,GAG,2
+Polar basic,His,CAU,CAU,CAC,2
+Polar basic,Lys,AAG,AAA,AAG,2
+Polar basic,Arg,AGA,AGA,AGG,6
+Polar neutral,Gln,CAA,CAA,CAG,2
+Polar neutral,Asn,AAU,AAU,AAC,2
+Polar neutral,Cys,UGU,UGU,UGC,2
+Polar neutral,Pro,CCU,CCA,CCU,4
+Polar neutral,Thr,ACU,ACA,ACU,4
+Polar neutral,Ser,UCU,UCU,AGC,6
+Stop,STOP CODON,UGA,UGA,"UGA/UAG",3
