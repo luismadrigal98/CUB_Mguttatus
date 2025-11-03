@@ -177,11 +177,6 @@ gene_lengths <- codon_usage |>
 exp_enc_data <- exp_enc_data |>
   left_join(gene_lengths, by = "Gene_name")
 
-cat(sprintf("Added length for %d genes\n", sum(!is.na(exp_enc_data$CDS_length_nt))))
-cat(sprintf("Mean CDS length: %.0f nt (%.0f codons)\n", 
-            mean(exp_enc_data$CDS_length_nt, na.rm = TRUE),
-            mean(exp_enc_data$Total_Codons, na.rm = TRUE)))
-
 log2exp <- log2(exp_enc_data$High_exp + 1)
 cor(x = exp_enc_data$ENC, y = log2exp)
 plot(exp_enc_data$ENC, log2exp)
@@ -499,10 +494,8 @@ create_biplot(codon_usage_CA,
              output_file = "./results/CA_biplot_extremes_only.pdf")
 
 # Statistical test for CA dimension separation
-cat("\n=== MANOVA Test: CA Dimensions by Expression Group (Extremes) ===\n")
 ca_manova <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ Expression_Group, 
                     data = codon_usage_CA_coord_extremes)
-print(summary(ca_manova))
 
 # Univariate tests for each dimension
 cat("\n=== Univariate Tests for Each CA Dimension ===\n")
@@ -647,15 +640,6 @@ pca_loadings <- analyze_codon_loadings(
   genetic_code = genetic_code_dna_long,
   output_file = "./results/PCA_codon_loadings_AT_vs_GC.pdf"
 )
-
-cat("\n=== Interpretation ===\n")
-cat("If AT-ending and GC-ending codons load in opposite directions:\n")
-cat("  → This indicates MUTATIONAL BIAS is the dominant force\n")
-cat("  → Genome-wide GC content variation drives the main axis\n")
-cat("\nIf selection for expression is important, look for:\n")
-cat("  → Small but significant separation in extremes (Top 5% vs Bottom 5%)\n")
-cat("  → Lower ENC in highly expressed genes (already observed!)\n")
-cat("  → Specific codons preferred in highly expressed genes\n")
 
 ## *****************************************************************************
 ## 10) Calculate Codon Adaptation Index (CAI) ----
@@ -842,11 +826,6 @@ ggsave("./results/CAI_by_expression_group.pdf", p_cai_boxplot, width = 8, height
 cat("\nBoxplot saved: ./results/CAI_by_expression_group.pdf\n")
 
 # Correlation between CAI and other metrics
-cat("\n=== Correlations ===\n")
-cat(sprintf("CAI vs Expression: r = %.4f\n", cor(exp_enc_data_cai$CAI, exp_enc_data_cai$High_exp, use = "complete.obs")))
-cat(sprintf("CAI vs ENC: r = %.4f\n", cor(exp_enc_data_cai$CAI, exp_enc_data_cai$ENC, use = "complete.obs")))
-cat(sprintf("ENC vs Expression: r = %.4f\n", cor(exp_enc_data_cai$ENC, exp_enc_data_cai$High_exp, use = "complete.obs")))
-
 # Scatter plot: CAI vs ENC
 p_cai_enc <- ggplot(exp_enc_data_cai, aes(x = ENC, y = CAI, color = Expression_Group)) +
   geom_point(alpha = 0.3, size = 1) +
@@ -865,11 +844,6 @@ p_cai_enc <- ggplot(exp_enc_data_cai, aes(x = ENC, y = CAI, color = Expression_G
 ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
 
 # 10.2) Comparing preferred codon of Mimulus guttatus to other plants ----
-
-cat("\n")
-cat("╔══════════════════════════════════════════════════════════════════╗\n")
-cat("║  10.2 Preferred Codons: Cross-Species Comparison                ║\n")
-cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
 
 # Use w_table from CAI analysis (already calculated preferred codons)
 cat("Using optimal codons from CAI reference set...\n")
@@ -1226,21 +1200,210 @@ for (sp in species) {
 cat("\n")
 
 ## *****************************************************************************
-## xx) tRNA abundance correlation analysis ----
+## 10.3) Preferred codon usage: Selected vs Neutral genes ----
 ## _____________________________________________________________________________
 
 cat("\n")
 cat("╔══════════════════════════════════════════════════════════════════╗\n")
-cat("║  tRNA Abundance and Codon Usage Correlation Analysis            ║\n")
+cat("║  10.3 Preferred Codon Usage in Selected vs Neutral Genes        ║\n")
 cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
 
-# Load tRNA correlation functions
-source("./src/tRNA_codon_correlation.R")
-source("./src/get_codon_supply_map.R")
+cat("Comparing preferred codon usage between expression groups:\n")
+cat("  - Top 5%: Under selection for codon bias (high expression)\n")
+cat("  - Bottom 95%: Neutral/rest (all other genes)\n\n")
+
+# Get preferred codons (w = 1.0 from CAI)
+preferred_codons_vec <- w_table |>
+  dplyr::filter(relative_adaptiveness == 1.0) |>
+  dplyr::pull(codon)
+
+cat(sprintf("Using %d preferred codons (w = 1.0)\n\n", length(preferred_codons_vec)))
+
+# Merge codon usage with expression groups
+codon_usage_with_groups <- codon_usage |>
+  dplyr::left_join(exp_enc_data |> dplyr::select(Gene_name, Expression_Group), 
+                   by = "Gene_name")
+
+# Filter to top 5% and rest (bottom 95%)
+top5_genes <- codon_usage_with_groups |> dplyr::filter(Expression_Group == "Top 5%")
+rest_genes <- codon_usage_with_groups |> dplyr::filter(Expression_Group != "Top 5%")
+
+cat(sprintf("Top 5%% genes (selected): %d genes\n", nrow(top5_genes)))
+cat(sprintf("Bottom 95%% genes (neutral/rest): %d genes\n\n", nrow(rest_genes)))
+
+# Function to count preferred codon usage per amino acid
+count_preferred_by_aa <- function(codon_data, preferred_codons, genetic_code) {
+  
+  # Convert to data.frame if it's a data.table (avoid data.table indexing issues)
+  if ("data.table" %in% class(codon_data)) {
+    codon_data <- as.data.frame(codon_data)
+  }
+  
+  # Get codon columns (exclude Gene_name and Expression_Group)
+  codon_cols <- setdiff(names(codon_data), c("Gene_name", "Expression_Group"))
+  
+  # Initialize results
+  aa_summary <- data.frame()
+  
+  for (aa in unique(genetic_code)) {
+    if (aa == "STOP") next
+    
+    # Get all codons for this amino acid
+    codons_for_aa <- names(genetic_code)[genetic_code == aa]
+    codons_for_aa <- codons_for_aa[codons_for_aa %in% codon_cols]
+    
+    # Skip Met and Trp (non-synonymous)
+    if (length(codons_for_aa) <= 1) next
+    
+    # Get preferred codons for this amino acid
+    preferred_for_aa <- intersect(codons_for_aa, preferred_codons)
+    unpreferred_for_aa <- setdiff(codons_for_aa, preferred_codons)
+    
+    # Count total occurrences
+    if (length(preferred_for_aa) > 0) {
+      preferred_count <- sum(rowSums(codon_data[, preferred_for_aa, drop = FALSE], na.rm = TRUE), na.rm = TRUE)
+    } else {
+      preferred_count <- 0
+    }
+    
+    if (length(unpreferred_for_aa) > 0) {
+      unpreferred_count <- sum(rowSums(codon_data[, unpreferred_for_aa, drop = FALSE], na.rm = TRUE), na.rm = TRUE)
+    } else {
+      unpreferred_count <- 0
+    }
+    
+    total_count <- preferred_count + unpreferred_count
+    
+    # Calculate proportion
+    prop_preferred <- ifelse(total_count > 0, preferred_count / total_count, NA)
+    
+    aa_summary <- rbind(aa_summary,
+                        data.frame(
+                          Amino_Acid = aa,
+                          N_synonymous = length(codons_for_aa),
+                          Preferred_codons = paste(preferred_for_aa, collapse = ","),
+                          Preferred_count = preferred_count,
+                          Unpreferred_count = unpreferred_count,
+                          Total_count = total_count,
+                          Prop_preferred = prop_preferred,
+                          stringsAsFactors = FALSE
+                        ))
+  }
+  
+  return(aa_summary)
+}
+
+# Calculate for both groups
+cat("Calculating preferred codon usage per amino acid...\n")
+
+selected_aa <- count_preferred_by_aa(top5_genes, preferred_codons_vec, genetic_code_dna_long)
+selected_aa$Group <- "Selected (Top 5%)"
+
+rest_aa <- count_preferred_by_aa(rest_genes, preferred_codons_vec, genetic_code_dna_long)
+rest_aa$Group <- "Rest (Bottom 95%)"
+
+# Combine for comparison
+comparison_table <- selected_aa |>
+  dplyr::select(Amino_Acid, N_synonymous, Preferred_codons, 
+                Selected_count = Preferred_count, 
+                Selected_prop = Prop_preferred) |>
+  dplyr::left_join(
+    rest_aa |> dplyr::select(Amino_Acid, 
+                             Rest_count = Preferred_count,
+                             Rest_prop = Prop_preferred),
+    by = "Amino_Acid"
+  ) |>
+  dplyr::mutate(
+    Difference = Selected_prop - Rest_prop,
+    Fold_enrichment = Selected_prop / Rest_prop
+  ) |>
+  dplyr::arrange(dplyr::desc(Difference))
+
+# Save table
+write.csv(comparison_table, "./results/preferred_codon_usage_selected_vs_neutral.csv",
+          row.names = FALSE)
+
+cat("\n✓ Results saved: ./results/preferred_codon_usage_selected_vs_neutral.csv\n\n")
+
+# Print table
+cat("=== Preferred Codon Usage: Selected vs Rest ===\n\n")
+cat(sprintf("%-4s %-4s %-15s %-12s %-12s %-12s %-8s\n",
+            "AA", "Deg", "Preferred", "Top5%", "Rest95%", "Difference", "Fold"))
+cat(paste(rep("-", 80), collapse = ""), "\n")
+
+for (i in 1:nrow(comparison_table)) {
+  row <- comparison_table[i, ]
+  cat(sprintf("%-4s %-4d %-15s %-12.4f %-12.4f %-12.4f %-8.2f\n",
+              row$Amino_Acid,
+              row$N_synonymous,
+              substr(row$Preferred_codons, 1, 15),
+              row$Selected_prop,
+              row$Rest_prop,
+              row$Difference,
+              row$Fold_enrichment))
+}
+cat(paste(rep("-", 80), collapse = ""), "\n\n")
+
+# Statistical summary
+cat("=== Summary Statistics ===\n\n")
+cat(sprintf("Mean proportion preferred (Top 5%%): %.4f\n", 
+            mean(comparison_table$Selected_prop, na.rm = TRUE)))
+cat(sprintf("Mean proportion preferred (Rest 95%%): %.4f\n", 
+            mean(comparison_table$Rest_prop, na.rm = TRUE)))
+cat(sprintf("Mean difference: %.4f\n", 
+            mean(comparison_table$Difference, na.rm = TRUE)))
+cat(sprintf("Mean fold enrichment: %.2f\n\n", 
+            mean(comparison_table$Fold_enrichment, na.rm = TRUE)))
+
+# Wilcoxon test
+wilcox_test <- wilcox.test(comparison_table$Selected_prop, 
+                           comparison_table$Rest_prop,
+                           paired = TRUE)
+
+cat(sprintf("Wilcoxon signed-rank test (paired by amino acid):\n"))
+cat(sprintf("  V = %.1f, p-value = %.2e\n", 
+            wilcox_test$statistic, wilcox_test$p.value))
+
+if (wilcox_test$p.value < 0.001) {
+  cat("  *** Highly significant (p < 0.001)\n")
+  cat("  → Top 5%% genes use MORE preferred codons than rest\n")
+} else if (wilcox_test$p.value < 0.05) {
+  cat("  * Significant (p < 0.05)\n")
+} else {
+  cat("  Not significant (p >= 0.05)\n")
+}
+
+# Create visualization
+p_comparison <- ggplot(comparison_table, 
+                       aes(x = reorder(Amino_Acid, -Difference))) +
+  geom_segment(aes(xend = Amino_Acid, y = Rest_prop, yend = Selected_prop),
+               color = "gray70", size = 1) +
+  geom_point(aes(y = Selected_prop, color = "Top 5%"), 
+             size = 3, shape = 16) +
+  geom_point(aes(y = Rest_prop, color = "Rest 95%"), 
+             size = 3, shape = 16) +
+  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
+                                "Rest 95%" = "#377EB8"),
+                    name = "") +
+  labs(title = "Preferred Codon Usage: Top 5% vs Rest",
+       subtitle = "Proportion of preferred codons per amino acid",
+       x = "Amino Acid (ordered by difference)",
+       y = "Proportion of Preferred Codons") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom",
+        plot.title = element_text(face = "bold"))
+
+ggsave("./results/preferred_codon_usage_comparison.pdf", p_comparison,
+       width = 10, height = 6)
+
+cat("\n✓ Plot saved: ./results/preferred_codon_usage_comparison.pdf\n\n")
+
+## *****************************************************************************
+## xx) tRNA abundance correlation analysis ----
+## _____________________________________________________________________________
 
 # Analysis 1: By tRNA gene copy number (traditional approach)
-cat("=== Analysis 1: tRNA Gene Copy Number ===\n")
-cat("Analyzing correlation using tRNA gene counts (traditional approach)\n\n")
 
 tRNA_copynumber_results <- tRNA_codon_correlation(
   codon_counts = codon_usage,
@@ -1302,72 +1465,6 @@ tRNA_expression_top5_results <- tRNA_codon_correlation(
 )
 
 cat("\n✓ tRNA expression correlation analysis (top 5%) complete!\n")
-
-# Summary of all three analyses
-cat("\n")
-cat("╔══════════════════════════════════════════════════════════════════╗\n")
-cat("║  Summary of tRNA-Codon Correlation Results                      ║\n")
-cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
-
-cat("1. tRNA Gene Copy Number (all genes):\n")
-cat("   RSCU vs tRNA Supply:\n")
-if (!is.null(tRNA_copynumber_results$correlation_results$overall)) {
-  cor_val <- tRNA_copynumber_results$correlation_results$overall$estimate
-  p_val <- tRNA_copynumber_results$correlation_results$overall$p.value
-  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
-  if (!is.null(tRNA_copynumber_results$significant_amino_acids) && 
-      nrow(tRNA_copynumber_results$significant_amino_acids) > 0) {
-    cat(sprintf("     %d amino acids significant (p < 0.05)\n", 
-                nrow(tRNA_copynumber_results$significant_amino_acids)))
-  }
-} else {
-  cat("     No correlation computed\n")
-}
-
-cat("\n2. tRNA Expression (all genes):\n")
-cat("   RSCU vs tRNA Expression:\n")
-if (!is.null(tRNA_expression_all_results$correlation_results$overall)) {
-  cor_val <- tRNA_expression_all_results$correlation_results$overall$estimate
-  p_val <- tRNA_expression_all_results$correlation_results$overall$p.value
-  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
-  if (!is.null(tRNA_expression_all_results$significant_amino_acids) && 
-      nrow(tRNA_expression_all_results$significant_amino_acids) > 0) {
-    cat(sprintf("     %d amino acids significant (p < 0.05)\n", 
-                nrow(tRNA_expression_all_results$significant_amino_acids)))
-  }
-}
-if (!is.null(tRNA_expression_all_results$tAI_analysis)) {
-  cat("   tAI vs Gene Expression:\n")
-  cor_val <- tRNA_expression_all_results$tAI_analysis$spearman$estimate
-  p_val <- tRNA_expression_all_results$tAI_analysis$spearman$p.value
-  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
-}
-
-cat("\n3. tRNA Expression (top 5% genes):\n")
-cat("   RSCU vs tRNA Expression:\n")
-if (!is.null(tRNA_expression_top5_results$correlation_results$overall)) {
-  cor_val <- tRNA_expression_top5_results$correlation_results$overall$estimate
-  p_val <- tRNA_expression_top5_results$correlation_results$overall$p.value
-  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
-  if (!is.null(tRNA_expression_top5_results$significant_amino_acids) && 
-      nrow(tRNA_expression_top5_results$significant_amino_acids) > 0) {
-    cat(sprintf("     %d amino acids significant (p < 0.05)\n", 
-                nrow(tRNA_expression_top5_results$significant_amino_acids)))
-  }
-}
-if (!is.null(tRNA_expression_top5_results$tAI_analysis)) {
-  cat("   tAI vs Gene Expression:\n")
-  cor_val <- tRNA_expression_top5_results$tAI_analysis$spearman$estimate
-  p_val <- tRNA_expression_top5_results$tAI_analysis$spearman$p.value
-  cat(sprintf("     Spearman ρ = %.4f (p = %.2e)\n", cor_val, p_val))
-}
-
-cat("\nResults saved to:\n")
-cat("  - ./results/tRNA_analysis_copynumber/\n")
-cat("  - ./results/tRNA_analysis_expression_all/\n")
-cat("    • tRNA_codon_correlations.csv (per-AA correlations)\n")
-cat("    • tAI_vs_expression.pdf (gene-level adaptation)\n")
-cat("  - ./results/tRNA_analysis_expression_top5/\n\n")
 
 ## *****************************************************************************
 ## xx) CDC-based analysis ----
@@ -1544,11 +1641,7 @@ p_enc_deviation <- ggplot(enc_cdc_data %>% filter(!is.na(CDC_significant)),
 
 ggsave("./results/ENC_deviation_by_CDC.pdf", p_enc_deviation, width = 9, height = 6)
 
-cat("\nENC deviation density plot saved: ./results/ENC_deviation_by_CDC.pdf\n")
-
-cat("\n✓ Enhanced ENC plot with CDC analysis complete!\n\n")
-
-
+# Relationship between CDC and expression levels ----
 
 ## *****************************************************************************
 ## xx) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
