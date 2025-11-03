@@ -84,41 +84,22 @@ cub_results <- cub_summary(codon_usage, genetic_code_dna_long,
 ## 5) Additional analyses (optional) ----
 ## _____________________________________________________________________________
 
-## Individual metric calculations (if needed separately):
-
-# Calculate RSCU
-rscu_values <- calculate_rscu(codon_usage, genetic_code_dna_long)
-
-# Calculate ENC
-enc_values <- calculate_enc(codon_usage, genetic_code_dna_long)
-
-# Calculate RF
-rf_values <- calculate_rf(codon_usage, genetic_code_dna_long)
-
-# Get he PSPM
-pspm_overall <- calculate_overall_PSPM(rf_values, genetic_code_dna_long)
-
 # Create logos
-create_aa_logo(pspm_overall)
-
-# Calculate GC content
-gc_content <- calculate_gc_content(codon_usage)
+create_aa_logo(cub_results$pspm_results)
 
 # Create specific visualizations
 visualize_codon_usage(codon_usage, genetic_code_dna_long,
                      "results/custom_heatmap.pdf", type = "heatmap")
-neutrality_plot(gc_content, "results/custom_neutrality.pdf")
-enc_plot(enc_values, gc_content, "results/custom_enc.pdf")
+neutrality_plot(cub_results$gc_results, "results/custom_neutrality.pdf")
+enc_plot(cub_results$enc_results, cub_results$gc_results, "results/custom_enc.pdf")
 pr2_bias_plot(codon_usage, "results/custom_pr2.pdf")
-
-message("\nAnalysis complete! Check the './results' directory for all outputs.")
 
 ## *****************************************************************************
 ## 6) Modeling relationship between ENC and Expression profiles ----
 ## _____________________________________________________________________________
 
 # Trimming suffix from ENC table in gene names
-enc_values[, Gene_name := sub("\\.1$", "", Gene_name)]
+cub_results$enc_results[, Gene_name := sub("\\.1$", "", Gene_name)]
 
 exp_data_bud <- read.table(file = "./data/bud_gene_expression_cpm_remapped.txt",
                        header = T) |>
@@ -165,7 +146,7 @@ exp_complete <- exp_complete |>
 
 # Add the ENC values per gene
 
-exp_enc_data <- dplyr::left_join(exp_complete, enc_values, 
+exp_enc_data <- dplyr::left_join(exp_complete, cub_results$enc_results, 
                                 by = dplyr::join_by(Gene == Gene_name)) |>
   dplyr::rename(Gene_name = Gene) |>
   na.omit() |>
@@ -174,7 +155,7 @@ exp_enc_data <- dplyr::left_join(exp_complete, enc_values,
   distinct(Gene_name, .keep_all = TRUE)
 
 cat(sprintf("Removed %d duplicate gene entries\n", 
-            nrow(dplyr::left_join(exp_complete, enc_values, by = dplyr::join_by(Gene == Gene_name))) - nrow(exp_enc_data)))
+            nrow(dplyr::left_join(exp_complete, cub_results$enc_results, by = dplyr::join_by(Gene == Gene_name))) - nrow(exp_enc_data)))
 
 # Add gene length (CDS length in codons and nucleotides)
 cat("\n=== Adding Gene Length Information ===\n")
@@ -535,9 +516,9 @@ for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
 
 # 8.2) PCA analysis ----
 
-rscu_m <- as.matrix(rscu_values[, -1])
-rownames(rscu_m) <- rscu_values[[1]]
-colnames(rscu_m) <- names(rscu_values)[-1]
+rscu_m <- as.matrix(cub_results$rscu_results[, -1])
+rownames(rscu_m) <- cub_results$rscu_results[[1]]
+colnames(rscu_m) <- names(cub_results$rscu_results)[-1]
 
 rscu_PCA <- PCA(rscu_m, graph = F)
 
@@ -1043,6 +1024,191 @@ ggsave("./results/plant_codon_preference_heatmap.pdf", p_heatmap,
 
 cat("Heatmap saved: ./results/plant_codon_preference_heatmap.pdf\n\n")
 
+# ============================================================================
+# Create color-coded comparison plot showing M. guttatus sharing patterns
+# ============================================================================
+cat("Creating color-coded codon preference comparison plot...\n")
+
+# Define amino acid chemistry groups
+aa_chemistry <- list(
+  "Nonpolar_Aliphatic" = c("Ala", "Gly", "Ile", "Leu", "Met", "Pro", "Val"),
+  "Aromatic" = c("Phe", "Trp", "Tyr"),
+  "Polar_Uncharged" = c("Asn", "Cys", "Gln", "Ser", "Thr"),
+  "Positively_Charged" = c("Arg", "His", "Lys"),
+  "Negatively_Charged" = c("Asp", "Glu")
+)
+
+# Create a data frame for the plot
+plot_data <- data.frame()
+
+# Species order: Arabidopsis, Populus, Physcomitrella, then Mimulus
+species_order <- c("Arabidopsis_thaliana", "Populus_trichocarpa", 
+                   "Physcomitrella_patens", "Mimulus_guttatus")
+species_labels <- c("A. thaliana", "P. trichocarpa", "P. patens", "M. guttatus")
+
+for (aa in sort(unique(plant_codons_extended$Amino_Acid))) {
+  # Determine chemistry group
+  aa_group <- "Other"
+  for (grp in names(aa_chemistry)) {
+    if (aa %in% aa_chemistry[[grp]]) {
+      aa_group <- gsub("_", " ", grp)  # Convert underscores to spaces here
+      break
+    }
+  }
+  
+  aa_data <- plant_codons_extended |> dplyr::filter(Amino_Acid == aa)
+  
+  # Get preferred codons for each species
+  codons_list <- list()
+  for (sp in species_order) {
+    if (sp %in% colnames(plant_codons_extended)) {
+      codon_str <- aa_data[[sp]][1]
+      if (!is.na(codon_str) && codon_str != "") {
+        codons_list[[sp]] <- unique(unlist(strsplit(codon_str, "/")))
+      } else {
+        codons_list[[sp]] <- character(0)
+      }
+    }
+  }
+  
+  # For each species, add their preferred codons
+  for (i in 1:length(species_order)) {
+    sp <- species_order[i]
+    sp_label <- species_labels[i]
+    
+    if (length(codons_list[[sp]]) > 0) {
+      codon_text <- paste(codons_list[[sp]], collapse = "/")
+      
+      # Determine color for M. guttatus column
+      if (sp == "Mimulus_guttatus") {
+        # Check which species M. guttatus shares with
+        mg_codons <- codons_list[["Mimulus_guttatus"]]
+        at_codons <- codons_list[["Arabidopsis_thaliana"]]
+        pt_codons <- codons_list[["Populus_trichocarpa"]]
+        pp_codons <- codons_list[["Physcomitrella_patens"]]
+        
+        shares_with <- c()
+        if (length(intersect(mg_codons, at_codons)) > 0) shares_with <- c(shares_with, "Arabidopsis")
+        if (length(intersect(mg_codons, pt_codons)) > 0) shares_with <- c(shares_with, "Populus")
+        if (length(intersect(mg_codons, pp_codons)) > 0) shares_with <- c(shares_with, "Physcomitrella")
+        
+        # Assign color based on sharing pattern
+        if (length(shares_with) == 0) {
+          codon_color <- "Unique"
+        } else if (length(shares_with) == 3) {
+          codon_color <- "All_three"
+        } else if (length(shares_with) == 2) {
+          codon_color <- "Two_species"
+        } else {
+          # Shares with only one species
+          if ("Arabidopsis" %in% shares_with) {
+            codon_color <- "Only_Arabidopsis"
+          } else if ("Populus" %in% shares_with) {
+            codon_color <- "Only_Populus"
+          } else {
+            codon_color <- "Only_Physcomitrella"
+          }
+        }
+      } else {
+        # For other species, use their own color
+        codon_color <- sp_label
+      }
+      
+      plot_data <- rbind(plot_data,
+                         data.frame(
+                           Amino_Acid = aa,
+                           Chemistry = aa_group,  # Already converted above
+                           Species = sp_label,
+                           Codon = codon_text,
+                           Color_Category = codon_color,
+                           stringsAsFactors = FALSE
+                         ))
+    }
+  }
+}
+
+# Set factor levels for proper ordering
+plot_data$Species <- factor(plot_data$Species, levels = species_labels)
+plot_data$Chemistry <- factor(plot_data$Chemistry, 
+                               levels = c("Nonpolar Aliphatic", "Aromatic", 
+                                         "Polar Uncharged", "Positively Charged", 
+                                         "Negatively Charged", "Other"))
+
+# Define colors
+color_palette <- c(
+  "A. thaliana" = "#E41A1C",           # Red for Arabidopsis
+  "P. trichocarpa" = "#377EB8",        # Blue for Populus
+  "P. patens" = "#4DAF4A",             # Green for Physcomitrella
+  "Only_Arabidopsis" = "#E41A1C",      # Red - shares only with Arabidopsis
+  "Only_Populus" = "#377EB8",          # Blue - shares only with Populus
+  "Only_Physcomitrella" = "#4DAF4A",   # Green - shares only with Physcomitrella
+  "Two_species" = "#FF7F00",           # Orange - shares with two species
+  "All_three" = "#984EA3",             # Purple - shares with all three
+  "Unique" = "#999999"                 # Gray - unique to M. guttatus
+)
+
+# Create the plot
+p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon)) +
+  geom_tile(aes(fill = Color_Category), color = "white", size = 1, alpha = 0.3) +
+  geom_text(size = 3, fontface = "bold") +
+  scale_fill_manual(values = color_palette,
+                    labels = c("A. thaliana" = "A. thaliana",
+                              "P. trichocarpa" = "P. trichocarpa",
+                              "P. patens" = "P. patens",
+                              "Only_Arabidopsis" = "M.g. shares with Arabidopsis only",
+                              "Only_Populus" = "M.g. shares with Populus only",
+                              "Only_Physcomitrella" = "M.g. shares with Physcomitrella only",
+                              "Two_species" = "M.g. shares with two species",
+                              "All_three" = "M.g. shares with all three",
+                              "Unique" = "M.g. unique preference"),
+                    name = "") +
+  facet_grid(Chemistry ~ ., scales = "free_y", space = "free_y") +
+  labs(title = "Preferred Codon Usage Across Plant Species",
+       subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
+       x = "", y = "") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
+        axis.text.y = element_text(size = 10),
+        strip.text.y = element_text(angle = 0, hjust = 0, face = "bold", size = 11),
+        panel.spacing = unit(0.5, "lines"),
+        legend.position = "bottom",
+        legend.text = element_text(size = 9),
+        panel.grid = element_blank())
+
+ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
+       width = 12, height = 16)
+
+cat("✓ Color-coded comparison plot saved: ./results/plant_codon_preference_comparison_colored.pdf\n\n")
+
+# Print summary of M. guttatus sharing patterns
+cat("=== M. guttatus Codon Preference Sharing Patterns ===\n\n")
+
+mg_summary <- plot_data |> 
+  dplyr::filter(Species == "M. guttatus") |>
+  dplyr::count(Color_Category) |>
+  dplyr::arrange(dplyr::desc(n))
+
+total_aa <- nrow(mg_summary |> dplyr::summarise(total = sum(n)))
+
+for (i in 1:nrow(mg_summary)) {
+  cat_name <- mg_summary$Color_Category[i]
+  count <- mg_summary$n[i]
+  pct <- 100 * count / sum(mg_summary$n)
+  
+  cat_label <- switch(cat_name,
+                      "All_three" = "Shares with all three species",
+                      "Two_species" = "Shares with two species",
+                      "Only_Arabidopsis" = "Shares only with A. thaliana",
+                      "Only_Populus" = "Shares only with P. trichocarpa",
+                      "Only_Physcomitrella" = "Shares only with P. patens",
+                      "Unique" = "Unique to M. guttatus",
+                      cat_name)
+  
+  cat(sprintf("  %-40s: %2d amino acids (%.1f%%)\n", cat_label, count, pct))
+}
+
+cat("\n")
+
 # Summary statistics
 cat("=== Summary Statistics ===\n\n")
 
@@ -1222,10 +1388,10 @@ cat("CDC results columns:", paste(names(cdc_results), collapse = ", "), "\n")
 cat(sprintf("CDC results has %d rows\n", nrow(cdc_results)))
 
 # Clean gene names: remove .1 suffix from all data frames
-enc_values_clean <- enc_values |>
+enc_values_clean <- cub_results$enc_results |>
   dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
 
-gc_content_clean <- gc_content |>
+gc_content_clean <- cub_results$gc_results |>
   dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
 
 # Extract just CDC columns we need
