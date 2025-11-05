@@ -74,7 +74,7 @@ analyze_codon_loadings <- function(analysis_result,
     dim1 <- paste0("Dim", dims[1])
     dim2 <- paste0("Dim", dims[2])
     
-    p <- ggplot(loading_df, aes_string(x = dim1, y = dim2, color = "GC_Type")) +
+    p <- ggplot(loading_df, aes(x = dim1, y = dim2, color = .data[["GC_Type"]])) +
       geom_point(alpha = 0.6, size = 3) +
       geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
       geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +

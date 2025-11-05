@@ -370,8 +370,8 @@ if (kw_detrended$p.value < 0.05) {
 # Ploting box plot
 
 p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = ENC_residuals, fill = Expression_Group)) +
+  geom_violin(alpha = 0.3) +
   geom_boxplot(outlier.alpha = 0.3) +
-  geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
   stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
   scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
                                 "Bottom 5%" = "#377EB8",
@@ -386,14 +386,6 @@ p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = ENC
 ## *****************************************************************************
 ## 8) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
-
-# Source plotting functions
-source("./src/plot_multivariate_analysis.R")
-
-cat("\n=== Running Multivariate Analyses ===\n")
-cat("This will create plots for:\n")
-cat("  1. All three groups (Top 5%, Middle 90%, Bottom 5%)\n")
-cat("  2. Only extremes (Top 5% vs Bottom 5% - clearer contrast)\n\n")
 
 # 8.1) CA analysis ---- 
 
@@ -414,12 +406,6 @@ names(codon_usage_CA_coord)[names(codon_usage_CA_coord) %in% c("Dim 1", "Dim 2",
 
 # Ensure Expression_Group is character (not factor) for color matching
 codon_usage_CA_coord$Expression_Group <- as.character(codon_usage_CA_coord$Expression_Group)
-
-# Debug: check that Expression_Group exists and has correct values
-cat("Checking Expression_Group column:\n")
-cat("  Column exists:", "Expression_Group" %in% names(codon_usage_CA_coord), "\n")
-cat("  Unique values:", paste(unique(codon_usage_CA_coord$Expression_Group), collapse = ", "), "\n")
-cat("  Counts:", paste(table(codon_usage_CA_coord$Expression_Group), collapse = ", "), "\n")
 
 # Create version with only extreme groups
 codon_usage_CA_coord_extremes <- codon_usage_CA_coord |>
