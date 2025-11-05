@@ -21,7 +21,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'doFuture', 'ggplot2', 'grid', 'gridExtra',
                         'ggseqlogo', 'FactoMineR',
                         'factoextra', 'dplyr', 'GenomicFeatures',
-                        'ape', 'tidyr', 'MASS')
+                        'ape', 'tidyr', 'caret', 'ggpointdensity')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -144,13 +144,17 @@ exp_complete <- exp_complete |>
   dplyr::ungroup() |>
   dplyr::mutate(Source_High_exp = as.factor(Source_High_exp))
 
-# Add the ENC values per gene (initial step to integrated dataset per gene)
+# Add the ENC values per gene
+# Creation of integrated data ----
 
 integrated_data <- dplyr::left_join(exp_complete, cub_results$enc_results, 
                                 by = dplyr::join_by(Gene == Gene_name)) |>
   dplyr::rename(Gene_name = Gene) |>
   na.omit() |>
   distinct(Gene_name, .keep_all = TRUE)
+
+cat(sprintf("Removed %d duplicate gene entries\n", 
+            nrow(dplyr::left_join(exp_complete, cub_results$enc_results, by = dplyr::join_by(Gene == Gene_name))) - nrow(integrated_data)))
 
 # Add gene length (CDS length in codons and nucleotides)
 cat("\n=== Adding Gene Length Information ===\n")
@@ -160,28 +164,53 @@ cat("\n=== Adding Gene Length Information ===\n")
 codon_columns <- names(codon_usage)[names(codon_usage) != "Gene_name"]
 
 gene_lengths <- codon_usage |>
-  dplyr::mutate(
+  mutate(
     Gene_name_clean = sub("\\.1$", "", Gene_name),  # Remove .1 suffix
     Total_Codons = rowSums(across(all_of(codon_columns)), na.rm = TRUE),
     CDS_length_nt = Total_Codons * 3,  # nucleotides
     CDS_length_aa = Total_Codons        # amino acids (codons)
   ) |>
-  dplyr::select(Gene_name_clean, Total_Codons, CDS_length_nt, CDS_length_aa) |>
-  dplyr::rename(Gene_name = Gene_name_clean)
+  select(Gene_name_clean, Total_Codons, CDS_length_nt, CDS_length_aa) |>
+  rename(Gene_name = Gene_name_clean)
 
 integrated_data <- integrated_data |>
   left_join(gene_lengths, by = "Gene_name")
 
-# Normalizing expression data ()
+# Box-Cox Transformation of expression data (lambda = 0.1) Log2 for simplicity
+# Adding a small offset to the expression value (BoxCox works over positive numbers)
+
+# integrated_data <- integrated_data |>
+#   dplyr::mutate(High_exp = High_exp + 0.001)
+# 
+# box_cox_transformer <- preProcess(as.data.frame(integrated_data[, "High_exp"]), 
+#                                   method = "BoxCox")
+# 
+# integrated_data <- integrated_data |>
+#   dplyr::mutate(High_exp_BC = predict(box_cox_transformer, 
+#                                       as.data.frame(integrated_data[, "High_exp"]))[[1]])
+
+integrated_data <- integrated_data |>
+  dplyr::mutate(High_exp_log2 = log2(High_exp + 1))  # Adding 1 to avoid log2(0)egrated_data <- integrated_data |>
+  dplyr::mutate(High_exp_log2 = log2(integrated_data$High_exp))
+
+cor(x = integrated_data$ENC, y = integrated_data$High_exp_log2)
+
+# Density plot
+
+ggplot(data = integrated_data, 
+       mapping = aes(x = High_exp_log2, y = ENC)) +
+  geom_pointdensity() +
+  geom_smooth(method = lm, color = 'red') +
+  theme_custom()
 
 # Define expression groups: Top 5% vs Bottom 5% (extreme comparison)
 
-top_5_cutoff <- quantile(integrated_data$High_exp, probs = 0.95)
-bottom_5_cutoff <- quantile(integrated_data$High_exp, probs = 0.05)
+top_5_cutoff <- quantile(integrated_data$High_exp_log2, probs = 0.95)
+bottom_5_cutoff <- quantile(integrated_data$High_exp_log2, probs = 0.05)
 
 integrated_data$Expression_Group <- case_when(
-  integrated_data$High_exp >= top_5_cutoff ~ "Top 5%",
-  integrated_data$High_exp <= bottom_5_cutoff ~ "Bottom 5%",
+  integrated_data$High_exp_log2 >= top_5_cutoff ~ "Top 5%",
+  integrated_data$High_exp_log2 <= bottom_5_cutoff ~ "Bottom 5%",
   TRUE ~ "Middle 90%"
 )
 
@@ -252,17 +281,6 @@ print(summary_stats)
 # Effect sizes for pairwise comparisons
 cat("\n=== Effect Sizes (Cohen's d) for Pairwise Comparisons ===\n")
 
-# Helper function to calculate Cohen's d
-cohens_d_calc <- function(x1, x2) {
-  m1 <- mean(x1, na.rm = TRUE)
-  m2 <- mean(x2, na.rm = TRUE)
-  s1 <- var(x1, na.rm = TRUE)
-  s2 <- var(x2, na.rm = TRUE)
-  pooled_sd <- sqrt((s1 + s2) / 2)
-  d <- (m1 - m2) / pooled_sd
-  return(d)
-}
-
 # Get ENC values for each group
 top5_enc <- integrated_data |> filter(Expression_Group == "Top 5%") |> pull(ENC)
 middle_enc <- integrated_data |> filter(Expression_Group == "Middle 90%") |> pull(ENC)
@@ -286,7 +304,8 @@ if (length(middle_enc) > 0 && length(bottom5_enc) > 0) {
 
 cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
-# Gene length analysis
+# Gene length analysis (detendred ENC) ----
+
 cat("\n=== Gene Length by Expression Group ===\n")
 cat("Checking if gene length explains ENC patterns\n\n")
 length_stats <- integrated_data |>
@@ -1927,338 +1946,5 @@ cat("\n✓ Selection coefficient analysis complete!\n")
 cat("  Results saved to ./results/selection_coefficients.csv\n")
 
 # Add polymorphism data integration here if available (not implemented)
-
-##' @title Integrate Polymorphism Data with CUB Analysis
-##' 
-##' @description
-##' This script loads polymorphism statistics from the Python pipeline
-##' and integrates them with the codon usage bias analysis.
-##' 
-##' @author Luis Javier Madrigal-Roca & John K. Kelly
-##' ____________________________________________________________________________
-
-## *****************************************************************************
-## Load polymorphism data ----
-## _____________________________________________________________________________
-
-cat("\n")
-cat("╔══════════════════════════════════════════════════════════════════╗\n")
-cat("║  Polymorphism Analysis Integration                              ║\n")
-cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
-
-cat("Loading polymorphism data from Python pipeline...\n")
-
-# Load per-gene diversity statistics
-polymorphism_file <- "./results/polymorphism_analysis/all_chromosomes.bygene.pi.txt"
-
-if (!file.exists(polymorphism_file)) {
-  cat("\n")
-  cat("ERROR: Polymorphism data file not found!\n")
-  cat("Expected: ", polymorphism_file, "\n\n")
-  cat("Please run the polymorphism analysis pipeline first:\n")
-  cat("  bash miscellanea_code/run_polymorphism_analysis.sh\n\n")
-  stop("Missing polymorphism data")
-}
-
-polymorphism_data <- read.table(polymorphism_file, 
-                                header = TRUE, 
-                                stringsAsFactors = FALSE,
-                                sep = "\t")
-
-cat(sprintf("  Loaded data for %d genes\n", nrow(polymorphism_data)))
-
-## *****************************************************************************
-## Calculate derived metrics ----
-## _____________________________________________________________________________
-
-cat("\nCalculating diversity metrics per site...\n")
-
-polymorphism_data <- polymorphism_data |>
-  dplyr::mutate(
-    # π per site for each degeneracy class
-    Pi_per_site_1 = ifelse(Sites_1 > 0, Pi_1 / Sites_1, NA),
-    Pi_per_site_2 = ifelse(Sites_2 > 0, Pi_2 / Sites_2, NA),
-    Pi_per_site_3_Not_4f = ifelse(Sites_3_Not_4f > 0, Pi_3_Not_4f / Sites_3_Not_4f, NA),
-    Pi_per_site_3_4f = ifelse(Sites_3_4f > 0, Pi_3_4f / Sites_3_4f, NA),
-    
-    # Total synonymous sites (approximation: 4-fold sites)
-    Pi_synonymous = Pi_per_site_3_4f,
-    
-    # Total non-synonymous sites (approximation: 1st + 2nd positions)
-    Total_nonsyn_sites = Sites_1 + Sites_2,
-    Pi_nonsynonymous = ifelse(Total_nonsyn_sites > 0, 
-                              (Pi_1 + Pi_2) / Total_nonsyn_sites, 
-                              NA),
-    
-    # pN/pS ratio (polymorphism-based)
-    pN_pS = Pi_nonsynonymous / Pi_synonymous,
-    
-    # Proportion of 4-fold sites that are polymorphic
-    Prop_poly_4f = ifelse(Sites_3_4f > 0, Poly_3_4f / Sites_3_4f, NA)
-  )
-
-# Summary statistics
-cat("\n=== Genome-Wide Diversity Statistics ===\n\n")
-cat(sprintf("Mean π (1st codon position):   %.6f\n", mean(polymorphism_data$Pi_per_site_1, na.rm = TRUE)))
-cat(sprintf("Mean π (2nd codon position):   %.6f\n", mean(polymorphism_data$Pi_per_site_2, na.rm = TRUE)))
-cat(sprintf("Mean π (3rd non-4fold):        %.6f\n", mean(polymorphism_data$Pi_per_site_3_Not_4f, na.rm = TRUE)))
-cat(sprintf("Mean π (3rd 4-fold):           %.6f\n", mean(polymorphism_data$Pi_per_site_3_4f, na.rm = TRUE)))
-cat(sprintf("\nMean πN (non-synonymous):      %.6f\n", mean(polymorphism_data$Pi_nonsynonymous, na.rm = TRUE)))
-cat(sprintf("Mean πS (synonymous):          %.6f\n", mean(polymorphism_data$Pi_synonymous, na.rm = TRUE)))
-cat(sprintf("Mean pN/pS:                    %.4f\n", mean(polymorphism_data$pN_pS, na.rm = TRUE)))
-cat(sprintf("\nMean Tajima's D (4-fold):      %.4f\n", mean(polymorphism_data$TajimaD_4f, na.rm = TRUE)))
-
-## *****************************************************************************
-## Merge with CUB data ----
-## _____________________________________________________________________________
-
-cat("\n\nMerging with codon usage bias data...\n")
-
-# Merge with existing CUB/expression data
-cub_polymorphism <- integrated_data_cai |>
-  dplyr::left_join(polymorphism_data, 
-                   by = c("Gene_name" = "Gene")) |>
-  dplyr::filter(!is.na(Pi_synonymous))  # Keep only genes with polymorphism data
-
-cat(sprintf("  Merged data for %d genes\n", nrow(cub_polymorphism)))
-
-# Check for missing data
-n_missing_poly <- sum(is.na(integrated_data_cai$Gene_name %in% polymorphism_data$Gene))
-if (n_missing_poly > 0) {
-  cat(sprintf("  ⚠ Warning: %d genes lack polymorphism data\n", n_missing_poly))
-}
-
-## *****************************************************************************
-## Test key hypotheses ----
-## _____________________________________________________________________________
-
-cat("\n")
-cat("╔══════════════════════════════════════════════════════════════════╗\n")
-cat("║  Hypothesis Testing: Selection on Codon Usage                   ║\n")
-cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
-
-# ────────────────────────────────────────────────────────────────────────────
-# Hypothesis 1: Expression level correlates with πS
-# ────────────────────────────────────────────────────────────────────────────
-
-cat("═══════════════════════════════════════════════════════════════════\n")
-cat("Hypothesis 1: Expression correlates with synonymous diversity\n")
-cat("═══════════════════════════════════════════════════════════════════\n\n")
-
-cat("Prediction: Highly expressed genes → lower πS (stronger selection)\n\n")
-
-cor_expr_pi <- cor.test(log2(cub_polymorphism$High_exp + 1), 
-                        cub_polymorphism$Pi_synonymous,
-                        method = "spearman")
-
-cat(sprintf("Spearman correlation (log2(expression) vs πS):\n"))
-cat(sprintf("  ρ = %.4f, p-value = %.2e\n\n", cor_expr_pi$estimate, cor_expr_pi$p.value))
-
-if (cor_expr_pi$estimate < 0 & cor_expr_pi$p.value < 0.05) {
-  cat("✓ SUPPORTED: Negative correlation suggests selection maintains codon usage\n")
-} else {
-  cat("✗ NOT SUPPORTED: No evidence for expression-dependent selection\n")
-}
-
-# Compare by expression groups
-cat("\nπS by expression group:\n")
-pi_by_group <- cub_polymorphism |>
-  dplyr::group_by(Expression_Group) |>
-  dplyr::summarise(
-    n = n(),
-    mean_pi = mean(Pi_synonymous, na.rm = TRUE),
-    median_pi = median(Pi_synonymous, na.rm = TRUE),
-    mean_tajima_d = mean(TajimaD_4f, na.rm = TRUE)
-  )
-
-print(pi_by_group)
-
-# Statistical test
-kw_pi <- kruskal.test(Pi_synonymous ~ Expression_Group, data = cub_polymorphism)
-cat(sprintf("\nKruskal-Wallis test: H = %.2f, p = %.2e\n", kw_pi$statistic, kw_pi$p.value))
-
-# ────────────────────────────────────────────────────────────────────────────
-# Hypothesis 2: CAI correlates with πS
-# ────────────────────────────────────────────────────────────────────────────
-
-cat("\n")
-cat("═══════════════════════════════════════════════════════════════════\n")
-cat("Hypothesis 2: CAI correlates with synonymous diversity\n")
-cat("═══════════════════════════════════════════════════════════════════\n\n")
-
-cat("Prediction: High CAI genes → lower πS (optimal codons maintained)\n\n")
-
-cor_cai_pi <- cor.test(cub_polymorphism$CAI, 
-                       cub_polymorphism$Pi_synonymous,
-                       method = "spearman")
-
-cat(sprintf("Spearman correlation (CAI vs πS):\n"))
-cat(sprintf("  ρ = %.4f, p-value = %.2e\n\n", cor_cai_pi$estimate, cor_cai_pi$p.value))
-
-if (cor_cai_pi$estimate < 0 & cor_cai_pi$p.value < 0.05) {
-  cat("✓ SUPPORTED: Genes with optimal codons have lower diversity\n")
-} else {
-  cat("✗ NOT SUPPORTED: Codon optimization not reflected in polymorphism\n")
-}
-
-# ────────────────────────────────────────────────────────────────────────────
-# Hypothesis 3: ENC correlates with Tajima's D
-# ────────────────────────────────────────────────────────────────────────────
-
-cat("\n")
-cat("═══════════════════════════════════════════════════════════════════\n")
-cat("Hypothesis 3: ENC correlates with Tajima's D\n")
-cat("═══════════════════════════════════════════════════════════════════\n\n")
-
-cat("Prediction: Strong codon bias (low ENC) → negative Tajima's D\n")
-cat("           (recent positive selection for codon optimization)\n\n")
-
-cor_enc_tajima <- cor.test(cub_polymorphism$ENC, 
-                           cub_polymorphism$TajimaD_4f,
-                           method = "spearman")
-
-cat(sprintf("Spearman correlation (ENC vs Tajima's D):\n"))
-cat(sprintf("  ρ = %.4f, p-value = %.2e\n\n", cor_enc_tajima$estimate, cor_enc_tajima$p.value))
-
-# ────────────────────────────────────────────────────────────────────────────
-# Hypothesis 4: pN/pS < 1 (purifying selection)
-# ────────────────────────────────────────────────────────────────────────────
-
-cat("\n")
-cat("═══════════════════════════════════════════════════════════════════\n")
-cat("Hypothesis 4: pN/pS ratio indicates purifying selection\n")
-cat("═══════════════════════════════════════════════════════════════════\n\n")
-
-median_pN_pS <- median(cub_polymorphism$pN_pS, na.rm = TRUE)
-prop_less_1 <- sum(cub_polymorphism$pN_pS < 1, na.rm = TRUE) / sum(!is.na(cub_polymorphism$pN_pS))
-
-cat(sprintf("Median pN/pS: %.4f\n", median_pN_pS))
-cat(sprintf("Proportion of genes with pN/pS < 1: %.2f%%\n\n", 100 * prop_less_1))
-
-if (median_pN_pS < 1) {
-  cat("✓ SUPPORTED: Genome-wide purifying selection on protein sequences\n")
-} else {
-  cat("✗ NOT SUPPORTED: No evidence for purifying selection\n")
-}
-
-## *****************************************************************************
-## Visualizations ----
-## _____________________________________________________________________________
-
-cat("\n\nGenerating plots...\n")
-
-# Plot 1: πS by expression group
-p_pi_expr <- ggplot(cub_polymorphism, 
-                    aes(x = Expression_Group, y = Pi_synonymous, fill = Expression_Group)) +
-  geom_boxplot(outlier.alpha = 0.3) +
-  geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
-  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
-                               "Bottom 5%" = "#377EB8",
-                               "Middle 90%" = "#999999")) +
-  labs(title = "Synonymous Diversity by Expression Level",
-       subtitle = "Lower πS in highly expressed genes suggests selection on codon usage",
-       y = "πS (4-fold degenerate sites)",
-       x = "") +
-  theme_custom() +
-  theme(legend.position = "none")
-
-ggsave("./results/polymorphism_piS_by_expression.pdf", p_pi_expr, width = 8, height = 6)
-
-# Plot 2: CAI vs πS scatter
-p_cai_pi <- ggplot(cub_polymorphism, 
-                   aes(x = CAI, y = Pi_synonymous, color = Expression_Group)) +
-  geom_point(alpha = 0.4, size = 1.5) +
-  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 1.2) +
-  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
-                                "Bottom 5%" = "#377EB8",
-                                "Middle 90%" = "#999999")) +
-  labs(title = "CAI vs Synonymous Diversity",
-       subtitle = sprintf("ρ = %.3f, p = %.2e", cor_cai_pi$estimate, cor_cai_pi$p.value),
-       x = "CAI (Codon Adaptation Index)",
-       y = "πS (4-fold sites)",
-       color = "Expression") +
-  theme_custom()
-
-ggsave("./results/polymorphism_CAI_vs_piS.pdf", p_cai_pi, width = 10, height = 7)
-
-# Plot 3: ENC vs Tajima's D
-p_enc_tajima <- ggplot(cub_polymorphism, 
-                       aes(x = ENC, y = TajimaD_4f, color = Expression_Group)) +
-  geom_point(alpha = 0.4, size = 1.5) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
-  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 1.2) +
-  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
-                                "Bottom 5%" = "#377EB8",
-                                "Middle 90%" = "#999999")) +
-  labs(title = "ENC vs Tajima's D",
-       subtitle = "Codon bias and allele frequency spectrum",
-       x = "ENC (Effective Number of Codons)",
-       y = "Tajima's D (4-fold sites)",
-       color = "Expression") +
-  theme_custom()
-
-ggsave("./results/polymorphism_ENC_vs_TajimaD.pdf", p_enc_tajima, width = 10, height = 7)
-
-# Plot 4: pN/pS distribution
-p_pnps <- ggplot(cub_polymorphism |> dplyr::filter(pN_pS < 5),  # Remove outliers
-                 aes(x = pN_pS, fill = Expression_Group)) +
-  geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "red", linewidth = 1) +
-  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
-                               "Bottom 5%" = "#377EB8",
-                               "Middle 90%" = "#999999")) +
-  labs(title = "Distribution of pN/pS Ratios",
-       subtitle = "pN/pS < 1 indicates purifying selection",
-       x = "pN/pS",
-       y = "Number of genes",
-       fill = "Expression") +
-  theme_custom()
-
-ggsave("./results/polymorphism_pNpS_distribution.pdf", p_pnps, width = 10, height = 6)
-
-cat("✓ Plots saved to ./results/\n")
-
-## *****************************************************************************
-## Save integrated data ----
-## _____________________________________________________________________________
-
-cat("\nSaving integrated dataset...\n")
-
-write.csv(cub_polymorphism, 
-          "./results/cub_polymorphism_integrated.csv",
-          row.names = FALSE)
-
-cat("✓ Saved: ./results/cub_polymorphism_integrated.csv\n")
-
-## *****************************************************************************
-## Summary report ----
-## _____________________________________________________________________________
-
-cat("\n")
-cat("╔══════════════════════════════════════════════════════════════════╗\n")
-cat("║  Analysis Summary                                                ║\n")
-cat("╚══════════════════════════════════════════════════════════════════╝\n\n")
-
-cat(sprintf("Genes analyzed: %d\n", nrow(cub_polymorphism)))
-cat(sprintf("Mean πS: %.6f\n", mean(cub_polymorphism$Pi_synonymous, na.rm = TRUE)))
-cat(sprintf("Mean pN/pS: %.4f\n", mean(cub_polymorphism$pN_pS, na.rm = TRUE)))
-cat(sprintf("Mean Tajima's D: %.4f\n\n", mean(cub_polymorphism$TajimaD_4f, na.rm = TRUE)))
-
-cat("Key findings:\n")
-cat(sprintf("  • Expression vs πS: ρ = %.3f (p = %.2e)\n", 
-            cor_expr_pi$estimate, cor_expr_pi$p.value))
-cat(sprintf("  • CAI vs πS: ρ = %.3f (p = %.2e)\n", 
-            cor_cai_pi$estimate, cor_cai_pi$p.value))
-cat(sprintf("  • ENC vs Tajima's D: ρ = %.3f (p = %.2e)\n\n", 
-            cor_enc_tajima$estimate, cor_enc_tajima$p.value))
-
-cat("Files generated:\n")
-cat("  • ./results/cub_polymorphism_integrated.csv\n")
-cat("  • ./results/polymorphism_piS_by_expression.pdf\n")
-cat("  • ./results/polymorphism_CAI_vs_piS.pdf\n")
-cat("  • ./results/polymorphism_ENC_vs_TajimaD.pdf\n")
-cat("  • ./results/polymorphism_pNpS_distribution.pdf\n\n")
-
-cat("✓ Polymorphism analysis integration complete!\n\n")
 
 save.image('Env')
