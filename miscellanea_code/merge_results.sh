@@ -1,4 +1,12 @@
 #!/bin/bash
+#SBATCH --job-name=merger_codon_analysis
+#SBATCH --output=logs/merger_codon_analysis.out
+#SBATCH --error=logs/merger_codon_analysis.err
+#SBATCH --time=12-00:00:00
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=kucg,eeb,kelly
+
 ################################################################################
 # Merge Results from Parallel Chromosome Processing
 #
