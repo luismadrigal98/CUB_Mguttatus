@@ -312,8 +312,20 @@ def extract_codon_genotypes(vcf_file, gene_info, preferred_codons, chrom, n_samp
             continue
         
         cds_seq = info['cds_seq']
+        strand = info['strand']
         n_codons = len(cds_seq) // 3
         
+        # Build ALL CDS positions first (same logic as describe_gene_positions_by_degeneracy.py)
+        all_cds_positions = []
+        for start, end in info['cds_regions']:
+            for pos in range(start, end + 1):
+                all_cds_positions.append(pos)
+        
+        # For minus strand, reverse positions so CDS[0] maps to highest genomic coordinate
+        if strand == '-':
+            all_cds_positions = all_cds_positions[::-1]
+        
+        # Now extract codon positions from the (possibly reversed) list
         for codon_idx in range(n_codons):
             # Get reference codon
             ref_codon = cds_seq[codon_idx * 3:(codon_idx + 1) * 3]
@@ -323,36 +335,15 @@ def extract_codon_genotypes(vcf_file, gene_info, preferred_codons, chrom, n_samp
             
             aa = GENETIC_CODE.get(ref_codon, 'X')
             
-            # Get genomic positions for this codon
+            # Get genomic positions for this codon from the pre-built list
             cds_pos_start = codon_idx * 3
-            genomic_positions = []
+            if cds_pos_start + 3 > len(all_cds_positions):
+                continue
             
-            cumulative = 0
-            for start, end in info['cds_regions']:
-                region_length = end - start + 1
-                
-                for i in range(3):
-                    target = cds_pos_start + i
-                    if cumulative <= target < cumulative + region_length:
-                        gpos = start + (target - cumulative)
-                        genomic_positions.append(gpos)
-                
-                cumulative += region_length
-                
-                if len(genomic_positions) == 3:
-                    break
+            genomic_positions = all_cds_positions[cds_pos_start:cds_pos_start + 3]
             
             if len(genomic_positions) != 3:
                 continue
-            
-            # Get strand information
-            strand = info['strand']
-            
-            # For minus strand, reverse genomic positions so that:
-            # genomic_positions[0] = highest coordinate = first base of codon (5' end)
-            # This matches how ref_codon is oriented (already reverse complemented)
-            if strand == '-':
-                genomic_positions = genomic_positions[::-1]
             
             # Build codon genotypes for each line
             line_codons = []
