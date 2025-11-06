@@ -845,6 +845,11 @@ ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
 # Use w_table from CAI analysis (already calculated preferred codons)
 cat("Using optimal codons from CAI reference set...\n")
 
+# Get preferred codons for export
+preferred_codons_mg <- w_table |>
+  dplyr::filter(relative_adaptiveness == 1.0) |>
+  dplyr::select(codon)
+
 # Get preferred codons (those with relative_adaptiveness == 1.0)
 preferred_codons_mg <- w_table |>
   dplyr::filter(relative_adaptiveness == 1.0) |>

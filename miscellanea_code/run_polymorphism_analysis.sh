@@ -1,0 +1,330 @@
+#!/bin/bash
+#
+# run_polymorphism_analysis.sh
+#
+# Wrapper script to run codon-aware polymorphism analysis on all chromosomes.
+# 
+# Usage:
+#   bash run_polymorphism_analysis.sh
+#
+# Requirements:
+#   - Python 3.x
+#   - Input files in expected locations
+#   - Preferred codons list (create from R analysis first)
+#
+# Author: Luis Javier Madrigal-Roca & John K. Kelly
+
+set -e  # Exit on error
+set -u  # Exit on undefined variable
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+# Input files
+GFF3="data/Mguttatusvar_IM767_887_v2.1.gene.gff3"
+GENOME_FA="data/Mguttatusvar_IM767_887_v2.0.fa"
+CDS_FA="data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa"
+VCF="Included_snp.sites.txt"
+PREFERRED_CODONS="preferred_codons.txt"
+
+# Chromosomes to process
+CHROMOSOMES="Chr_01 Chr_02 Chr_03 Chr_04 Chr_05 Chr_06 Chr_07 Chr_08 Chr_09 Chr_10 Chr_11 Chr_12 Chr_13 Chr_14"
+
+# Python scripts directory
+SCRIPT_DIR="miscellanea_code"
+
+# Output directory
+OUTPUT_DIR="results/polymorphism_analysis"
+
+# ============================================================================
+# Pre-flight checks
+# ============================================================================
+
+echo "========================================="
+echo "Codon-Aware Polymorphism Analysis"
+echo "========================================="
+echo ""
+
+# Check if required files exist
+echo "Checking input files..."
+
+for FILE in "$GFF3" "$GENOME_FA" "$CDS_FA" "$VCF"; do
+    if [ ! -f "$FILE" ]; then
+        echo "ERROR: Required file not found: $FILE"
+        exit 1
+    fi
+    echo "  ✓ $FILE"
+done
+
+# Check for preferred codons file
+if [ ! -f "$PREFERRED_CODONS" ]; then
+    echo ""
+    echo "WARNING: Preferred codons file not found: $PREFERRED_CODONS"
+    echo ""
+    echo "Please create this file first from your R analysis:"
+    echo ""
+    echo "  preferred_codons <- cai_results\$w_table %>%"
+    echo "    filter(relative_adaptiveness == 1.0) %>%"
+    echo "    pull(codon)"
+    echo "  writeLines(preferred_codons, \"$PREFERRED_CODONS\")"
+    echo ""
+    echo "Continuing without step 3 (codon frequency analysis)..."
+    SKIP_STEP3=1
+else
+    echo "  ✓ $PREFERRED_CODONS"
+    SKIP_STEP3=0
+fi
+
+# Check Python scripts
+echo ""
+echo "Checking Python scripts..."
+
+SCRIPT1="$SCRIPT_DIR/describe_gene_positions_by_degeneracy.py"
+SCRIPT2="$SCRIPT_DIR/calculate_pi.py"
+SCRIPT3="$SCRIPT_DIR/calculate_freq_preferred_codon.py"
+
+for SCRIPT in "$SCRIPT1" "$SCRIPT2" "$SCRIPT3"; do
+    if [ ! -f "$SCRIPT" ]; then
+        echo "ERROR: Python script not found: $SCRIPT"
+        exit 1
+    fi
+    echo "  ✓ $SCRIPT"
+done
+
+# Create output directory
+mkdir -p "$OUTPUT_DIR"
+
+echo ""
+echo "All checks passed! Starting analysis..."
+echo ""
+
+# ============================================================================
+# Process each chromosome
+# ============================================================================
+
+START_TIME=$(date +%s)
+
+for CHR in $CHROMOSOMES; do
+    echo "========================================="
+    echo "Processing $CHR"
+    echo "========================================="
+    
+    CHR_START=$(date +%s)
+    
+    # ------------------------------------------------------------------------
+    # Step 1: Annotate positions by degeneracy
+    # ------------------------------------------------------------------------
+    
+    echo ""
+    echo "Step 1: Annotating genomic positions..."
+    
+    ANNOTATION_FILE="${OUTPUT_DIR}/${CHR}.genic_bases.annotated.txt"
+    
+    if [ -f "$ANNOTATION_FILE" ]; then
+        echo "  ⚠ Annotation file already exists, skipping..."
+    else
+        python3 "$SCRIPT1" \
+            "$CHR" \
+            "$GFF3" \
+            "$GENOME_FA" \
+            "$CDS_FA" \
+            > "${OUTPUT_DIR}/${CHR}.step1.log" 2>&1
+        
+        # Move output to results directory
+        if [ -f "${CHR}.genic_bases.annotated.txt" ]; then
+            mv "${CHR}.genic_bases.annotated.txt" "$ANNOTATION_FILE"
+        fi
+        
+        echo "  ✓ Created $ANNOTATION_FILE"
+    fi
+    
+    # ------------------------------------------------------------------------
+    # Step 2: Calculate π and diversity statistics
+    # ------------------------------------------------------------------------
+    
+    echo ""
+    echo "Step 2: Calculating nucleotide diversity..."
+    
+    PI_FILE="${OUTPUT_DIR}/${CHR}.bygene.pi.txt"
+    
+    if [ -f "$PI_FILE" ]; then
+        echo "  ⚠ Pi file already exists, skipping..."
+    else
+        python3 "$SCRIPT2" \
+            "$CHR" \
+            "$VCF" \
+            "$ANNOTATION_FILE" \
+            > "${OUTPUT_DIR}/${CHR}.step2.log" 2>&1
+        
+        # Move output to results directory
+        if [ -f "${CHR}.bygene.pi.txt" ]; then
+            mv "${CHR}.bygene.pi.txt" "$PI_FILE"
+        fi
+        
+        echo "  ✓ Created $PI_FILE"
+    fi
+    
+    # ------------------------------------------------------------------------
+    # Step 3: Analyze preferred codon frequencies (if preferred codons exist)
+    # ------------------------------------------------------------------------
+    
+    if [ $SKIP_STEP3 -eq 0 ]; then
+        echo ""
+        echo "Step 3: Analyzing preferred codon frequencies..."
+        
+        CODON_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies.txt"
+        
+        if [ -f "$CODON_FILE" ]; then
+            echo "  ⚠ Codon frequency file already exists, skipping..."
+        else
+            python3 "$SCRIPT3" \
+                "$CHR" \
+                "$VCF" \
+                "$GFF3" \
+                "$CDS_FA" \
+                "$GENOME_FA" \
+                "$PREFERRED_CODONS" \
+                > "${OUTPUT_DIR}/${CHR}.step3.log" 2>&1
+            
+            # Move output to results directory
+            if [ -f "${CHR}.codon_frequencies.txt" ]; then
+                mv "${CHR}.codon_frequencies.txt" "$CODON_FILE"
+            fi
+            
+            echo "  ✓ Created $CODON_FILE"
+        fi
+    fi
+    
+    CHR_END=$(date +%s)
+    CHR_ELAPSED=$((CHR_END - CHR_START))
+    
+    echo ""
+    echo "✓ $CHR complete! ($(($CHR_ELAPSED / 60)) min $(($CHR_ELAPSED % 60)) sec)"
+    echo ""
+done
+
+# ============================================================================
+# Concatenate results across chromosomes
+# ============================================================================
+
+echo "========================================="
+echo "Concatenating results across chromosomes"
+echo "========================================="
+
+# Concatenate π statistics
+echo ""
+echo "Creating all_chromosomes.bygene.pi.txt..."
+
+FIRST=1
+for CHR in $CHROMOSOMES; do
+    PI_FILE="${OUTPUT_DIR}/${CHR}.bygene.pi.txt"
+    
+    if [ ! -f "$PI_FILE" ]; then
+        echo "  ⚠ Warning: $PI_FILE not found, skipping..."
+        continue
+    fi
+    
+    if [ $FIRST -eq 1 ]; then
+        # Include header from first file
+        cat "$PI_FILE" > "${OUTPUT_DIR}/all_chromosomes.bygene.pi.txt"
+        FIRST=0
+    else
+        # Skip header for subsequent files
+        tail -n +2 "$PI_FILE" >> "${OUTPUT_DIR}/all_chromosomes.bygene.pi.txt"
+    fi
+done
+
+echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.bygene.pi.txt"
+
+# Concatenate codon frequencies
+if [ $SKIP_STEP3 -eq 0 ]; then
+    echo ""
+    echo "Creating all_chromosomes.codon_frequencies.txt..."
+    
+    FIRST=1
+    for CHR in $CHROMOSOMES; do
+        CODON_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies.txt"
+        
+        if [ ! -f "$CODON_FILE" ]; then
+            echo "  ⚠ Warning: $CODON_FILE not found, skipping..."
+            continue
+        fi
+        
+        if [ $FIRST -eq 1 ]; then
+            cat "$CODON_FILE" > "${OUTPUT_DIR}/all_chromosomes.codon_frequencies.txt"
+            FIRST=0
+        else
+            tail -n +2 "$CODON_FILE" >> "${OUTPUT_DIR}/all_chromosomes.codon_frequencies.txt"
+        fi
+    done
+    
+    echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.codon_frequencies.txt"
+fi
+
+# ============================================================================
+# Generate summary statistics
+# ============================================================================
+
+echo ""
+echo "========================================="
+echo "Summary Statistics"
+echo "========================================="
+
+PI_FILE="${OUTPUT_DIR}/all_chromosomes.bygene.pi.txt"
+
+if [ -f "$PI_FILE" ]; then
+    N_GENES=$(tail -n +2 "$PI_FILE" | wc -l)
+    echo ""
+    echo "Total genes analyzed: $N_GENES"
+    
+    echo ""
+    echo "Average diversity per degeneracy class:"
+    echo "  (averaged across all genes)"
+    
+    # Calculate column averages using awk
+    tail -n +2 "$PI_FILE" | awk -F'\t' '
+    BEGIN {
+        sum1=0; sum2=0; sum3nf=0; sum3f=0; n=0
+    }
+    {
+        if ($3 > 0) sum1 += $5/$3
+        if ($6 > 0) sum2 += $8/$6
+        if ($9 > 0) sum3nf += $11/$9
+        if ($12 > 0) sum3f += $14/$12
+        n++
+    }
+    END {
+        printf "  π (1st position):     %.6f\n", sum1/n
+        printf "  π (2nd position):     %.6f\n", sum2/n
+        printf "  π (3rd non-4f):       %.6f\n", sum3nf/n
+        printf "  π (3rd 4-fold):       %.6f\n", sum3f/n
+    }'
+fi
+
+# ============================================================================
+# Completion
+# ============================================================================
+
+END_TIME=$(date +%s)
+TOTAL_ELAPSED=$((END_TIME - START_TIME))
+
+echo ""
+echo "========================================="
+echo "Analysis Complete!"
+echo "========================================="
+echo ""
+echo "Total time: $(($TOTAL_ELAPSED / 60)) minutes"
+echo ""
+echo "Output files in: $OUTPUT_DIR/"
+echo ""
+echo "Next steps:"
+echo "  1. Load results into R:"
+echo "     polymorphism_data <- read.table('$OUTPUT_DIR/all_chromosomes.bygene.pi.txt', header=TRUE)"
+echo ""
+echo "  2. Merge with CUB data:"
+echo "     cub_polymorphism <- left_join(exp_enc_data_cai, polymorphism_data, by=c('Gene_name'='Gene'))"
+echo ""
+echo "  3. Test hypotheses:"
+echo "     cor.test(cub_polymorphism\$CAI, cub_polymorphism\$Pi_3_4f)"
+echo ""
