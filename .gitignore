@@ -16,3 +16,5 @@ data/leaf_gene_expression_mean_cpm.txt
 data/new_name_old_name.genes.xlsx
 Todo
 miscellanea_code/proc2.py
+data/all_chromosomes.bygene.pi.txt
+data/all_chromosomes.codon_frequencies_preferred_centric.txt

@@ -212,9 +212,11 @@ def calculate_theta_w(n_poly, n_total, n_samples):
     # Calculate harmonic number a_n
     a_n = sum(1.0 / i for i in range(1, n_samples))
     
-    theta_w = float(n_poly) / a_n if a_n > 0 else 0.0
+    theta_w_per_locus = float(n_poly) / a_n if a_n > 0 else 0.0
     
-    return theta_w
+    theta_w_per_site = theta_w_per_locus / n_total  # Scale to total sites
+
+    return theta_w_per_site
 
 def calculate_tajimas_d(pi, theta_w, n_poly, n_samples):
     """
