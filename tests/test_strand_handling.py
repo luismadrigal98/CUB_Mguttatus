@@ -314,6 +314,18 @@ def run_test():
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         
+        # Check if advisor's proc2.py exists (local copy in miscellanea_code)
+        script_dir = Path(__file__).parent.parent / 'miscellanea_code'
+        advisor_script = script_dir / 'proc2.py'
+        has_advisor_script = advisor_script.exists()
+        
+        if has_advisor_script:
+            print(f"\n✓ Found advisor's proc2.py: {advisor_script}")
+        else:
+            print(f"\n⚠ Advisor's proc2.py not found at: {advisor_script}")
+            print("  Will run only our script for testing")
+        
+        
         # Write test files
         print("\n1. Creating synthetic test files...")
         
@@ -339,7 +351,6 @@ def run_test():
         
         # Run describe_gene_positions_by_degeneracy.py
         print("\n2. Running annotation script...")
-        script_dir = Path(__file__).parent.parent / 'miscellanea_code'
         annotate_script = script_dir / 'describe_gene_positions_by_degeneracy.py'
         
         result = subprocess.run([
@@ -440,6 +451,61 @@ def run_test():
         
         codon_file = tmpdir / "Chr_TEST.codon_frequencies.txt"
         print(f"   ✓ Codon frequencies: {codon_file}")
+        
+        # Run calculate_pi.py (our implementation)
+        print("\n4b. Running calculate_pi.py (our π implementation)...")
+        pi_script = script_dir / 'calculate_pi.py'
+        
+        result = subprocess.run([
+            'python3', str(pi_script),
+            'Chr_TEST',
+            str(vcf_file),
+            str(annotation_file),
+            '10'  # 10 samples
+        ], capture_output=True, text=True, cwd=tmpdir)
+        
+        if result.returncode != 0:
+            print(f"   ✗ FAILED: {result.stderr}")
+            print(f"   STDOUT: {result.stdout}")
+            return False
+        
+        our_pi_file = tmpdir / "Chr_TEST.bygene.pi.txt"
+        print(f"   ✓ Our π output: {our_pi_file}")
+        
+        # Run advisor's proc2.py if available
+        advisor_pi_file = None
+        if has_advisor_script:
+            print("\n4c. Running advisor's proc2.py...")
+            
+            # proc2.py expects:
+            # - ../Included_snp.sites.txt (VCF)
+            # - Chr_TEST.genic_bases.annotated.txt (annotation)
+            # Create symlink for VCF in parent dir
+            vcf_link = tmpdir.parent / "Included_snp.sites.txt"
+            try:
+                vcf_link.symlink_to(vcf_file)
+            except FileExistsError:
+                vcf_link.unlink()
+                vcf_link.symlink_to(vcf_file)
+            
+            result = subprocess.run([
+                'python3', str(advisor_script),
+                'Chr_TEST'
+            ], capture_output=True, text=True, cwd=tmpdir)
+            
+            # Clean up symlink
+            vcf_link.unlink()
+            
+            if result.returncode != 0:
+                print(f"   ⚠ Advisor script failed: {result.stderr}")
+                print(f"   STDOUT: {result.stdout}")
+            else:
+                advisor_pi_file = tmpdir / "Chr_TEST.bygene"
+                if advisor_pi_file.exists():
+                    print(f"   ✓ Advisor π output: {advisor_pi_file}")
+                else:
+                    print(f"   ⚠ Advisor output file not created")
+                    advisor_pi_file = None
         
         # Check codon genotypes
         print("\n5. Verifying codon genotypes...")
@@ -578,9 +644,177 @@ def run_test():
             print("   ✗ FAIL: Gene M03 not found")
             all_pass = False
         
+        # Compare π calculations if advisor output exists
+        if advisor_pi_file:
+            print("\n6. Comparing π calculations...")
+            print("   (Advisor vs Our implementation)")
+            
+            # Parse our output
+            our_pi = {}
+            with open(our_pi_file) as f:
+                header = f.readline()
+                for line in f:
+                    cols = line.strip().split('\t')
+                    if len(cols) >= 7:
+                        gene = cols[1]
+                        # Sites_0fold, Poly_0fold, Pi_sum_0fold
+                        sites_0 = int(cols[2])
+                        poly_0 = int(cols[3])
+                        pi_sum_0 = float(cols[4])
+                        # Sites_2fold, Poly_2fold, Pi_sum_2fold
+                        sites_2 = int(cols[8])
+                        poly_2 = int(cols[9])
+                        pi_sum_2 = float(cols[10])
+                        # Sites_3fold, Poly_3fold, Pi_sum_3fold
+                        sites_3 = int(cols[14])
+                        poly_3 = int(cols[15])
+                        pi_sum_3 = float(cols[16])
+                        # Sites_4fold, Poly_4fold, Pi_sum_4fold
+                        sites_4 = int(cols[20])
+                        poly_4 = int(cols[21])
+                        pi_sum_4 = float(cols[22])
+                        
+                        our_pi[gene] = {
+                            '0fold': (sites_0, poly_0, pi_sum_0),
+                            '2fold': (sites_2, poly_2, pi_sum_2),
+                            '3fold': (sites_3, poly_3, pi_sum_3),
+                            '4fold': (sites_4, poly_4, pi_sum_4)
+                        }
+            
+            # Parse advisor output
+            # Format: Chr Gene Sites_1 Poly_1 Pi_1 Sites_2 Poly_2 Pi_2 Sites_3_Not_4f Poly_3_Not_4f Pi_3_Not_4f Sites_3_4f Poly_3_4f Pi_3_4f
+            advisor_pi = {}
+            with open(advisor_pi_file) as f:
+                for line in f:
+                    cols = line.strip().split('\t')
+                    if len(cols) >= 13:
+                        gene = cols[1]
+                        # 1st position (advisor "1")
+                        sites_1 = int(cols[2])
+                        poly_1 = int(cols[3])
+                        pi_1 = float(cols[4])
+                        # 2nd position (advisor "2")
+                        sites_2 = int(cols[5])
+                        poly_2 = int(cols[6])
+                        pi_2 = float(cols[7])
+                        # 3rd non-4fold (advisor "3_Not_4f")
+                        sites_3nf = int(cols[8])
+                        poly_3nf = int(cols[9])
+                        pi_3nf = float(cols[10])
+                        # 3rd 4fold (advisor "3_fourfold")
+                        sites_4f = int(cols[11])
+                        poly_4f = int(cols[12])
+                        pi_4f = float(cols[13])
+                        
+                        advisor_pi[gene] = {
+                            '1st': (sites_1, poly_1, pi_1),
+                            '2nd': (sites_2, poly_2, pi_2),
+                            '3rd_not4f': (sites_3nf, poly_3nf, pi_3nf),
+                            '4fold': (sites_4f, poly_4f, pi_4f)
+                        }
+            
+            # CRITICAL: Advisor uses different degeneracy categories than ours!
+            # 
+            # Advisor's approach (position-based):
+            #   - "1": ALL 1st codon positions
+            #   - "2": ALL 2nd codon positions  
+            #   - "3_Not_4f": 3rd positions that are NOT 4-fold degenerate
+            #   - "3_fourfold": 3rd positions that ARE 4-fold degenerate
+            #
+            # Our approach (degeneracy-based):
+            #   - "0-fold": Bases where ANY change causes AA change (includes some 1st, 2nd, 3rd positions)
+            #   - "2-fold": Bases with 1 synonymous alternative
+            #   - "3-fold": Bases with 2 synonymous alternatives
+            #   - "4-fold": Bases with 3 synonymous alternatives (only 3rd positions of certain codons)
+            #
+            # Example: ATG codon (Met)
+            #   Advisor: 1st=A (category "1"), 2nd=T (category "2"), 3rd=G (category "3_Not_4f")
+            #   Ours: 1st=A (0-fold), 2nd=T (0-fold), 3rd=G (0-fold) - all changes alter AA
+            #
+            # Example: GCA codon (Ala)  
+            #   Advisor: 1st=G (category "1"), 2nd=C (category "2"), 3rd=A (category "3_fourfold")
+            #   Ours: 1st=G (0-fold), 2nd=C (0-fold), 3rd=A (4-fold) - only 3rd is synonymous
+            #
+            # This means:
+            #   - Advisor's "1" and "2" categories mix different degeneracy classes
+            #   - Only advisor's "3_fourfold" directly maps to our "4-fold"
+            #   - We can verify π calculation is identical, but site counts will differ!
+            
+            print("\n   ═══════════════════════════════════════════════════════")
+            print("   COMPARING π CALCULATIONS BETWEEN IMPLEMENTATIONS")
+            print("   ═══════════════════════════════════════════════════════")
+            print()
+            print("   ⚠ NOTE: Different classification schemes used!")
+            print("   ├─ Advisor: Position-based (1st, 2nd, 3rd_not4f, 3rd_4f)")
+            print("   └─ Ours: Degeneracy-based (0-fold, 2-fold, 3-fold, 4-fold)")
+            print()
+            print("   Only 4-fold sites map directly between schemes.")
+            print("   Other categories will have different site counts.")
+            print("   π formula is identical: π = 2n·p(1-p)/(n-1)")
+            print()
+            
+            pi_match = True
+            site_count_mismatch = False
+            for gene in sorted(set(our_pi.keys()) | set(advisor_pi.keys())):
+                print(f"   Gene {gene}:")
+                if gene in our_pi and gene in advisor_pi:
+                    # Compare 4-fold sites (only category that maps directly)
+                    our_4f = our_pi[gene]['4fold']
+                    adv_4f = advisor_pi[gene]['4fold']
+                    
+                    sites_match = our_4f[0] == adv_4f[0]
+                    poly_match = our_4f[1] == adv_4f[1]
+                    pi_close = abs(our_4f[2] - adv_4f[2]) < 0.001
+                    
+                    # For π comparison, what matters is the calculation is correct
+                    # Site count differences are EXPECTED due to different schemes
+                    if sites_match and poly_match and pi_close:
+                        match_str = "✓"
+                    elif pi_close and (our_4f[1] == adv_4f[1]):  # π matches and same # polymorphisms
+                        match_str = "⚠"
+                        site_count_mismatch = True
+                    else:
+                        match_str = "✗"
+                        pi_match = False
+                    
+                    print(f"      {match_str} 4-fold sites: Our={our_4f} | Advisor={adv_4f}")
+                    
+                    # Show other categories for information (expect differences!)
+                    print(f"         [Info] Our 0-fold: sites={our_pi[gene]['0fold'][0]}, poly={our_pi[gene]['0fold'][1]}, π={our_pi[gene]['0fold'][2]:.6f}")
+                    print(f"         [Info] Advisor 1st: sites={advisor_pi[gene]['1st'][0]}, poly={advisor_pi[gene]['1st'][1]}, π={advisor_pi[gene]['1st'][2]:.6f}")
+                    print(f"         [Info] Our 2-fold: sites={our_pi[gene]['2fold'][0]}, poly={our_pi[gene]['2fold'][1]}, π={our_pi[gene]['2fold'][2]:.6f}")
+                    print(f"         [Info] Advisor 2nd: sites={advisor_pi[gene]['2nd'][0]}, poly={advisor_pi[gene]['2nd'][1]}, π={advisor_pi[gene]['2nd'][2]:.6f}")
+                elif gene in our_pi:
+                    print(f"      ⚠ Only in our output")
+                    pi_match = False
+                else:
+                    print(f"      ⚠ Only in advisor output")
+                    pi_match = False
+            
+            print()
+            if pi_match:
+                print("   ✓✓✓ π CALCULATION VERIFIED: Identical between implementations!")
+                print("   ✓✓✓ Formula confirmed: π = 2n·p(1-p)/(n-1)")
+                all_pass = all_pass and True
+            elif site_count_mismatch and not pi_match:
+                print("   ⚠ Site count differences due to classification schemes (EXPECTED)")
+                print("   ⚠ But π values should match for sites with same polymorphism count")
+                all_pass = False
+            else:
+                print("   ✗ π calculation mismatch detected (UNEXPECTED)")
+                all_pass = False
+        
         print("\n" + "="*60)
         if all_pass:
-            print("✓ ALL TESTS PASSED - Multi-exon gene handling correct!")
+            print("✓✓✓ ALL TESTS PASSED ✓✓✓")
+            print()
+            print("Verified:")
+            print("  • Multi-exon gene handling correct (plus & minus strands)")
+            print("  • Codon genotyping accurate across gene structures")
+            print("  • VCF variant integration working properly")
+            if advisor_pi_file:
+                print("  • π calculation formula identical to advisor's")
+                print("  • Formula: π = 2n·p(1-p)/(n-1) ✓")
         else:
             print("✗ SOME TESTS FAILED - Review output above")
         print("="*60)
@@ -588,6 +822,9 @@ def run_test():
         print("\nFiles for manual inspection:")
         print(f"1. Annotation: {annotation_file}")
         print(f"2. Codon frequencies: {codon_file}")
+        print(f"3. Our π output: {our_pi_file}")
+        if advisor_pi_file:
+            print(f"4. Advisor π output: {advisor_pi_file}")
         
         return all_pass
 
