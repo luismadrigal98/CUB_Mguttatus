@@ -1,11 +1,20 @@
 #!/bin/bash
+#SBATCH --job-name=codon_polymorphism
+#SBATCH --output=logs/codon_poly_%A_%a.out
+#SBATCH --error=logs/codon_poly_%A_%a.err
+#SBATCH --array=1-14
+#SBATCH --time=12:00:00
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=kucg,eeb,kelly
 #
 # run_polymorphism_analysis.sh
 #
 # Wrapper script to run codon-aware polymorphism analysis on all chromosomes.
 # 
 # Usage:
-#   bash run_polymorphism_analysis.sh
+#   Sequential (local):  bash run_polymorphism_analysis.sh
+#   Parallel (HPC):      sbatch run_polymorphism_analysis.sh
 #
 # Requirements:
 #   - Python 3.x
@@ -21,6 +30,15 @@ set -u  # Exit on undefined variable
 # Configuration
 # ============================================================================
 
+# Detect if running in SLURM environment (parallel) or standalone (sequential)
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    PARALLEL_MODE=1
+    echo "Running in PARALLEL mode (SLURM array job)"
+else
+    PARALLEL_MODE=0
+    echo "Running in SEQUENTIAL mode"
+fi
+
 # Input files
 GFF3="data/Mguttatusvar_IM767_887_v2.1.gene.gff3"
 GENOME_FA="data/Mguttatusvar_IM767_887_v2.0.fa"
@@ -29,7 +47,7 @@ VCF="Included_snp.sites.txt"
 PREFERRED_CODONS="preferred_codons.txt"
 
 # Chromosomes to process
-CHROMOSOMES="Chr_01 Chr_02 Chr_03 Chr_04 Chr_05 Chr_06 Chr_07 Chr_08 Chr_09 Chr_10 Chr_11 Chr_12 Chr_13 Chr_14"
+CHROMOSOMES_ARRAY=(Chr_01 Chr_02 Chr_03 Chr_04 Chr_05 Chr_06 Chr_07 Chr_08 Chr_09 Chr_10 Chr_11 Chr_12 Chr_13 Chr_14)
 
 # Python scripts directory
 SCRIPT_DIR="miscellanea_code"
@@ -37,14 +55,43 @@ SCRIPT_DIR="miscellanea_code"
 # Output directory
 OUTPUT_DIR="results/polymorphism_analysis"
 
+# Create output directories
+mkdir -p "$OUTPUT_DIR"
+mkdir -p logs
+
+# ============================================================================
+# Determine chromosomes to process
+# ============================================================================
+
+if [ $PARALLEL_MODE -eq 1 ]; then
+    # Parallel mode: process single chromosome based on array task ID
+    CHR=${CHROMOSOMES_ARRAY[$SLURM_ARRAY_TASK_ID-1]}
+    CHROMOSOMES_TO_PROCESS=($CHR)
+    
+    echo "========================================="
+    echo "Codon-Aware Polymorphism Analysis"
+    echo "PARALLEL MODE - Processing: $CHR"
+    echo "========================================="
+    echo "Job ID: $SLURM_JOB_ID"
+    echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
+    echo "Node: ${SLURM_NODELIST:-localhost}"
+    echo "Started: $(date)"
+    echo ""
+else
+    # Sequential mode: process all chromosomes
+    CHROMOSOMES_TO_PROCESS=("${CHROMOSOMES_ARRAY[@]}")
+    
+    echo "========================================="
+    echo "Codon-Aware Polymorphism Analysis"
+    echo "SEQUENTIAL MODE - Processing all chromosomes"
+    echo "========================================="
+    echo "Started: $(date)"
+    echo ""
+fi
+
 # ============================================================================
 # Pre-flight checks
 # ============================================================================
-
-echo "========================================="
-echo "Codon-Aware Polymorphism Analysis"
-echo "========================================="
-echo ""
 
 # Check if required files exist
 echo "Checking input files..."
@@ -62,14 +109,16 @@ if [ ! -f "$PREFERRED_CODONS" ]; then
     echo ""
     echo "WARNING: Preferred codons file not found: $PREFERRED_CODONS"
     echo ""
-    echo "Please create this file first from your R analysis:"
-    echo ""
-    echo "  preferred_codons <- cai_results\$w_table %>%"
-    echo "    filter(relative_adaptiveness == 1.0) %>%"
-    echo "    pull(codon)"
-    echo "  writeLines(preferred_codons, \"$PREFERRED_CODONS\")"
-    echo ""
-    echo "Continuing without step 3 (codon frequency analysis)..."
+    if [ $PARALLEL_MODE -eq 0 ]; then
+        echo "Please create this file first from your R analysis:"
+        echo ""
+        echo "  preferred_codons <- cai_results\$w_table %>%"
+        echo "    filter(relative_adaptiveness == 1.0) %>%"
+        echo "    pull(codon)"
+        echo "  writeLines(preferred_codons, \"$PREFERRED_CODONS\")"
+        echo ""
+    fi
+    echo "Continuing without steps 3, 3b, 3c (codon frequency analysis)..."
     SKIP_STEP3=1
 else
     echo "  ✓ $PREFERRED_CODONS"
@@ -94,11 +143,23 @@ for SCRIPT in "$SCRIPT1" "$SCRIPT2" "$SCRIPT3" "$SCRIPT4" "$SCRIPT5"; do
     echo "  ✓ $SCRIPT"
 done
 
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
-
 echo ""
 echo "All checks passed! Starting analysis..."
+echo ""
+
+# ============================================================================
+# Detect sample size from VCF (only once for speed)
+# ============================================================================
+
+echo "Detecting sample size from VCF..."
+N_SAMPLES=$(grep -m1 "^#CHROM" "$VCF" | awk '{print NF-9}')
+
+if [ -z "$N_SAMPLES" ] || [ "$N_SAMPLES" -lt 1 ]; then
+    echo "ERROR: Could not determine sample size from VCF"
+    exit 1
+fi
+
+echo "  ✓ Detected $N_SAMPLES samples in VCF"
 echo ""
 
 # ============================================================================
@@ -107,7 +168,7 @@ echo ""
 
 START_TIME=$(date +%s)
 
-for CHR in $CHROMOSOMES; do
+for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
     echo "========================================="
     echo "Processing $CHR"
     echo "========================================="
@@ -157,6 +218,7 @@ for CHR in $CHROMOSOMES; do
             "$CHR" \
             "$VCF" \
             "$ANNOTATION_FILE" \
+            "$N_SAMPLES" \
             > "${OUTPUT_DIR}/${CHR}.step2.log" 2>&1
         
         # Move output to results directory
@@ -249,8 +311,20 @@ for CHR in $CHROMOSOMES; do
 done
 
 # ============================================================================
-# Concatenate results across chromosomes
+# Concatenate results across chromosomes (sequential mode only)
 # ============================================================================
+
+if [ $PARALLEL_MODE -eq 1 ]; then
+    echo ""
+    echo "========================================="
+    echo "Completed: $CHR"
+    echo "Finished: $(date)"
+    echo "========================================="
+    echo ""
+    echo "After all array jobs complete, run concatenation step:"
+    echo "  bash ${SCRIPT_DIR}/concatenate_results.sh"
+    exit 0
+fi
 
 echo "========================================="
 echo "Concatenating results across chromosomes"
@@ -261,7 +335,7 @@ echo ""
 echo "Creating all_chromosomes.bygene.pi.txt..."
 
 FIRST=1
-for CHR in $CHROMOSOMES; do
+for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
     PI_FILE="${OUTPUT_DIR}/${CHR}.bygene.pi.txt"
     
     if [ ! -f "$PI_FILE" ]; then
@@ -287,7 +361,7 @@ if [ $SKIP_STEP3 -eq 0 ]; then
     echo "Creating all_chromosomes.codon_frequencies.txt..."
     
     FIRST=1
-    for CHR in $CHROMOSOMES; do
+    for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
         CODON_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies.txt"
         
         if [ ! -f "$CODON_FILE" ]; then
@@ -310,7 +384,7 @@ if [ $SKIP_STEP3 -eq 0 ]; then
     echo "Creating all_chromosomes.codon_frequencies_preferred.txt..."
     
     FIRST=1
-    for CHR in $CHROMOSOMES; do
+    for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
         CODON_PREF_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies_preferred.txt"
         
         if [ ! -f "$CODON_PREF_FILE" ]; then
@@ -333,7 +407,7 @@ if [ $SKIP_STEP3 -eq 0 ]; then
     echo "Creating all_chromosomes.site_freq_by_preference.txt..."
     
     FIRST=1
-    for CHR in $CHROMOSOMES; do
+    for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
         SITE_FREQ_FILE="${OUTPUT_DIR}/${CHR}.site_freq_by_preference.txt"
         
         if [ ! -f "$SITE_FREQ_FILE" ]; then
