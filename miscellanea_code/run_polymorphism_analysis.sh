@@ -83,8 +83,10 @@ echo "Checking Python scripts..."
 SCRIPT1="$SCRIPT_DIR/describe_gene_positions_by_degeneracy.py"
 SCRIPT2="$SCRIPT_DIR/calculate_pi.py"
 SCRIPT3="$SCRIPT_DIR/calculate_freq_preferred_codon.py"
+SCRIPT4="$SCRIPT_DIR/calculate_site_freq_by_preference.py"
+SCRIPT5="$SCRIPT_DIR/reformat_codon_freq_by_preference.py"
 
-for SCRIPT in "$SCRIPT1" "$SCRIPT2" "$SCRIPT3"; do
+for SCRIPT in "$SCRIPT1" "$SCRIPT2" "$SCRIPT3" "$SCRIPT4" "$SCRIPT5"; do
     if [ ! -f "$SCRIPT" ]; then
         echo "ERROR: Python script not found: $SCRIPT"
         exit 1
@@ -171,7 +173,7 @@ for CHR in $CHROMOSOMES; do
     
     if [ $SKIP_STEP3 -eq 0 ]; then
         echo ""
-        echo "Step 3: Analyzing preferred codon frequencies..."
+        echo "Step 3: Analyzing codon-level frequencies..."
         
         CODON_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies.txt"
         
@@ -193,6 +195,48 @@ for CHR in $CHROMOSOMES; do
             fi
             
             echo "  ✓ Created $CODON_FILE"
+        fi
+        
+        # Reformat to preferred-centric view
+        echo ""
+        echo "Step 3b: Reformatting codons by preference..."
+        
+        CODON_PREF_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies_preferred.txt"
+        
+        if [ -f "$CODON_PREF_FILE" ]; then
+            echo "  ⚠ Preferred-centric file already exists, skipping..."
+        else
+            python3 "$SCRIPT5" \
+                "$CODON_FILE" \
+                "$PREFERRED_CODONS" \
+                "$CODON_PREF_FILE" \
+                > "${OUTPUT_DIR}/${CHR}.step3b.log" 2>&1
+            
+            echo "  ✓ Created $CODON_PREF_FILE"
+        fi
+        
+        # Calculate site-level frequencies by preference and degeneracy
+        echo ""
+        echo "Step 3c: Calculating site-level frequencies by preference..."
+        
+        SITE_FREQ_FILE="${OUTPUT_DIR}/${CHR}.site_freq_by_preference.txt"
+        
+        if [ -f "$SITE_FREQ_FILE" ]; then
+            echo "  ⚠ Site frequency file already exists, skipping..."
+        else
+            python3 "$SCRIPT4" \
+                "$CHR" \
+                "$VCF" \
+                "$ANNOTATION_FILE" \
+                "$PREFERRED_CODONS" \
+                > "${OUTPUT_DIR}/${CHR}.step3c.log" 2>&1
+            
+            # Move output to results directory
+            if [ -f "${CHR}.site_freq_by_preference.txt" ]; then
+                mv "${CHR}.site_freq_by_preference.txt" "$SITE_FREQ_FILE"
+            fi
+            
+            echo "  ✓ Created $SITE_FREQ_FILE"
         fi
     fi
     
@@ -260,6 +304,52 @@ if [ $SKIP_STEP3 -eq 0 ]; then
     done
     
     echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.codon_frequencies.txt"
+    
+    # Concatenate preferred-centric codon frequencies
+    echo ""
+    echo "Creating all_chromosomes.codon_frequencies_preferred.txt..."
+    
+    FIRST=1
+    for CHR in $CHROMOSOMES; do
+        CODON_PREF_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies_preferred.txt"
+        
+        if [ ! -f "$CODON_PREF_FILE" ]; then
+            echo "  ⚠ Warning: $CODON_PREF_FILE not found, skipping..."
+            continue
+        fi
+        
+        if [ $FIRST -eq 1 ]; then
+            cat "$CODON_PREF_FILE" > "${OUTPUT_DIR}/all_chromosomes.codon_frequencies_preferred.txt"
+            FIRST=0
+        else
+            tail -n +2 "$CODON_PREF_FILE" >> "${OUTPUT_DIR}/all_chromosomes.codon_frequencies_preferred.txt"
+        fi
+    done
+    
+    echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.codon_frequencies_preferred.txt"
+    
+    # Concatenate site-level frequencies by preference
+    echo ""
+    echo "Creating all_chromosomes.site_freq_by_preference.txt..."
+    
+    FIRST=1
+    for CHR in $CHROMOSOMES; do
+        SITE_FREQ_FILE="${OUTPUT_DIR}/${CHR}.site_freq_by_preference.txt"
+        
+        if [ ! -f "$SITE_FREQ_FILE" ]; then
+            echo "  ⚠ Warning: $SITE_FREQ_FILE not found, skipping..."
+            continue
+        fi
+        
+        if [ $FIRST -eq 1 ]; then
+            cat "$SITE_FREQ_FILE" > "${OUTPUT_DIR}/all_chromosomes.site_freq_by_preference.txt"
+            FIRST=0
+        else
+            tail -n +2 "$SITE_FREQ_FILE" >> "${OUTPUT_DIR}/all_chromosomes.site_freq_by_preference.txt"
+        fi
+    done
+    
+    echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.site_freq_by_preference.txt"
 fi
 
 # ============================================================================
