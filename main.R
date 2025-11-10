@@ -191,7 +191,6 @@ integrated_data <- integrated_data |>
 
 integrated_data <- integrated_data |>
   dplyr::mutate(High_exp_log2 = log2(High_exp + 1))  # Adding 1 to avoid log2(0)egrated_data <- integrated_data |>
-  dplyr::mutate(High_exp_log2 = log2(integrated_data$High_exp))
 
 cor(x = integrated_data$ENC, y = integrated_data$High_exp_log2)
 
@@ -849,6 +848,9 @@ cat("Using optimal codons from CAI reference set...\n")
 preferred_codons_mg <- w_table |>
   dplyr::filter(relative_adaptiveness == 1.0) |>
   dplyr::select(codon)
+
+write.table(x = preferred_codons_mg, file = 'results/preferred_codons.txt', 
+            col.names = F, row.names = F, quote = F)
 
 # Get preferred codons (those with relative_adaptiveness == 1.0)
 preferred_codons_mg <- w_table |>
@@ -1937,5 +1939,64 @@ cat("\n✓ Selection coefficient analysis complete!\n")
 cat("  Results saved to ./results/selection_coefficients.csv\n")
 
 # Add polymorphism data integration here if available (not implemented)
+
+## xx) Polymorphism data integration ----
+
+pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
+
+# Homogenizing gene names to match the previous convention
+
+pi_data <- pi_data |>
+  dplyr::select(Chr, Gene, contains("Tajima"), contains("mean")) |>
+  dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
+  dplyr::rename(Gene_name = Gene)
+
+# Analyzing the diversity of synonymous sites 
+
+integrated_data <- integrated_data |>
+  left_join(y = pi_data, by = "Gene_name")
+
+# Exploring the relationship between diversity (4-fold) and ENC
+
+plot(x = integrated_data$Pi_mean_4fold, 
+           y = integrated_data$High_exp_log2)
+lm(High_exp_log2 ~ Pi_mean_4fold, data = integrated_data)
+plot(x = integrated_data$Pi_mean_all, 
+     y = integrated_data$High_exp_log2)
+lm(High_exp_log2 ~ Pi_mean_all, data = integrated_data)
+
+# Does 4-fold differs from background?
+
+t.test(integrated_data$Pi_mean_4fold, integrated_data$Pi_mean_all)
+
+# Boxplot for expression groups and 4-fold pi
+
+p_pi_4fold <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_4fold)) +
+  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
+  labs(title = "Nucleotide Diversity at 4-fold Synonymous Sites by Expression Group",
+       x = "Expression Group",
+       y = "Pi (4-fold Synonymous Sites)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)) +
+  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
+  labs(title = "Nucleotide Diversity by Expression Group",
+       x = "Expression Group",
+       y = "Pi (overall)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+# Bringing in the CDC results
+
+integrated_data <- integrated_data |>
+  left_join(cdc_results[, c("Gene_name", "CDC", "p_adj")], by = 'Gene_name')
+
+int_variables <- integrated_data |>
+  dplyr::select("CDC", "Pi_mean_0fold", "Pi_mean_2fold", "Pi_mean_3fold",
+                "Pi_mean_4fold", "Pi_mean_all", "p_adj", "ENC") |>
+  as.matrix()
+
+int_cor <- corrr::correlate(x = int_variables)
 
 save.image('Env')
