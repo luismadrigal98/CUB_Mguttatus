@@ -65,7 +65,8 @@ def build_gene_name_dictionary_from_refs(crossref_file):
 
 def remap_expression_file(input_expression_file, output_expression_file, gene_name_dict):
     '''
-    This function remaps gene names in the expression data file
+    This function remaps gene names in the expression data file and sums expression
+    values for genes that map to the same IM767 gene.
 
     @param input_expression_file: Path to the input expression data file
     @param output_expression_file: Path to the output remapped expression data file
@@ -88,7 +89,37 @@ def remap_expression_file(input_expression_file, output_expression_file, gene_na
     print(f"Total genes in original file: {total_genes}")
     print(f"Total genes after remapping: {remapped_genes}")
 
-    expression_data.to_csv(output_expression_file, sep='\t', index=False)
+    # Check for duplicates BEFORE summing
+    duplicate_check = expression_data.groupby('Remapped_Gene').size()
+    duplicated_genes = duplicate_check[duplicate_check > 1]
+    
+    if len(duplicated_genes) > 0:
+        print(f"\nFound {len(duplicated_genes)} genes with multiple expression entries")
+        print("Examples (first 5):")
+        for gene in duplicated_genes.head(5).index:
+            subset = expression_data[expression_data['Remapped_Gene'] == gene]
+            print(f"  {gene}: {len(subset)} entries with values {subset['Expression'].tolist()}")
+    
+    # Sum expression values for duplicate gene mappings
+    # This is correct for CPM because we're combining reads that map to the same locus
+    expression_data_summed = expression_data.groupby('Remapped_Gene', as_index=False)['Expression'].sum()
+    
+    final_genes = len(expression_data_summed)
+    duplicates_collapsed = remapped_genes - final_genes
+    
+    if duplicates_collapsed > 0:
+        print(f"Collapsed {duplicates_collapsed} duplicate mappings by summing expression values")
+    
+    print(f"Final unique genes: {final_genes}")
+    
+    # Final sanity check
+    if len(expression_data_summed) != len(expression_data_summed['Gene'].unique()):
+        print("\n*** ERROR: Output still contains duplicate genes! ***")
+    
+    # Rename column for clarity
+    expression_data_summed.columns = ['Gene', 'Expression']
+    
+    expression_data_summed.to_csv(output_expression_file, sep='\t', index=False)
 
 def main():
     # Store arguments
@@ -111,10 +142,39 @@ def main():
     # Combine both dictionaries: IM62_v2.0 -> IM62 -> IM767
     # For each gene in expression file, map to IM62, then to IM767
     final_gene_name_dict = {}
+    duplicates_found = {}
+    
     for im62, im62_v2 in gene_name_dict_stage1.items():
         im767 = gene_name_dict_stage2.get(im62)
         if im767:
-            final_gene_name_dict[im62_v2] = im767
+            # Check if this IM62_v2 already exists in the final dict
+            if im62_v2 in final_gene_name_dict:
+                if im62_v2 not in duplicates_found:
+                    duplicates_found[im62_v2] = []
+                duplicates_found[im62_v2].append((im62, im767))
+            else:
+                final_gene_name_dict[im62_v2] = im767
+    
+    # Report duplicates
+    if duplicates_found:
+        print(f"\nWARNING: Found {len(duplicates_found)} IM62_v2 genes mapping to multiple IM62/IM767 genes")
+        print("Examples (first 5):")
+        for i, (im62_v2, mappings) in enumerate(list(duplicates_found.items())[:5]):
+            print(f"  {im62_v2} -> {mappings}")
+    
+    # Check for duplicate values (multiple IM62_v2 -> same IM767)
+    reverse_dict = {}
+    for im62_v2, im767 in final_gene_name_dict.items():
+        if im767 not in reverse_dict:
+            reverse_dict[im767] = []
+        reverse_dict[im767].append(im62_v2)
+    
+    many_to_one = {k: v for k, v in reverse_dict.items() if len(v) > 1}
+    if many_to_one:
+        print(f"\nWARNING: Found {len(many_to_one)} IM767 genes mapped from multiple IM62_v2 genes")
+        print("Examples (first 5):")
+        for i, (im767, im62_v2_list) in enumerate(list(many_to_one.items())[:5]):
+            print(f"  {im767} <- {im62_v2_list}")
 
     # Remap expression file
     remap_expression_file(input_expression_file, output_expression_file, final_gene_name_dict)
