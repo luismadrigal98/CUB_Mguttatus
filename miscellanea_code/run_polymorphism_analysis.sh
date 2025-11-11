@@ -249,6 +249,7 @@ for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
                 "$CDS_FA" \
                 "$GENOME_FA" \
                 "$PREFERRED_CODONS" \
+                "$N_SAMPLES" \
                 > "${OUTPUT_DIR}/${CHR}.step3.log" 2>&1
             
             # Move output to results directory
