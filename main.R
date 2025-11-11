@@ -95,21 +95,7 @@ cub_results <- cub_summary(codon_usage, genetic_code_dna_long,
                           aa_group = aa_chemistry_df)
 
 ## *****************************************************************************
-## 5) Additional analyses (optional) ----
-## _____________________________________________________________________________
-
-# Create logos
-create_aa_logo(cub_results$pspm_results)
-
-# Create specific visualizations
-visualize_codon_usage(codon_usage, genetic_code_dna_long,
-                     "results/custom_heatmap.pdf", type = "heatmap")
-neutrality_plot(cub_results$gc_results, "results/custom_neutrality.pdf")
-enc_plot(cub_results$enc_results, cub_results$gc_results, "results/custom_enc.pdf")
-pr2_bias_plot(codon_usage, "results/custom_pr2.pdf")
-
-## *****************************************************************************
-## 6) Modeling relationship between ENC and Expression profiles ----
+## 5) Modeling relationship between ENC and Expression profiles ----
 ## _____________________________________________________________________________
 
 # Trimming suffix from ENC table in gene names

@@ -13,8 +13,8 @@ neutrality_plot <- function(gc_content, output_file = "neutrality_plot.pdf")
   #' @return ggplot object
   #' ___________________________________________________________________________
   
-  library(ggplot2)
-  library(data.table)
+  require(ggplot2)
+  require(data.table)
   
   # Remove any NA or infinite values
   plot_data <- gc_content[is.finite(gc_content$GC12) & is.finite(gc_content$GC3), ]
@@ -33,22 +33,15 @@ neutrality_plot <- function(gc_content, output_file = "neutrality_plot.pdf")
     
     # Create plot
     p <- ggplot(plot_data, aes(x = GC12, y = GC3)) +
-      geom_point(alpha = 0.3, size = 1) +
+      geom_pointdensity() +
       geom_smooth(method = "lm", color = "red", se = TRUE) +
-      geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "blue") +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "green") +
       theme_custom() +
       labs(title = "Neutrality Plot (GC12 vs GC3)",
            subtitle = sprintf("r = %.3f, p < %.2e, slope = %.3f", 
                             cor_val, p_val, slope),
            x = "GC12 (1st and 2nd codon positions)",
-           y = "GC3 (3rd codon position)") +
-      annotate("text", x = min(plot_data$GC12) + 0.05, 
-               y = max(plot_data$GC3) - 0.05,
-               label = paste("Slope:", round(slope, 3), 
-                           "\nInterpretation:",
-                           ifelse(slope > 0.5, "Mutation dominates", 
-                                  "Selection dominates")),
-               hjust = 0, size = 3.5)
+           y = "GC3 (3rd codon position)")
     
     ggsave(output_file, p, width = 8, height = 6)
     message(paste("Neutrality plot saved to:", output_file))
@@ -77,8 +70,8 @@ enc_plot <- function(enc_values, gc_content, output_file = "enc_plot.pdf")
   #' @return ggplot object
   #' ___________________________________________________________________________
   
-  library(ggplot2)
-  library(data.table)
+  require(ggplot2)
+  require(data.table)
   
   # Merge data
   plot_data <- merge(enc_values, gc_content[, c("Gene_name", "GC3s")], 
@@ -101,7 +94,7 @@ enc_plot <- function(enc_values, gc_content, output_file = "enc_plot.pdf")
   
   # Create plot
   p <- ggplot(plot_data, aes(x = GC3s, y = ENC)) +
-    geom_point(alpha = 0.3, size = 1, color = "darkgray") +
+    geom_pointdensity() +
     geom_line(data = expected_curve, aes(x = GC3s, y = ENC_expected), 
               color = "red", linewidth = 1) +
     theme_custom() +
@@ -110,10 +103,7 @@ enc_plot <- function(enc_values, gc_content, output_file = "enc_plot.pdf")
          x = "GC3s (GC content at synonymous 3rd positions)",
          y = "ENC (Effective Number of Codons)") +
     ylim(20, 61) +
-    xlim(0, 1) +
-    annotate("text", x = 0.1, y = 25,
-             label = "Genes below curve:\nunder selection for codon bias",
-             hjust = 0, size = 3.5, color = "red")
+    xlim(0, 1)
   
   ggsave(output_file, p, width = 8, height = 6)
   message(paste("ENC plot saved to:", output_file))
@@ -135,8 +125,8 @@ pr2_bias_plot <- function(codon_counts, output_file = "pr2_plot.pdf")
   #' @return ggplot object
   #' ___________________________________________________________________________
   
-  library(ggplot2)
-  library(data.table)
+  require(ggplot2)
+  require(data.table)
   
   codon_cols <- setdiff(names(codon_counts), "Gene_name")
   
@@ -181,18 +171,16 @@ pr2_bias_plot <- function(codon_counts, output_file = "pr2_plot.pdf")
   
   # Create plot
   p <- ggplot(plot_data, aes(x = AU3, y = GC3)) +
-    geom_point(alpha = 0.3, size = 1) +
-    geom_vline(xintercept = 0.5, linetype = "dashed", color = "red") +
-    geom_hline(yintercept = 0.5, linetype = "dashed", color = "red") +
+    geom_pointdensity() +
+    geom_vline(xintercept = 0.5, linetype = "dashed", color = "green") +
+    geom_hline(yintercept = 0.5, linetype = "dashed", color = "green") +
     theme_custom() +
     labs(title = "PR2 Bias Plot (Parity Rule 2)",
          subtitle = "Analysis of purine/pyrimidine bias at 3rd codon position",
          x = "A3/(A3+T3) - A vs T at 3rd position",
          y = "G3/(G3+C3) - G vs C at 3rd position") +
     xlim(0, 1) +
-    ylim(0, 1) +
-    annotate("text", x = 0.5, y = 0.5, label = "No bias",
-             size = 3, color = "red", vjust = -0.5)
+    ylim(0, 1)
   
   ggsave(output_file, p, width = 8, height = 6)
   message(paste("PR2 plot saved to:", output_file))
