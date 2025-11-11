@@ -12,107 +12,64 @@ calculate_gc_content <- function(codon_counts)
   
   library(data.table)
   
-  codon_cols <- setdiff(names(codon_counts), "Gene_name")
+  # Convert to data.table if not already
+  dt <- as.data.table(codon_counts)
   
-  # Initialize results
-  results <- data.frame(
-    Gene_name = codon_counts$Gene_name,
-    GC = numeric(nrow(codon_counts)),
-    GC1 = numeric(nrow(codon_counts)),
-    GC2 = numeric(nrow(codon_counts)),
-    GC3 = numeric(nrow(codon_counts)),
-    GC12 = numeric(nrow(codon_counts)),
-    GC3s = numeric(nrow(codon_counts))
+  codon_cols <- setdiff(names(dt), "Gene_name")
+  
+  # Pre-compute base composition for each codon (vectorized, done once)
+  codon_bases <- data.table(
+    Codon = codon_cols,
+    Base1 = substr(codon_cols, 1, 1),
+    Base2 = substr(codon_cols, 2, 2),
+    Base3 = substr(codon_cols, 3, 3),
+    Is_GC1 = as.integer(substr(codon_cols, 1, 1) %in% c("G", "C")),
+    Is_GC2 = as.integer(substr(codon_cols, 2, 2) %in% c("G", "C")),
+    Is_GC3 = as.integer(substr(codon_cols, 3, 3) %in% c("G", "C")),
+    Is_Syn3 = as.integer(!(codon_cols %in% c("ATG", "TGG")))  # Exclude Met, Trp
   )
+  setkey(codon_bases, Codon)
   
-  for(gene_idx in 1:nrow(codon_counts))
-  {
-    # Get counts for all codons
-    total_gc <- 0
-    total_at <- 0
-    
-    gc1 <- 0
-    at1 <- 0
-    gc2 <- 0
-    at2 <- 0
-    gc3 <- 0
-    at3 <- 0
-    gc3s <- 0
-    at3s <- 0
-    
-    for(codon in codon_cols)
-    {
-      count <- as.numeric(codon_counts[gene_idx, codon, with = FALSE])
-      
-      if(count > 0)
-      {
-        bases <- strsplit(codon, "")[[1]]
-        
-        # Position 1
-        if(bases[1] %in% c("G", "C"))
-        {
-          gc1 <- gc1 + count
-          total_gc <- total_gc + count
-        }
-        else
-        {
-          at1 <- at1 + count
-          total_at <- total_at + count
-        }
-        
-        # Position 2
-        if(bases[2] %in% c("G", "C"))
-        {
-          gc2 <- gc2 + count
-          total_gc <- total_gc + count
-        }
-        else
-        {
-          at2 <- at2 + count
-          total_at <- total_at + count
-        }
-        
-        # Position 3
-        if(bases[3] %in% c("G", "C"))
-        {
-          gc3 <- gc3 + count
-          total_gc <- total_gc + count
-        }
-        else
-        {
-          at3 <- at3 + count
-          total_at <- total_at + count
-        }
-        
-        # Position 3 synonymous (exclude ATG and TGG)
-        if(!(codon %in% c("ATG", "TGG")))
-        {
-          if(bases[3] %in% c("G", "C"))
-          {
-            gc3s <- gc3s + count
-          }
-          else
-          {
-            at3s <- at3s + count
-          }
-        }
-      }
-    }
-    
-    total_bases <- total_gc + total_at
-    total1 <- gc1 + at1
-    total2 <- gc2 + at2
-    total3 <- gc3 + at3
-    total12 <- total1 + total2
-    total3s <- gc3s + at3s
-    
-    results$GC[gene_idx] <- ifelse(total_bases > 0, total_gc / total_bases, 0)
-    results$GC1[gene_idx] <- ifelse(total1 > 0, gc1 / total1, 0)
-    results$GC2[gene_idx] <- ifelse(total2 > 0, gc2 / total2, 0)
-    results$GC3[gene_idx] <- ifelse(total3 > 0, gc3 / total3, 0)
-    results$GC12[gene_idx] <- ifelse(total12 > 0, (gc1 + gc2) / total12, 0)
-    results$GC3s[gene_idx] <- ifelse(total3s > 0, gc3s / total3s, 0)
-  }
+  # Melt the data to long format (Gene x Codon x Count)
+  dt_long <- melt(dt, id.vars = "Gene_name", 
+                  variable.name = "Codon", 
+                  value.name = "Count",
+                  variable.factor = FALSE)
   
-  return(results)
+  # Merge with codon base composition
+  dt_long <- merge(dt_long, codon_bases, by = "Codon")
+  
+  # Calculate GC counts per gene using vectorized operations
+  results <- dt_long[, .(
+    # Overall GC
+    GC_count = sum(Count * (Is_GC1 + Is_GC2 + Is_GC3)),
+    Total_count = sum(Count * 3),
+    
+    # Position-specific
+    GC1_count = sum(Count * Is_GC1),
+    Total1 = sum(Count),
+    
+    GC2_count = sum(Count * Is_GC2),
+    Total2 = sum(Count),
+    
+    GC3_count = sum(Count * Is_GC3),
+    Total3 = sum(Count),
+    
+    # GC3s (synonymous sites only)
+    GC3s_count = sum(Count * Is_GC3 * Is_Syn3),
+    Total3s = sum(Count * Is_Syn3)
+  ), by = Gene_name]
+  
+  # Calculate frequencies
+  results[, `:=`(
+    GC = ifelse(Total_count > 0, GC_count / Total_count, 0),
+    GC1 = ifelse(Total1 > 0, GC1_count / Total1, 0),
+    GC2 = ifelse(Total2 > 0, GC2_count / Total2, 0),
+    GC3 = ifelse(Total3 > 0, GC3_count / Total3, 0),
+    GC12 = ifelse(Total1 + Total2 > 0, (GC1_count + GC2_count) / (Total1 + Total2), 0),
+    GC3s = ifelse(Total3s > 0, GC3s_count / Total3s, 0)
+  )]
+  
+  # Return only the final columns
+  return(results[, .(Gene_name, GC, GC1, GC2, GC3, GC12, GC3s)])
 }

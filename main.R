@@ -21,7 +21,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'doFuture', 'ggplot2', 'grid', 'gridExtra',
                         'ggseqlogo', 'FactoMineR',
                         'factoextra', 'dplyr', 'GenomicFeatures',
-                        'ape', 'tidyr', 'caret', 'ggpointdensity')
+                        'ape', 'tidyr', 'caret', 'ggpointdensity',
+                        'DescTools')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -47,6 +48,18 @@ genetic_code_dna_long <- c(
   "GAT"="Asp", "GAC"="Asp", "GAA"="Glu", "GAG"="Glu",
   "GGT"="Gly", "GGC"="Gly", "GGA"="Gly", "GGG"="Gly"
 )
+
+# Define amino acid chemistry groups
+aa_chemistry <- list(
+  "Nonpolar_Aliphatic" = c("Ala", "Gly", "Ile", "Leu", "Met", "Pro", "Val"),
+  "Aromatic" = c("Phe", "Trp", "Tyr"),
+  "Polar_Uncharged" = c("Asn", "Cys", "Gln", "Ser", "Thr"),
+  "Positively_Charged" = c("Arg", "His", "Lys"),
+  "Negatively_Charged" = c("Asp", "Glu")
+)
+
+aa_chemistry_df <- as.data.frame(stack(aa_chemistry))
+colnames(aa_chemistry_df) <- c('AA', 'class')
 
 # Preferred codons in three additional model plants
 
@@ -78,7 +91,8 @@ message("Performing comprehensive codon usage bias analysis...")
 
 # Run complete analysis and generate all outputs
 cub_results <- cub_summary(codon_usage, genetic_code_dna_long, 
-                          output_dir = "./results")
+                          output_dir = "./results",
+                          aa_group = aa_chemistry_df)
 
 ## *****************************************************************************
 ## 5) Additional analyses (optional) ----
@@ -1006,15 +1020,6 @@ cat("Heatmap saved: ./results/plant_codon_preference_heatmap.pdf\n\n")
 # Create color-coded comparison plot showing M. guttatus sharing patterns
 # ============================================================================
 cat("Creating color-coded codon preference comparison plot...\n")
-
-# Define amino acid chemistry groups
-aa_chemistry <- list(
-  "Nonpolar_Aliphatic" = c("Ala", "Gly", "Ile", "Leu", "Met", "Pro", "Val"),
-  "Aromatic" = c("Phe", "Trp", "Tyr"),
-  "Polar_Uncharged" = c("Asn", "Cys", "Gln", "Ser", "Thr"),
-  "Positively_Charged" = c("Arg", "His", "Lys"),
-  "Negatively_Charged" = c("Asp", "Glu")
-)
 
 # Create a data frame for the plot
 plot_data <- data.frame()

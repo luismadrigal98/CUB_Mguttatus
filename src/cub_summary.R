@@ -1,4 +1,5 @@
-cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
+cub_summary <- function(codon_counts, genetic_code, output_dir = "./results",
+                        aa_group = NULL)
 {
   #' Comprehensive CUB analysis summary
   #' 
@@ -12,6 +13,8 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
   #' @param codon_counts Data table with codon counts per gene
   #' @param genetic_code Named vector mapping codons to amino acids
   #' @param output_dir Directory for output files
+  #' @param aa_group Grouping of amino acids based on chemistry. Expected
+  #' format is a data.frame with two columns, AA and class.
   #' 
   #' @return List with all analysis results
   #' ___________________________________________________________________________
@@ -26,32 +29,32 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
   
   message("Starting comprehensive CUB analysis...")
   
-  # 1. Calculate RSCU
+  # 1. Calculate RSCU ----
   message("Calculating RSCU...")
   rscu_results <- calculate_rscu(codon_counts, genetic_code)
   
-  # 2. Calculate ENC
+  # 2. Calculate ENC ----
   message("Calculating ENC...")
   enc_results <- calculate_enc(codon_counts, genetic_code)
   
-  # 3. Calculate the RF
+  # 3. Calculate the RF ----
   message("Calculating the RF...")
   rf_results <- calculate_rf(codon_counts, genetic_code)
   
-  # 4. Calculate the PSPM
+  # 4. Calculate the PSPM ----
   message("Calculating the PSPM...")
   pspm_overall <- calculate_overall_PSPM(rf_results, genetic_code)
-  
-  # 5. Calculate GC content
+   
+  # 5. Calculate GC content ----
   message("Calculating GC content metrics...")
   gc_results <- calculate_gc_content(codon_counts)
   
-  # 6. Merge all results
+  # 6. Merge all results ----
   message("Merging results...")
   summary_table <- merge(codon_counts, enc_results, by = "Gene_name")
   summary_table <- merge(summary_table, gc_results, by = "Gene_name")
   
-  # 7. Generate visualizations
+  # 7. Generate visualizations ----
   message("Creating visualizations...")
   
   # Codon usage heatmap
@@ -62,7 +65,8 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
   # Codon usage barplot
   visualize_codon_usage(codon_counts, genetic_code, 
                        file.path(output_dir, "codon_usage_barplot.pdf"),
-                       type = "barplot")
+                       type = "barplot",
+                       aa_grouping = aa_group)
   
   # Neutrality plot
   neutrality_plot(gc_results, file.path(output_dir, "neutrality_plot.pdf"))
@@ -73,7 +77,12 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
   # PR2 bias plot
   pr2_bias_plot(codon_counts, file.path(output_dir, "pr2_plot.pdf"))
   
-  # 6. Generate summary statistics
+  # 8. Perform goodness of fit test (G test) ----
+  
+  message("Performing the G tests ...")
+  g_test_results <- CUB_g_test(codon_counts, genetic_code)
+  
+  # 9. Generate summary statistics ----
   message("Calculating summary statistics...")
   
   stats <- list(
@@ -87,7 +96,7 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
                           use = "complete.obs")
   )
   
-  # 7. Save results
+  # 10. Save results ----
   message("Saving results...")
   fwrite(summary_table, file.path(output_dir, "cub_analysis_complete.csv"))
   fwrite(enc_results, file.path(output_dir, "enc_values.csv"))
@@ -117,6 +126,7 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results")
     pspm_results = pspm_overall,
     gc_results = gc_results,
     rscu_results = rscu_results,
-    statistics = stats
+    statistics = stats,
+    g_test_results = g_test_results
   ))
 }

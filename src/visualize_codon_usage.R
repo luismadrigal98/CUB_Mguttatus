@@ -1,6 +1,7 @@
 visualize_codon_usage <- function(codon_counts, genetic_code, 
                                   output_file = "codon_usage_heatmap.pdf",
-                                  type = "heatmap")
+                                  type = "heatmap",
+                                  aa_grouping = NULL)
 {
   #' Visualize codon usage patterns
   #' 
@@ -11,12 +12,14 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
   #' @param genetic_code Named vector mapping codons to amino acids
   #' @param output_file Output file path for the plot
   #' @param type Type of visualization: "heatmap" or "barplot"
+  #' @param aa_grouping Optional grouping of amino acids based on chemistry. Expected
+  #' format is a df with two columns, AA and class.
   #' 
   #' @return Creates a plot file and returns invisible
   #' ___________________________________________________________________________
   
-  library(data.table)
-  library(ggplot2)
+  require(data.table)
+  require(ggplot2)
   
   # Calculate genome-wide codon frequencies
   codon_cols <- setdiff(names(codon_counts), "Gene_name")
@@ -31,6 +34,13 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
     AA = genetic_code[names(total_counts)],
     stringsAsFactors = FALSE
   )
+  
+  if(!is.null(aa_grouping))
+  {
+    # Convert to data.frame to ensure compatibility
+    aa_grouping <- as.data.frame(aa_grouping)
+    plot_data <- merge(plot_data, aa_grouping, by = "AA", copy = TRUE)
+  }
   
   # Remove STOP codons
   plot_data <- plot_data[plot_data$AA != "STOP", ]
@@ -61,16 +71,33 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
   }
   else if(type == "barplot")
   {
+    # Default fill is by Amino Acid, with no legend
+    fill_by <- "AA"
+    legend_pos <- "none"
+    legend_title <- NULL
+    
+    # Check if aa_grouping was provided (and thus joined)
+    # Your roxygen comment says the new column is named "class"
+    if (!is.null(aa_grouping) && "class" %in% names(plot_data)) {
+      fill_by <- "class"
+      legend_pos <- "bottom" # Show the legend for the new groups
+      legend_title <- "AA Group"
+    }
+    # --- End of new logic ---
+    
+    
     # Create barplot for each amino acid
-    p <- ggplot(plot_data, aes(x = Codon, y = RSCU, fill = AA)) +
+    # We use .data[[fill_by]] to use the variable
+    p <- ggplot(plot_data, aes(x = Codon, y = RSCU, fill = .data[[fill_by]])) +
       geom_bar(stat = "identity") +
       facet_wrap(~ AA, scales = "free_x", ncol = 5) +
       theme_custom() +
       theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
-            legend.position = "none") +
+            legend.position = legend_pos) + # <-- Use legend variable
       geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
       labs(title = "Relative Synonymous Codon Usage (RSCU) by Amino Acid",
-           x = "Codon", y = "RSCU")
+           x = "Codon", y = "RSCU",
+           fill = legend_title) # <-- Use legend title variable
     
     ggsave(output_file, p, width = 14, height = 10)
   }
