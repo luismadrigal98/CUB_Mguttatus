@@ -3,7 +3,7 @@
 #SBATCH --output=logs/codon_poly_%A_%a.out
 #SBATCH --error=logs/codon_poly_%A_%a.err
 #SBATCH --array=1-14
-#SBATCH --time=12:00:00
+#SBATCH --time=12-00:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=1
 #SBATCH --partition=kucg,eeb,kelly
@@ -152,10 +152,14 @@ echo ""
 # ============================================================================
 
 echo "Detecting sample size from VCF..."
-N_SAMPLES=$(grep -m1 "^#CHROM" "$VCF" | awk '{print NF-9}')
+
+# Count samples from first line (VCF format: 9 fixed columns + sample columns)
+# Works for both header (#CHROM...) and headerless VCF files
+N_SAMPLES=$(head -1 "$VCF" | awk '{print NF-9}')
 
 if [ -z "$N_SAMPLES" ] || [ "$N_SAMPLES" -lt 1 ]; then
     echo "ERROR: Could not determine sample size from VCF"
+    echo "First line has $(head -1 "$VCF" | awk '{print NF}') fields"
     exit 1
 fi
 
