@@ -112,12 +112,12 @@ def remap_expression_file(input_expression_file, output_expression_file, gene_na
     
     print(f"Final unique genes: {final_genes}")
     
-    # Final sanity check
-    if len(expression_data_summed) != len(expression_data_summed['Gene'].unique()):
-        print("\n*** ERROR: Output still contains duplicate genes! ***")
-    
     # Rename column for clarity
     expression_data_summed.columns = ['Gene', 'Expression']
+    
+    # Final sanity check AFTER renaming
+    if len(expression_data_summed) != len(expression_data_summed['Gene'].unique()):
+        print("\n*** ERROR: Output still contains duplicate genes! ***")
     
     expression_data_summed.to_csv(output_expression_file, sep='\t', index=False)
 
