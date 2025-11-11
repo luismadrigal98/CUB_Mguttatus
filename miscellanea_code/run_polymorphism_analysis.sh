@@ -179,6 +179,18 @@ for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
     
     CHR_START=$(date +%s)
     
+    # Check if VCF is pre-filtered by chromosome (much faster!)
+    PREFILTERED_VCF_DIR="vcf_by_chromosome"
+    if [ -f "${PREFILTERED_VCF_DIR}/${VCF}.${CHR}.vcf" ]; then
+        VCF_INPUT="${PREFILTERED_VCF_DIR}/${VCF}.${CHR}.vcf"
+        echo "  Using pre-filtered VCF: $VCF_INPUT"
+        echo "  File size: $(du -h $VCF_INPUT | cut -f1)"
+    else
+        VCF_INPUT="$VCF"
+        echo "  Using full VCF: $VCF_INPUT"
+        echo "  ⚠ Consider pre-filtering VCF by chromosome for faster processing"
+    fi
+    
     # ------------------------------------------------------------------------
     # Step 1: Annotate positions by degeneracy
     # ------------------------------------------------------------------------
@@ -220,7 +232,7 @@ for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
     else
         python3 "$SCRIPT2" \
             "$CHR" \
-            "$VCF" \
+            "$VCF_INPUT" \
             "$ANNOTATION_FILE" \
             "$N_SAMPLES" \
             > "${OUTPUT_DIR}/${CHR}.step2.log" 2>&1
@@ -248,7 +260,7 @@ for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
         else
             python3 "$SCRIPT3" \
                 "$CHR" \
-                "$VCF" \
+                "$VCF_INPUT" \
                 "$GFF3" \
                 "$CDS_FA" \
                 "$GENOME_FA" \
@@ -293,7 +305,7 @@ for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
         else
             python3 "$SCRIPT4" \
                 "$CHR" \
-                "$VCF" \
+                "$VCF_INPUT" \
                 "$ANNOTATION_FILE" \
                 "$PREFERRED_CODONS" \
                 > "${OUTPUT_DIR}/${CHR}.step3c.log" 2>&1
