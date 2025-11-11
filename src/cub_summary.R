@@ -77,10 +77,36 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results",
   # PR2 bias plot
   pr2_bias_plot(codon_counts, file.path(output_dir, "pr2_plot.pdf"))
   
-  # 8. Perform goodness of fit test (G test) ----
+  # 8. Perform goodness of fit tests (G test) ----
   
-  message("Performing the G tests ...")
-  g_test_results <- CUB_g_test(codon_counts, genetic_code)
+  message("Performing G tests...")
+  
+  # Test 1: By gene (default)
+  message("  - Testing individual genes...")
+  g_test_by_gene <- CUB_g_test(codon_counts, genetic_code, 
+                                mode = "by_gene", correct.p_values = TRUE)
+  
+  # Test 2: Genome-wide
+  message("  - Testing genome-wide codon usage...")
+  g_test_genome <- CUB_g_test(codon_counts, genetic_code, 
+                               mode = "by_genome")
+  
+  # Test 3: By amino acid
+  message("  - Testing codon usage per amino acid...")
+  g_test_by_aa <- CUB_g_test(codon_counts, genetic_code, 
+                              mode = "by_aminoacid", correct.p_values = TRUE)
+  
+  # Test 4: Heterogeneity across genes
+  message("  - Testing codon usage heterogeneity across genes...")
+  g_test_heterogeneity <- CUB_g_test(codon_counts, genetic_code, 
+                                      mode = "heterogeneity_per_aa", 
+                                      correct.p_values = TRUE)
+  
+  # Save all G-test results
+  fwrite(g_test_by_gene, file.path(output_dir, "g_test_by_gene.csv"))
+  fwrite(g_test_genome, file.path(output_dir, "g_test_genome_wide.csv"))
+  fwrite(g_test_by_aa, file.path(output_dir, "g_test_by_aminoacid.csv"))
+  fwrite(g_test_heterogeneity, file.path(output_dir, "g_test_heterogeneity.csv"))
   
   # 9. Generate summary statistics ----
   message("Calculating summary statistics...")
@@ -126,7 +152,10 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results",
     pspm_results = pspm_overall,
     gc_results = gc_results,
     rscu_results = rscu_results,
-    statistics = stats,
-    g_test_results = g_test_results
+    g_test_by_gene = g_test_by_gene,
+    g_test_genome = g_test_genome,
+    g_test_by_aa = g_test_by_aa,
+    g_test_heterogeneity = g_test_heterogeneity,
+    statistics = stats
   ))
 }
