@@ -1090,6 +1090,138 @@ p_comparison <- ggplot(comparison_table,
 ggsave("./results/preferred_codon_usage_comparison.pdf", p_comparison,
        width = 10, height = 6)
 
+cat("\n")
+
+# 6.3.1) Statistical testing for codon-level differences ----
+
+cat("=== Statistical Testing: Per-Codon Proportion Differences ===\n\n")
+
+# Source the testing function
+source("./src/test_codon_proportions.R")
+
+# Test each codon individually
+codon_test_results <- test_codon_proportions(
+  selected_usage = top5_genes,
+  neutral_usage = rest_genes,
+  genetic_code = genetic_code_dna_long,
+  method = "chisq",
+  fdr_correction = TRUE
+)
+
+# Save results
+write.csv(codon_test_results, 
+          "./results/codon_proportion_test_results.csv",
+          row.names = FALSE)
+
+cat("\n✓ Results saved: ./results/codon_proportion_test_results.csv\n")
+
+# Create summary plots
+p_selection_summary <- plot_codon_selection_summary(
+  codon_test_results,
+  output_file = "./results/codon_selection_summary.pdf"
+)
+
+p_classification_heatmap <- plot_codon_classification_heatmap(
+  codon_test_results,
+  w_table,
+  output_file = "./results/codon_classification_heatmap.pdf"
+)
+
+# Print key findings
+cat("\n=== Key Findings ===\n\n")
+
+sig_codons <- codon_test_results |> dplyr::filter(Significant)
+sig_preferred <- sig_codons |> 
+  dplyr::left_join(w_table |> dplyr::select(codon, relative_adaptiveness),
+                   by = c("Codon" = "codon")) |>
+  dplyr::filter(relative_adaptiveness == 1.0)
+
+cat(sprintf("Codons with significant proportion differences (FDR < 0.05): %d / %d (%.1f%%)\n",
+            nrow(sig_codons), 
+            nrow(codon_test_results),
+            100 * nrow(sig_codons) / nrow(codon_test_results)))
+
+cat(sprintf("  - Enriched in Top 5%% (under selection): %d\n", 
+            sum(sig_codons$Difference > 0)))
+cat(sprintf("  - Depleted in Top 5%% (avoided): %d\n", 
+            sum(sig_codons$Difference < 0)))
+
+cat(sprintf("\nPreferred codons (w=1) that are significantly enriched: %d / %d (%.1f%%)\n",
+            nrow(sig_preferred),
+            length(preferred_codons_vec),
+            100 * nrow(sig_preferred) / length(preferred_codons_vec)))
+
+if (nrow(sig_preferred) > 0) {
+  cat("\nThese 'under selection' preferred codons are:\n")
+  sig_pref_sorted <- sig_preferred |> 
+    dplyr::arrange(dplyr::desc(Difference)) |>
+    dplyr::select(Codon, Amino_Acid, Selected_Prop, Neutral_Prop, 
+                  Difference, p_adj)
+  print(sig_pref_sorted, n = min(15, nrow(sig_pref_sorted)))
+}
+
+cat("\n")
+
+# 6.3.2) Diagnose CAI vs Proportion Discrepancies ----
+
+cat("=== Diagnosing CAI w-values vs Proportion Differences ===\n\n")
+
+cat("IMPORTANT: CAI w-values are RELATIVE within each amino acid\n")
+cat("Proportion tests measure ABSOLUTE enrichment across all genes\n\n")
+
+cat("A codon can have w=1.0 (most common within its AA in Top 5%%)\n")
+cat("but still be 'avoided' if the entire amino acid declines in Top 5%%\n\n")
+
+# Source diagnostic function
+source("./src/diagnose_cai_vs_proportion.R")
+
+# Run diagnostic
+diagnostic_results <- diagnose_cai_vs_proportion(
+  w_table = w_table,
+  test_results = codon_test_results,
+  codon_usage = codon_usage,
+  expression_groups = integrated_data,
+  genetic_code = genetic_code_dna_long
+)
+
+# Create corrected classification
+corrected_classification <- create_corrected_classification(
+  w_table = w_table,
+  test_results = codon_test_results
+)
+
+# Save corrected classification
+write.csv(corrected_classification,
+          "./results/codon_classification_corrected.csv",
+          row.names = FALSE)
+
+cat("\n✓ Corrected classification saved: ./results/codon_classification_corrected.csv\n")
+
+# Update the codon_test_results with corrected classification for biplots
+codon_test_results <- codon_test_results %>%
+  left_join(corrected_classification %>% 
+              dplyr::select(Codon, Combined_Classification),
+            by = "Codon") %>%
+  dplyr::mutate(
+    # Update Classification to be more accurate
+    Classification_Original = Classification,
+    Classification = Combined_Classification
+  )
+
+cat("\n** Key Finding **\n")
+if (!is.null(diagnostic_results$discrepancies)) {
+  cat(sprintf("Found %d codons with w=1.0 but avoided in high expression\n",
+              nrow(diagnostic_results$discrepancies)))
+  cat("These represent amino acids that are LESS used in highly expressed genes\n")
+  cat("Within those amino acids, certain codons are relatively preferred\n")
+  cat("But the 'preference' is relative, not absolute enrichment\n\n")
+  
+  cat("For TRUE selection analysis, focus on:\n")
+  cat("'Under Selection (pref + enriched)' codons in corrected classification\n\n")
+}
+
+cat("\n")
+
 # 6.4) Split 6-codon amino acids by degeneracy ----
 
 # Define codon families for 6-codon amino acids
@@ -1111,68 +1243,6 @@ for (family in names(codon_families)) {
   cat(sprintf("  %s: %s\n", family, paste(codon_families[[family]], collapse = ", ")))
 }
 cat("\n")
-
-# Function to count preferred usage by codon family
-count_preferred_by_family <- function(codon_data, preferred_codons, families) {
-  
-  # Convert to data.frame if it's a data.table
-  if ("data.table" %in% class(codon_data)) {
-    codon_data <- as.data.frame(codon_data)
-  }
-  
-  # Get codon columns
-  codon_cols <- setdiff(names(codon_data), c("Gene_name", "Expression_Group"))
-  
-  # Initialize results
-  family_summary <- data.frame()
-  
-  for (family_name in names(families)) {
-    codons_in_family <- families[[family_name]]
-    codons_in_family <- codons_in_family[codons_in_family %in% codon_cols]
-    
-    if (length(codons_in_family) == 0) next
-    
-    # Split into preferred vs unpreferred
-    preferred_in_family <- intersect(codons_in_family, preferred_codons)
-    unpreferred_in_family <- setdiff(codons_in_family, preferred_codons)
-    
-    # Count occurrences
-    if (length(preferred_in_family) > 0) {
-      preferred_count <- sum(rowSums(codon_data[, preferred_in_family, drop = FALSE], na.rm = TRUE), na.rm = TRUE)
-    } else {
-      preferred_count <- 0
-    }
-    
-    if (length(unpreferred_in_family) > 0) {
-      unpreferred_count <- sum(rowSums(codon_data[, unpreferred_in_family, drop = FALSE], na.rm = TRUE), na.rm = TRUE)
-    } else {
-      unpreferred_count <- 0
-    }
-    
-    total_count <- preferred_count + unpreferred_count
-    prop_preferred <- ifelse(total_count > 0, preferred_count / total_count, NA)
-    
-    # Parse family name
-    aa <- sub("_.*", "", family_name)
-    degeneracy <- sub(".*_", "", family_name)
-    
-    family_summary <- rbind(family_summary,
-                           data.frame(
-                             Amino_Acid = aa,
-                             Degeneracy = degeneracy,
-                             Family = family_name,
-                             N_codons = length(codons_in_family),
-                             Preferred_codons = paste(preferred_in_family, collapse = ","),
-                             Preferred_count = preferred_count,
-                             Unpreferred_count = unpreferred_count,
-                             Total_count = total_count,
-                             Prop_preferred = prop_preferred,
-                             stringsAsFactors = FALSE
-                           ))
-  }
-  
-  return(family_summary)
-}
 
 # Calculate for both groups
 cat("Calculating preferred codon usage by degeneracy family...\n")
@@ -1387,6 +1457,108 @@ create_biplot(codon_usage_CA,
               colors = colors_extremes,
               output_file = "./results/CA_biplot_extremes_only.pdf")
 
+cat("\n--- Enhanced Biplots with Codon Classification ---\n")
+
+# Source enhanced biplot functions
+source("./src/enhanced_biplot.R")
+
+# Prepare data for enhanced biplots
+# Need to convert CA result to format expected by enhanced_biplot
+ca_for_biplot <- list(
+  li = codon_usage_CA$row$coord,  # Gene scores
+  co = codon_usage_CA$col$coord,  # Codon loadings
+  eig = codon_usage_CA$eig         # Eigenvalues
+)
+class(ca_for_biplot) <- "coa"
+
+gene_data_ca <- codon_usage_CA_coord_extremes |>
+  dplyr::select(Gene_name, expression_group = Expression_Group)
+
+# Create enhanced biplots with different color schemes
+cat("\n1. Creating CA biplot colored by selection status...\n")
+p_ca_selection <- create_enhanced_biplot(
+  ordination_result = ca_for_biplot,
+  gene_data = gene_data_ca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "selection",
+  show_only_significant = FALSE,
+  arrow_scale = 1.0,
+  title = "CA Biplot: Codon Selection Status",
+  output_file = "./results/CA_enhanced_biplot_selection.pdf"
+)
+
+cat("\n2. Creating CA biplot colored by preference (w=1)...\n")
+p_ca_preference <- create_enhanced_biplot(
+  ordination_result = ca_for_biplot,
+  gene_data = gene_data_ca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "preference",
+  show_only_significant = FALSE,
+  arrow_scale = 1.0,
+  title = "CA Biplot: CAI Preferred Codons (w=1)",
+  output_file = "./results/CA_enhanced_biplot_preference.pdf"
+)
+
+cat("\n3. Creating CA biplot colored by AT vs GC ending...\n")
+p_ca_ending <- create_enhanced_biplot(
+  ordination_result = ca_for_biplot,
+  gene_data = gene_data_ca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "ending",
+  show_only_significant = FALSE,
+  arrow_scale = 1.0,
+  title = "CA Biplot: AT vs GC Codon Ending",
+  output_file = "./results/CA_enhanced_biplot_ending.pdf"
+)
+
+cat("\n4. Creating CA biplot with combined classification...\n")
+p_ca_combined <- create_enhanced_biplot(
+  ordination_result = ca_for_biplot,
+  gene_data = gene_data_ca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "combined",
+  show_only_significant = FALSE,
+  arrow_scale = 1.0,
+  title = "CA Biplot: Combined Codon Classification",
+  output_file = "./results/CA_enhanced_biplot_combined.pdf"
+)
+
+cat("\n5. Creating CA biplot with significant codons only...\n")
+p_ca_significant <- create_enhanced_biplot(
+  ordination_result = ca_for_biplot,
+  gene_data = gene_data_ca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "combined",
+  show_only_significant = TRUE,
+  arrow_scale = 1.0,
+  title = "CA Biplot: Significant Codons Only",
+  output_file = "./results/CA_enhanced_biplot_significant_only.pdf"
+)
+
+# Analyze codon loading patterns
+cat("\n6. Analyzing codon loading patterns...\n")
+ca_loading_analysis <- analyze_codon_loading_patterns(
+  ordination_result = ca_for_biplot,
+  codon_test_results = codon_test_results,
+  dims = c(1, 2)
+)
+
+write.csv(ca_loading_analysis, 
+          "./results/CA_codon_loading_analysis.csv",
+          row.names = FALSE)
+
+cat("\n✓ CA loading analysis saved: ./results/CA_codon_loading_analysis.csv\n")
+
 # Statistical test for CA dimension separation
 ca_manova <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ Expression_Group, 
                     data = codon_usage_CA_coord_extremes)
@@ -1491,6 +1663,122 @@ create_biplot(rscu_PCA,
               n_loadings = 20,
               colors = colors_extremes,
               output_file = "./results/PCA_biplot_extremes_only.pdf")
+
+cat("\n--- Enhanced PCA Biplots with Codon Classification ---\n")
+
+# Prepare data for enhanced PCA biplots
+gene_data_pca <- rscu_PCA_coord_extremes |>
+  dplyr::select(Gene_name, expression_group = Expression_Group)
+
+# Create enhanced PCA biplots with different color schemes
+cat("\n1. Creating PCA biplot colored by selection status...\n")
+p_pca_selection <- create_enhanced_biplot(
+  ordination_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "selection",
+  show_only_significant = FALSE,
+  arrow_scale = 1.5,
+  title = "PCA Biplot: Codon Selection Status",
+  output_file = "./results/PCA_enhanced_biplot_selection.pdf"
+)
+
+cat("\n2. Creating PCA biplot colored by preference (w=1)...\n")
+p_pca_preference <- create_enhanced_biplot(
+  ordination_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "preference",
+  show_only_significant = FALSE,
+  arrow_scale = 1.5,
+  title = "PCA Biplot: CAI Preferred Codons (w=1)",
+  output_file = "./results/PCA_enhanced_biplot_preference.pdf"
+)
+
+cat("\n3. Creating PCA biplot colored by AT vs GC ending...\n")
+p_pca_ending <- create_enhanced_biplot(
+  ordination_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "ending",
+  show_only_significant = FALSE,
+  arrow_scale = 1.5,
+  title = "PCA Biplot: AT vs GC Codon Ending",
+  output_file = "./results/PCA_enhanced_biplot_ending.pdf"
+)
+
+cat("\n4. Creating PCA biplot with combined classification...\n")
+p_pca_combined <- create_enhanced_biplot(
+  ordination_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "combined",
+  show_only_significant = FALSE,
+  arrow_scale = 1.5,
+  title = "PCA Biplot: Combined Codon Classification",
+  output_file = "./results/PCA_enhanced_biplot_combined.pdf"
+)
+
+cat("\n5. Creating PCA biplot with significant codons only...\n")
+p_pca_significant <- create_enhanced_biplot(
+  ordination_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  color_by = "combined",
+  show_only_significant = TRUE,
+  arrow_scale = 1.5,
+  title = "PCA Biplot: Significant Codons Only",
+  output_file = "./results/PCA_enhanced_biplot_significant_only.pdf"
+)
+
+# Analyze PCA codon loading patterns
+cat("\n6. Analyzing PCA codon loading patterns...\n")
+pca_loading_analysis <- analyze_codon_loading_patterns(
+  ordination_result = rscu_PCA,
+  codon_test_results = codon_test_results,
+  dims = c(1, 2)
+)
+
+write.csv(pca_loading_analysis, 
+          "./results/PCA_codon_loading_analysis.csv",
+          row.names = FALSE)
+
+cat("\n✓ PCA loading analysis saved: ./results/PCA_codon_loading_analysis.csv\n")
+
+# Create combined panel for publication
+cat("\n7. Creating combined biplot panels...\n")
+
+# CA panel
+create_biplot_panel(
+  ordination_result = ca_for_biplot,
+  gene_data = gene_data_ca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  output_file = "./results/CA_biplot_panel_4plots.pdf"
+)
+
+# PCA panel
+create_biplot_panel(
+  ordination_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  w_table = w_table,
+  dims = c(1, 2),
+  output_file = "./results/PCA_biplot_panel_4plots.pdf"
+)
+
+cat("\n✓ All enhanced biplots created successfully!\n\n")
 
 # Statistical test for PCA dimension separation
 cat("\n=== MANOVA Test: PCA Dimensions by Expression Group (Extremes) ===\n")
