@@ -1,19 +1,39 @@
-calculate_enc <- function(codon_counts, genetic_code, have_F6 = FALSE)
+calculate_enc <- function(codon_counts, genetic_code, have_F6 = FALSE, method = "wright")
 {
   #' Calculate Effective Number of Codons (ENC)
   #' 
   #' @description ENC quantifies codon bias, ranging from 20 (extreme bias, 
   #' one codon per amino acid) to 61 (no bias, all codons used equally).
-  #' Based on Wright (1990) method.
+  #' Supports two methods: Wright (1990) and Sun et al. (2012).
   #' 
   #' @param codon_counts Data table with codon counts per gene
   #' @param genetic_code Named vector mapping codons to amino acids
-  #' @param have_F6 Logical indicating if F6 values are precomputed (default FALSE)ve_F6 Wheter families of 6 codons are being considered. Default
-  #' is FALSE, because the recommended approach is to split them in the F2 and F4
-  #' subfamilies.
+  #' @param have_F6 Logical indicating whether 6-codon families are kept together.
+  #'   Default is FALSE (recommended: split into 4-fold and 2-fold subfamilies).
+  #'   NOTE: Ignored when method = "sun" (Sun et al. always splits families).
+  #' @param method Character string specifying calculation method:
+  #'   - "wright" (default): Wright (1990) original ENC formula
+  #'   - "sun": Sun et al. (2012) improved Nc with pseudocount correction
   #' 
   #' @return Data frame with Gene_name and ENC values
+  #' 
+  #' @references
+  #' Wright, F. (1990). The 'effective number of codons' used in a gene.
+  #'   Gene, 87(1), 23-29.
+  #' Sun, X., et al. (2012). An improved implementation of effective number
+  #'   of codons (Nc). Molecular Biology and Evolution, 30(1), 191-196.
+  #'   doi:10.1093/molbev/mss201
   #' ___________________________________________________________________________
+  
+  # Validate method argument
+  if (!method %in% c("wright", "sun")) {
+    stop("method must be either 'wright' or 'sun'")
+  }
+  
+  # Sun et al. (2012) always splits 6-codon families
+  if (method == "sun") {
+    have_F6 <- FALSE
+  }
   
   # --- 1. Prepare Metadata ---
   # Create a data.table of the genetic code and add degeneracy class
@@ -81,42 +101,72 @@ calculate_enc <- function(codon_counts, genetic_code, have_F6 = FALSE)
   
   # --- 4. Calculate F_aa (Homozygosity) for all Gene/AA (or Family) pairs ---
   
-  if (!have_F6) {
-    # When splitting families, group by Family instead of AA
-    # a. Get total count for each Family in each gene
+  if (method == "sun") {
+    # Sun et al. (2012) method using pseudocount formula (Eq. 3)
+    # F_CF = sum((n_i + 1) / (n + m))^2
+    # where n_i = count of codon i, n = total codons in family, m = degeneracy
+    
+    # Group by Family (Sun et al. always splits families)
     melted_counts[, Total := sum(Count), by = .(Gene_name, Family)]
     
-    # b. Calculate sum of squared proportions (p_squared_sum)
-    #    Only for Families that are present (Total > 0)
+    # Calculate pseudo-proportion for each codon (Eq. 3)
+    melted_counts[Total > 0, p_pseudo := (Count + 1) / (Total + Degeneracy)]
+    
+    # Calculate F_family using the pseudocount formula (sum of squared pseudo-proportions)
     aa_f_values <- melted_counts[Total > 0, 
-                                 .(p_squared_sum = sum((Count / Total)^2)), 
+                                 .(F_aa = sum(p_pseudo^2)), 
                                  by = .(Gene_name, Family, Degeneracy, Total)]
     
-    # c. Calculate F_family for each Family
-    #    Only where Total > 1 (to avoid 0/0 division)
-    aa_f_values[Total > 1, F_aa := (Total * p_squared_sum - 1) / (Total - 1)]
-    
   } else {
-    # When keeping 6-codon families together, group by AA
-    # a. Get total count for each AA in each gene
-    melted_counts[, Total := sum(Count), by = .(Gene_name, AA)]
+    # Wright (1990) method - original homozygosity formula
     
-    # b. Calculate sum of squared proportions (p_squared_sum)
-    #    Only for AAs that are present (Total > 0)
-    aa_f_values <- melted_counts[Total > 0, 
-                                 .(p_squared_sum = sum((Count / Total)^2)), 
-                                 by = .(Gene_name, AA, Degeneracy, Total)]
+    if (!have_F6) {
+      # When splitting families, group by Family instead of AA
+      # a. Get total count for each Family in each gene
+      melted_counts[, Total := sum(Count), by = .(Gene_name, Family)]
+      
+      # b. Calculate sum of squared proportions (p_squared_sum)
+      #    Only for Families that are present (Total > 0)
+      aa_f_values <- melted_counts[Total > 0, 
+                                   .(p_squared_sum = sum((Count / Total)^2)), 
+                                   by = .(Gene_name, Family, Degeneracy, Total)]
+      
+      # c. Calculate F_family for each Family
+      #    Only where Total > 1 (to avoid 0/0 division)
+      aa_f_values[Total > 1, F_aa := (Total * p_squared_sum - 1) / (Total - 1)]
+      
+    } else {
+      # When keeping 6-codon families together, group by AA
+      # a. Get total count for each AA in each gene
+      melted_counts[, Total := sum(Count), by = .(Gene_name, AA)]
+      
+      # b. Calculate sum of squared proportions (p_squared_sum)
+      #    Only for AAs that are present (Total > 0)
+      aa_f_values <- melted_counts[Total > 0, 
+                                   .(p_squared_sum = sum((Count / Total)^2)), 
+                                   by = .(Gene_name, AA, Degeneracy, Total)]
+      
+      # c. Calculate F_aa for each AA
+      #    Only where Total > 1 (to avoid 0/0 division)
+      aa_f_values[Total > 1, F_aa := (Total * p_squared_sum - 1) / (Total - 1)]
+    }
     
-    # c. Calculate F_aa for each AA
-    #    Only where Total > 1 (to avoid 0/0 division)
-    aa_f_values[Total > 1, F_aa := (Total * p_squared_sum - 1) / (Total - 1)]
+    # d. Filter out NA/Inf values (where Total was 1)
+    aa_f_values <- aa_f_values[!is.na(F_aa)]
   }
   
-  # d. Filter out NA/Inf values (where Total was 1)
-  aa_f_values <- aa_f_values[!is.na(F_aa)]
-  
   # --- 5. Calculate Average F (F_bar_k) for each Degeneracy Class ---
-  f_bar_k <- aa_f_values[, .(F_bar = mean(F_aa)), by = .(Gene_name, Degeneracy)]
+  
+  if (method == "sun") {
+    # Sun et al. (2012): Use weighted average (Eq. 4)
+    # F_bar_k = sum(n * F_aa) / sum(n)
+    # where n = Total codons in each family
+    f_bar_k <- aa_f_values[, .(F_bar = sum(Total * F_aa) / sum(Total)), 
+                           by = .(Gene_name, Degeneracy)]
+  } else {
+    # Wright (1990): Use simple arithmetic mean
+    f_bar_k <- aa_f_values[, .(F_bar = mean(F_aa)), by = .(Gene_name, Degeneracy)]
+  }
   
   # --- 6. Dcast to Wide Format ---
   # Create a table with one row per gene and columns: Gene_name, F2, F3, F4, F6
@@ -127,80 +177,98 @@ calculate_enc <- function(codon_counts, genetic_code, have_F6 = FALSE)
   all_genes <- data.table(Gene_name = codon_counts$Gene_name)
   f_bar_wide <- f_bar_wide[all_genes, on = "Gene_name"]
   
-  # --- 8. Calculate Final ENC (Corrected) ---
-  # This section fixes the bug that caused ENC > 61.
-  # We cap the contribution of each class at its theoretical maximum ("no bias" value).
+  # --- 8. Calculate Final ENC ---
   
-  # ENC Formula (Wright 1990):
-  # When splitting 6-codon families into 4-fold and 2-fold:
-  # - 2-fold families: Asn, Asp, Cys, Gln, Glu, His, Lys, Phe, Tyr + Arg(2), Leu(2), Ser(2) = 12 families
-  # - 3-fold family: Ile = 1 family
-  # - 4-fold families: Ala, Gly, Pro, Thr, Val + Arg(4), Leu(4), Ser(4) = 8 families
-  # - 1-fold: Met, Trp = 2 amino acids
-  #
-  # Max contributions (no bias):
-  # - Met + Trp: 2
-  # - 2-fold (12 families): 12 × 2 = 24
-  # - 3-fold (1 family): 1 × 3 = 3
-  # - 4-fold (8 families): 8 × 4 = 32
-  # Total: 2 + 24 + 3 + 32 = 61 ✓
-  #
-  # When using 6-codon families (not split):
-  # - 2-fold: 9 families → 18
-  # - 3-fold: 1 family → 3
-  # - 4-fold: 5 families → 20
-  # - 6-fold: 3 families → 18
-  # Total: 2 + 18 + 3 + 20 + 18 = 61 ✓
-  
-  # Start with 2 for Met and Trp
-  f_bar_wide[, ENC := 2.0] 
-  
-  if(have_F6) {
-    # Using 6-codon families (old approach)
-    # --- Class 2: 9 families (Max contribution = 18) ---
-    f_bar_wide[, ENC_2 := 9.0]  # Default (extreme bias)
-    f_bar_wide[!is.na(F2) & F2 > 0, ENC_2 := 9.0 / F2]
-    f_bar_wide[, ENC_2 := pmin(ENC_2, 18.0)]  # Cap at 18
+  if (method == "sun") {
+    # Sun et al. (2012) method (Eq. 5): Nc = N_s + sum(K_k / F_bar_k)
+    # Always uses split families (12 2-fold, 1 3-fold, 8 4-fold)
+    # No capping needed - pseudocount correction prevents invalid values
     
-    # --- Class 3: 1 family (Max contribution = 3) ---
-    f_bar_wide[, ENC_3 := 1.0]  # Default
-    f_bar_wide[!is.na(F3) & F3 > 0, ENC_3 := 1.0 / F3]
-    f_bar_wide[, ENC_3 := pmin(ENC_3, 3.0)]  # Cap at 3
+    # Start with 2 for Met and Trp (N_s)
+    f_bar_wide[, ENC := 2.0]
     
-    # --- Class 4: 5 families (Max contribution = 20) ---
-    f_bar_wide[, ENC_4 := 5.0]  # Default
-    f_bar_wide[!is.na(F4) & F4 > 0, ENC_4 := 5.0 / F4]
-    f_bar_wide[, ENC_4 := pmin(ENC_4, 20.0)]  # Cap at 20
+    # Add contribution from 12 2-fold families (K_2 = 12)
+    f_bar_wide[!is.na(F2) & F2 > 0, ENC := ENC + (12.0 / F2)]
     
-    # --- Class 6: 3 families (Max contribution = 18) ---
-    f_bar_wide[, ENC_6 := 3.0]  # Default
-    f_bar_wide[!is.na(F6) & F6 > 0, ENC_6 := 3.0 / F6]
-    f_bar_wide[, ENC_6 := pmin(ENC_6, 18.0)]  # Cap at 18
+    # Add contribution from 1 3-fold family (K_3 = 1)
+    f_bar_wide[!is.na(F3) & F3 > 0, ENC := ENC + (1.0 / F3)]
     
-    # Sum all contributions
-    f_bar_wide[, ENC := ENC + ENC_2 + ENC_3 + ENC_4 + ENC_6]
+    # Add contribution from 8 4-fold families (K_4 = 8)
+    f_bar_wide[!is.na(F4) & F4 > 0, ENC := ENC + (8.0 / F4)]
     
   } else {
-    # Splitting 6-codon families into 4-fold and 2-fold (recommended approach)
-    # --- Class 2: 12 families (Max contribution = 24) ---
-    # 9 original 2-fold + 3 new 2-fold from splitting (Arg, Leu, Ser)
-    f_bar_wide[, ENC_2 := 12.0]  # Default (extreme bias)
-    f_bar_wide[!is.na(F2) & F2 > 0, ENC_2 := 12.0 / F2]
-    f_bar_wide[, ENC_2 := pmin(ENC_2, 24.0)]  # Cap at 24
+    # Wright (1990) method with capping to prevent ENC > 61
+    # 
+    # When splitting 6-codon families into 4-fold and 2-fold:
+    # - 2-fold families: Asn, Asp, Cys, Gln, Glu, His, Lys, Phe, Tyr + Arg(2), Leu(2), Ser(2) = 12 families
+    # - 3-fold family: Ile = 1 family
+    # - 4-fold families: Ala, Gly, Pro, Thr, Val + Arg(4), Leu(4), Ser(4) = 8 families
+    # - 1-fold: Met, Trp = 2 amino acids
+    #
+    # Max contributions (no bias):
+    # - Met + Trp: 2
+    # - 2-fold (12 families): 12 × 2 = 24
+    # - 3-fold (1 family): 1 × 3 = 3
+    # - 4-fold (8 families): 8 × 4 = 32
+    # Total: 2 + 24 + 3 + 32 = 61 ✓
+    #
+    # When using 6-codon families (not split):
+    # - 2-fold: 9 families → 18
+    # - 3-fold: 1 family → 3
+    # - 4-fold: 5 families → 20
+    # - 6-fold: 3 families → 18
+    # Total: 2 + 18 + 3 + 20 + 18 = 61 ✓
     
-    # --- Class 3: 1 family (Max contribution = 3) ---
-    f_bar_wide[, ENC_3 := 1.0]  # Default
-    f_bar_wide[!is.na(F3) & F3 > 0, ENC_3 := 1.0 / F3]
-    f_bar_wide[, ENC_3 := pmin(ENC_3, 3.0)]  # Cap at 3
+    # Start with 2 for Met and Trp
+    f_bar_wide[, ENC := 2.0] 
     
-    # --- Class 4: 8 families (Max contribution = 32) ---
-    # 5 original 4-fold + 3 new 4-fold from splitting (Arg, Leu, Ser)
-    f_bar_wide[, ENC_4 := 8.0]  # Default
-    f_bar_wide[!is.na(F4) & F4 > 0, ENC_4 := 8.0 / F4]
-    f_bar_wide[, ENC_4 := pmin(ENC_4, 32.0)]  # Cap at 32
-    
-    # Sum all contributions
-    f_bar_wide[, ENC := ENC + ENC_2 + ENC_3 + ENC_4]
+    if(have_F6) {
+      # Using 6-codon families (old approach)
+      # --- Class 2: 9 families (Max contribution = 18) ---
+      f_bar_wide[, ENC_2 := 9.0]  # Default (extreme bias)
+      f_bar_wide[!is.na(F2) & F2 > 0, ENC_2 := 9.0 / F2]
+      f_bar_wide[, ENC_2 := pmin(ENC_2, 18.0)]  # Cap at 18
+      
+      # --- Class 3: 1 family (Max contribution = 3) ---
+      f_bar_wide[, ENC_3 := 1.0]  # Default
+      f_bar_wide[!is.na(F3) & F3 > 0, ENC_3 := 1.0 / F3]
+      f_bar_wide[, ENC_3 := pmin(ENC_3, 3.0)]  # Cap at 3
+      
+      # --- Class 4: 5 families (Max contribution = 20) ---
+      f_bar_wide[, ENC_4 := 5.0]  # Default
+      f_bar_wide[!is.na(F4) & F4 > 0, ENC_4 := 5.0 / F4]
+      f_bar_wide[, ENC_4 := pmin(ENC_4, 20.0)]  # Cap at 20
+      
+      # --- Class 6: 3 families (Max contribution = 18) ---
+      f_bar_wide[, ENC_6 := 3.0]  # Default
+      f_bar_wide[!is.na(F6) & F6 > 0, ENC_6 := 3.0 / F6]
+      f_bar_wide[, ENC_6 := pmin(ENC_6, 18.0)]  # Cap at 18
+      
+      # Sum all contributions
+      f_bar_wide[, ENC := ENC + ENC_2 + ENC_3 + ENC_4 + ENC_6]
+      
+    } else {
+      # Splitting 6-codon families into 4-fold and 2-fold (recommended approach)
+      # --- Class 2: 12 families (Max contribution = 24) ---
+      # 9 original 2-fold + 3 new 2-fold from splitting (Arg, Leu, Ser)
+      f_bar_wide[, ENC_2 := 12.0]  # Default (extreme bias)
+      f_bar_wide[!is.na(F2) & F2 > 0, ENC_2 := 12.0 / F2]
+      f_bar_wide[, ENC_2 := pmin(ENC_2, 24.0)]  # Cap at 24
+      
+      # --- Class 3: 1 family (Max contribution = 3) ---
+      f_bar_wide[, ENC_3 := 1.0]  # Default
+      f_bar_wide[!is.na(F3) & F3 > 0, ENC_3 := 1.0 / F3]
+      f_bar_wide[, ENC_3 := pmin(ENC_3, 3.0)]  # Cap at 3
+      
+      # --- Class 4: 8 families (Max contribution = 32) ---
+      # 5 original 4-fold + 3 new 4-fold from splitting (Arg, Leu, Ser)
+      f_bar_wide[, ENC_4 := 8.0]  # Default
+      f_bar_wide[!is.na(F4) & F4 > 0, ENC_4 := 8.0 / F4]
+      f_bar_wide[, ENC_4 := pmin(ENC_4, 32.0)]  # Cap at 32
+      
+      # Sum all contributions
+      f_bar_wide[, ENC := ENC + ENC_2 + ENC_3 + ENC_4]
+    }
   }   
   
   # --- 9. Return Final Result ---
