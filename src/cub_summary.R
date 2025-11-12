@@ -1,5 +1,5 @@
 cub_summary <- function(codon_counts, genetic_code, output_dir = "./results",
-                        aa_group = NULL, have_F6 = FALSE)
+                        aa_group = NULL, have_F6 = FALSE, enc_method = 'sun')
 {
   #' Comprehensive CUB analysis summary
   #' 
@@ -16,6 +16,8 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results",
   #' @param aa_group Grouping of amino acids based on chemistry. Expected
   #' format is a data.frame with two columns, AA and class.
   #' @param have_F6 Logical indicating if 6-fold codon families are being analyzed
+  #' @param enc_method Method employed for calculating the ENC values. Options
+  #' are 'wrigth' and 'sun'.
   #' 
   #' @return List with all analysis results
   #' ___________________________________________________________________________
@@ -37,7 +39,8 @@ cub_summary <- function(codon_counts, genetic_code, output_dir = "./results",
   # 2. Calculate ENC ----
   message("Calculating ENC...")
   # Split 6-codon families into 4-fold and 2-fold subfamilies (recommended)
-  enc_results <- calculate_enc(codon_counts, genetic_code, have_F6 = have_F6)
+  enc_results <- calculate_enc(codon_counts, genetic_code, have_F6 = have_F6,
+                               method = enc_method)
   
   # 3. Calculate the RF ----
   message("Calculating the RF...")
