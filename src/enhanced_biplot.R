@@ -62,16 +62,16 @@ create_enhanced_biplot <- function(ordination_result,
   
   # Merge with gene expression groups
   gene_plot_data <- gene_scores %>%
-    left_join(gene_data %>% select(Gene_name, expression_group), 
+    left_join(gene_data %>% dplyr::select(Gene_name, expression_group), 
               by = "Gene_name")
   
   # Merge codon loadings with test results and w values
   codon_plot_data <- codon_loadings %>%
     left_join(codon_test_results %>% 
-                select(Codon, Classification, Significant, 
+                dplyr::select(Codon, Classification, Significant, 
                        Difference, Ending, Amino_Acid),
               by = "Codon") %>%
-    left_join(w_table %>% select(codon, relative_adaptiveness),
+    left_join(w_table %>% dplyr::select(codon, relative_adaptiveness),
               by = c("Codon" = "codon")) %>%
     mutate(
       Preferred = relative_adaptiveness == 1.0,
@@ -93,7 +93,7 @@ create_enhanced_biplot <- function(ordination_result,
   
   # Filter to significant only if requested
   if (show_only_significant) {
-    codon_plot_data <- codon_plot_data %>% filter(Significant)
+    codon_plot_data <- codon_plot_data %>% dplyr::filter(Significant)
     cat(sprintf("Showing only significant codons: %d\n", nrow(codon_plot_data)))
   }
   
@@ -330,7 +330,7 @@ analyze_codon_loading_patterns <- function(ordination_result,
   
   # Test 2: Do preferred codons load in positive direction?
   preferred_codons <- analysis %>% 
-    filter(relative_adaptiveness == 1.0, Significant)
+    dplyr::filter(relative_adaptiveness == 1.0, Significant)
   
   if (nrow(preferred_codons) > 0) {
     cat(sprintf("Preferred + significant codons (n=%d):\n", nrow(preferred_codons)))
@@ -345,8 +345,8 @@ analyze_codon_loading_patterns <- function(ordination_result,
   }
   
   # Test 3: AT vs GC ending patterns
-  at_loadings <- analysis %>% filter(Ending == "AT", Significant)
-  gc_loadings <- analysis %>% filter(Ending == "GC", Significant)
+  at_loadings <- analysis %>% dplyr::filter(Ending == "AT", Significant)
+  gc_loadings <- analysis %>% dplyr::filter(Ending == "GC", Significant)
   
   if (nrow(at_loadings) > 0 & nrow(gc_loadings) > 0) {
     cat("AT vs GC ending (significant codons):\n")

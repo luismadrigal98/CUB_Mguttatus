@@ -31,18 +31,18 @@ set_environment(required_pckgs = required_libraries, personal_seed = 1998,
 # Look-up table
 
 genetic_code_dna_long <- c(
-  "TTT"="Phe", "TTC"="Phe", "TTA"="Leu", "TTG"="Leu",
-  "TCT"="Ser", "TCC"="Ser", "TCA"="Ser", "TCG"="Ser",
+  "TTT"="Phe", "TTC"="Phe", "TTA"="Leu_2", "TTG"="Leu_2",
+  "TCT"="Ser_4", "TCC"="Ser_4", "TCA"="Ser_4", "TCG"="Ser_4",
   "TAT"="Tyr", "TAC"="Tyr", "TAA"="STOP", "TAG"="STOP",
   "TGT"="Cys", "TGC"="Cys", "TGA"="STOP", "TGG"="Trp",
-  "CTT"="Leu", "CTC"="Leu", "CTA"="Leu", "CTG"="Leu",
+  "CTT"="Leu_4", "CTC"="Leu_4", "CTA"="Leu_4", "CTG"="Leu_4",
   "CCT"="Pro", "CCC"="Pro", "CCA"="Pro", "CCG"="Pro",
   "CAT"="His", "CAC"="His", "CAA"="Gln", "CAG"="Gln",
-  "CGT"="Arg", "CGC"="Arg", "CGA"="Arg", "CGG"="Arg",
+  "CGT"="Arg_4", "CGC"="Arg_4", "CGA"="Arg_4", "CGG"="Arg_4",
   "ATT"="Ile", "ATC"="Ile", "ATA"="Ile", "ATG"="Met",
   "ACT"="Thr", "ACC"="Thr", "ACA"="Thr", "ACG"="Thr",
   "AAT"="Asn", "AAC"="Asn", "AAA"="Lys", "AAG"="Lys",
-  "AGT"="Ser", "AGC"="Ser", "AGA"="Arg", "AGG"="Arg",
+  "AGT"="Ser_2", "AGC"="Ser_2", "AGA"="Arg_2", "AGG"="Arg_2",
   "GTT"="Val", "GTC"="Val", "GTA"="Val", "GTG"="Val",
   "GCT"="Ala", "GCC"="Ala", "GCA"="Ala", "GCG"="Ala",
   "GAT"="Asp", "GAC"="Asp", "GAA"="Glu", "GAG"="Glu",
@@ -51,10 +51,11 @@ genetic_code_dna_long <- c(
 
 # Define amino acid chemistry groups
 aa_chemistry <- list(
-  "Nonpolar_Aliphatic" = c("Ala", "Gly", "Ile", "Leu", "Met", "Pro", "Val"),
+  "Nonpolar_Aliphatic" = c("Ala", "Gly", "Ile", "Leu_2", "Leu_4", "Met", 
+                           "Pro", "Val"),
   "Aromatic" = c("Phe", "Trp", "Tyr"),
-  "Polar_Uncharged" = c("Asn", "Cys", "Gln", "Ser", "Thr"),
-  "Positively_Charged" = c("Arg", "His", "Lys"),
+  "Polar_Uncharged" = c("Asn", "Cys", "Gln", "Ser_2", "Ser_4", "Thr"),
+  "Positively_Charged" = c("Arg_2", "Arg_4", "His", "Lys"),
   "Negatively_Charged" = c("Asp", "Glu")
 )
 
@@ -1157,7 +1158,7 @@ if (nrow(sig_preferred) > 0) {
     dplyr::arrange(dplyr::desc(Difference)) |>
     dplyr::select(Codon, Amino_Acid, Selected_Prop, Neutral_Prop, 
                   Difference, p_adj)
-  print(sig_pref_sorted, n = min(15, nrow(sig_pref_sorted)))
+  print(sig_pref_sorted)
 }
 
 cat("\n")
@@ -1165,12 +1166,6 @@ cat("\n")
 # 6.3.2) Diagnose CAI vs Proportion Discrepancies ----
 
 cat("=== Diagnosing CAI w-values vs Proportion Differences ===\n\n")
-
-cat("IMPORTANT: CAI w-values are RELATIVE within each amino acid\n")
-cat("Proportion tests measure ABSOLUTE enrichment across all genes\n\n")
-
-cat("A codon can have w=1.0 (most common within its AA in Top 5%%)\n")
-cat("but still be 'avoided' if the entire amino acid declines in Top 5%%\n\n")
 
 # Source diagnostic function
 source("./src/diagnose_cai_vs_proportion.R")
@@ -1207,20 +1202,6 @@ codon_test_results <- codon_test_results %>%
     Classification_Original = Classification,
     Classification = Combined_Classification
   )
-
-cat("\n** Key Finding **\n")
-if (!is.null(diagnostic_results$discrepancies)) {
-  cat(sprintf("Found %d codons with w=1.0 but avoided in high expression\n",
-              nrow(diagnostic_results$discrepancies)))
-  cat("These represent amino acids that are LESS used in highly expressed genes\n")
-  cat("Within those amino acids, certain codons are relatively preferred\n")
-  cat("But the 'preference' is relative, not absolute enrichment\n\n")
-  
-  cat("For TRUE selection analysis, focus on:\n")
-  cat("'Under Selection (pref + enriched)' codons in corrected classification\n\n")
-}
-
-cat("\n")
 
 # 6.4) Split 6-codon amino acids by degeneracy ----
 

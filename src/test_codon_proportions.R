@@ -218,9 +218,9 @@ plot_codon_classification_heatmap <- function(test_results, w_table,
   
   # Merge with w values
   plot_data <- test_results %>%
-    left_join(w_table %>% select(codon, relative_adaptiveness), 
+    left_join(w_table %>% dplyr::select(codon, relative_adaptiveness), 
               by = c("Codon" = "codon")) %>%
-    mutate(
+    dplyr::mutate(
       Preferred = relative_adaptiveness == 1.0,
       Selection_Status = case_when(
         !Significant ~ "Neutral",

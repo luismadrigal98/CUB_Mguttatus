@@ -23,9 +23,9 @@ diagnose_cai_vs_proportion <- function(w_table, test_results,
   
   # Merge data
   comparison <- test_results %>%
-    left_join(w_table %>% select(codon, relative_adaptiveness), 
+    left_join(w_table %>% dplyr::select(codon, relative_adaptiveness), 
               by = c("Codon" = "codon")) %>%
-    mutate(
+    dplyr::mutate(
       Is_Preferred = relative_adaptiveness == 1.0,
       Is_Avoided = Significant & Difference < 0,
       Discrepancy = Is_Preferred & Is_Avoided
@@ -68,11 +68,11 @@ diagnose_cai_vs_proportion <- function(w_table, test_results,
     
     # Calculate absolute frequencies (not just proportions within AA)
     codon_usage_merged <- codon_usage %>%
-      left_join(expression_groups %>% select(Gene_name, Expression_Group),
+      left_join(expression_groups %>% dplyr::select(Gene_name, Expression_Group),
                 by = "Gene_name")
     
-    top5 <- codon_usage_merged %>% filter(Expression_Group == "Top 5%")
-    rest <- codon_usage_merged %>% filter(Expression_Group != "Top 5%")
+    top5 <- codon_usage_merged %>% dplyr::filter(Expression_Group == "Top 5%")
+    rest <- codon_usage_merged %>% dplyr::filter(Expression_Group != "Top 5%")
     
     cat("\nAbsolute codon counts:\n")
     cat(sprintf("%-6s %10s %10s %12s %12s %10s %8s\n",
@@ -90,7 +90,7 @@ diagnose_cai_vs_proportion <- function(w_table, test_results,
     for (codon in aa_codons) {
       if (!codon %in% aa_data$Codon) next
       
-      codon_row <- aa_data %>% filter(Codon == codon)
+      codon_row <- aa_data %>% dplyr::filter(Codon == codon)
       
       top5_cnt <- if (codon %in% names(top5)) sum(top5[[codon]], na.rm = TRUE) else 0
       rest_cnt <- if (codon %in% names(rest)) sum(rest[[codon]], na.rm = TRUE) else 0
@@ -135,7 +135,7 @@ diagnose_cai_vs_proportion <- function(w_table, test_results,
   cat("   - But overall usage is still lower than in low expression genes\n\n")
   
   # Calculate better metric: absolute enrichment of preferred codons
-  preferred_codons <- comparison %>% filter(Is_Preferred)
+  preferred_codons <- comparison %>% dplyr::filter(Is_Preferred)
   truly_selected <- preferred_codons %>% 
     filter(Significant, Difference > 0)
   
@@ -180,7 +180,7 @@ create_corrected_classification <- function(w_table, test_results) {
   cat("\n=== Creating Corrected Codon Classification ===\n\n")
   
   classification <- test_results %>%
-    left_join(w_table %>% select(codon, relative_adaptiveness, amino_acid),
+    left_join(w_table %>% dplyr::select(codon, relative_adaptiveness, amino_acid),
               by = c("Codon" = "codon")) %>%
     mutate(
       CAI_Status = case_when(
