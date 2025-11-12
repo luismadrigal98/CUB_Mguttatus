@@ -80,10 +80,11 @@ test_that("Function runs with minimal tRNA data", {
   
   genetic_code <- c("AAA" = "Lys", "AAG" = "Lys", "GAA" = "Glu", "GAG" = "Glu")
   
-  # Test that function runs without error
+  # Test that function runs without error (using by.copy.number mode)
   expect_error({
     result <- tRNA_codon_correlation(codon_counts, temp_trna, genetic_code,
-                                     output_dir = tempdir(), test_method = "spearman")
+                                     output_dir = tempdir(), test_method = "spearman",
+                                     mode = "by.copy.number")
   }, NA)  # NA means "no error expected"
   
   # Cleanup
@@ -122,7 +123,8 @@ test_that("All correlation methods work", {
   for (method in c("spearman", "pearson", "kendall")) {
     expect_error({
       result <- tRNA_codon_correlation(codon_counts, temp_trna, genetic_code,
-                                      output_dir = tempdir(), test_method = method)
+                                      output_dir = tempdir(), test_method = method,
+                                      mode = "by.copy.number")
     }, NA, info = paste("Method:", method))
   }
   
@@ -159,7 +161,8 @@ test_that("tRNA correlation results have correct structure", {
                     "GCT" = "Ala", "GCC" = "Ala", "GCA" = "Ala", "GCG" = "Ala")
   
   result <- tRNA_codon_correlation(codon_counts, temp_trna, genetic_code,
-                                   output_dir = tempdir(), test_method = "spearman")
+                                   output_dir = tempdir(), test_method = "spearman",
+                                   mode = "by.copy.number")
   
   expect_true("correlation_results" %in% names(result))
   expect_true("analysis_data" %in% names(result))
@@ -202,7 +205,8 @@ test_that("RSCU calculation in tRNA analysis is correct", {
   genetic_code <- c("AAA" = "Lys", "AAG" = "Lys", "GAA" = "Glu", "GAG" = "Glu")
   
   result <- tRNA_codon_correlation(codon_counts, temp_trna, genetic_code,
-                                   output_dir = tempdir(), test_method = "spearman")
+                                   output_dir = tempdir(), test_method = "spearman",
+                                   mode = "by.copy.number")
   
   # For equal usage, RSCU should be 1.0 for all codons
   rscu_values <- result$analysis_data$RSCU

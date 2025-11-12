@@ -116,7 +116,7 @@ calculate_cai <- function(codon_counts, reference_genes, genetic_code)
   
   # 1. Extract reference set (highly expressed genes)
   reference_set <- codon_counts |>
-    filter(Gene_name %in% reference_genes)
+    dplyr::filter(Gene_name %in% reference_genes)
   
   cat(sprintf("Reference set: %d highly expressed genes\n", nrow(reference_set)))
   
@@ -157,7 +157,7 @@ calculate_cai <- function(codon_counts, reference_genes, genetic_code)
   cat(sprintf("Range: %.4f - %.4f\n", min(result$CAI, na.rm = TRUE), max(result$CAI, na.rm = TRUE)))
   
   # Check correlation between reference genes and CAI
-  reference_cai <- result |> filter(Gene_name %in% reference_genes)
+  reference_cai <- result |> dplyr::filter(Gene_name %in% reference_genes)
   cat(sprintf("\nMean CAI in reference set: %.4f\n", mean(reference_cai$CAI, na.rm = TRUE)))
   
   return(list(
