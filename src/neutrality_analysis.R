@@ -172,8 +172,8 @@ pr2_bias_plot <- function(codon_counts, output_file = "pr2_plot.pdf")
   # Create plot
   p <- ggplot(plot_data, aes(x = AU3, y = GC3)) +
     geom_pointdensity() +
-    geom_vline(xintercept = 0.5, linetype = "dashed", color = "green") +
-    geom_hline(yintercept = 0.5, linetype = "dashed", color = "green") +
+    geom_vline(xintercept = 0.5, linetype = "dashed", color = "red") +
+    geom_hline(yintercept = 0.5, linetype = "dashed", color = "red") +
     theme_custom() +
     labs(title = "PR2 Bias Plot (Parity Rule 2)",
          subtitle = "Analysis of purine/pyrimidine bias at 3rd codon position",

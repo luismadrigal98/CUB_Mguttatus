@@ -130,8 +130,8 @@ calculate_cai <- function(codon_counts, reference_genes, genetic_code)
   # Print some statistics about optimal codons
   cat("\nOptimal codons (w = 1.0) in reference set:\n")
   optimal <- w_table |>
-    filter(relative_adaptiveness == 1.0, amino_acid != "STOP") |>
-    select(amino_acid, codon, count) |>
+    dplyr::filter(relative_adaptiveness == 1.0, amino_acid != "STOP") |>
+    dplyr::select(amino_acid, codon, count) |>
     arrange(amino_acid)
   print(optimal)
   
