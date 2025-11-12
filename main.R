@@ -84,26 +84,13 @@ codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long),
 codon_usage <- codon_usage |>
   trim_uninformative(genetic_code = genetic_code_dna_long)
 
-## *****************************************************************************
-## 4) Comprehensive CUB Analysis ----
-## _____________________________________________________________________________
+## 3.3) Load the expression data ----
 
-message("Performing comprehensive codon usage bias analysis...")
-
-# Run complete analysis and generate all outputs
-cub_results <- cub_summary(codon_usage, genetic_code_dna_long, 
-                          output_dir = "./results",
-                          aa_group = aa_chemistry_df)
-
-## *****************************************************************************
-## 5) Modeling relationship between ENC and Expression profiles ----
-## _____________________________________________________________________________
-
-# Trimming suffix from ENC table in gene names
+# Trimming suffix in gene names
 cub_results$enc_results[, Gene_name := sub("\\.1$", "", Gene_name)]
 
 exp_data_bud <- read.table(file = "./data/bud_gene_expression_cpm_remapped.txt",
-                       header = T) |>
+                           header = T) |>
   dplyr::rename(Exp_bud = Expression)
 
 exp_data_leaf <- read.table(file = "./data/leaf_gene_expression_mean_cpm_renamed.txt",
@@ -143,11 +130,28 @@ exp_complete <- exp_complete |>
   dplyr::ungroup() |>
   dplyr::mutate(Source_High_exp = as.factor(Source_High_exp))
 
-# Add the ENC values per gene
+## *****************************************************************************
+## 4) Comprehensive CUB Analysis ----
+## _____________________________________________________________________________
+
+message("Performing comprehensive codon usage bias analysis...")
+
+# Run complete analysis and generate all outputs
+cub_results <- cub_summary(codon_usage, genetic_code_dna_long, 
+                          output_dir = "./results",
+                          aa_group = aa_chemistry_df)
+
+# Clean gene names: remove .1 suffix from all data frames
+enc_values_clean <- cub_results$enc_results |>
+  dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
+
+gc_content_clean <- cub_results$gc_results |>
+  dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
+
 # Creation of integrated data ----
 
 integrated_data <- dplyr::left_join(exp_complete, cub_results$enc_results, 
-                                by = dplyr::join_by(Gene == Gene_name)) |>
+                                    by = dplyr::join_by(Gene == Gene_name)) |>
   dplyr::rename(Gene_name = Gene) |>
   na.omit() |>
   distinct(Gene_name, .keep_all = TRUE)
@@ -171,7 +175,174 @@ integrated_data <- integrated_data |>
 # Adding GC content variables
 
 integrated_data <- integrated_data |>
-  left_join(cub_results$gc_results, by = "Gene_name")
+  left_join(gc_content_clean, by = "Gene_name")
+
+## *****************************************************************************
+## 5) CDC-based analysis ----
+## _____________________________________________________________________________
+
+# Full integration with your pipeline
+cdc_results <- integrate_cdc_analysis(codon_usage, 
+                                      genetic_code_dna_long, 
+                                      integrated_data, 
+                                      n_bootstrap = 10000,
+                                      n_cores = 10)
+
+# Re-plotting ENC-based neutrality plot highlighting the significant genes with CDC ----
+
+# Extract just CDC columns we need
+cdc_for_merge <- cdc_results |>
+  dplyr::select(Gene_name, CDC, p_value, p_adj) |>
+  dplyr::filter(!is.na(CDC))  # Remove genes without CDC
+
+cat(sprintf("Valid CDC results: %d genes\n", nrow(cdc_for_merge)))
+
+# Merge ENC, GC3s, and CDC results
+enc_cdc_data <- enc_values_clean |>
+  dplyr::left_join(gc_content_clean |> dplyr::select(Gene_name, GC3s), by = "Gene_name") |>
+  dplyr::left_join(cdc_for_merge, by = "Gene_name") |>
+  dplyr::filter(is.finite(ENC) & is.finite(GC3s) & ENC > 0 & ENC <= 61) |>
+  dplyr::mutate(
+    CDC_significant = !is.na(p_value) & p_value < 0.05,
+    CDC_category = dplyr::case_when(
+      is.na(p_value) ~ "No CDC data",
+      p_value < 0.001 ~ "p < 0.001",
+      p_value < 0.01 ~ "p < 0.01",
+      p_value < 0.05 ~ "p < 0.05",
+      TRUE ~ "Not significant"
+    )
+  )
+
+# Count significant genes
+n_sig <- sum(enc_cdc_data$CDC_significant, na.rm = TRUE)
+n_total <- sum(!is.na(enc_cdc_data$p_value))
+pct_sig <- 100 * n_sig / n_total
+
+cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (p < 0.05)\n", 
+            n_sig, n_total, pct_sig))
+
+# Calculate expected ENC under mutation-drift equilibrium (Wright 1990)
+# ENC_expected = 2 + GC3s + 29/(GC3s^2 + (1-GC3s)^2)
+gc3s_range <- seq(0, 1, by = 0.01)
+enc_expected <- 2 + gc3s_range + 29 / (gc3s_range^2 + (1 - gc3s_range)^2)
+
+expected_curve <- data.frame(
+  GC3s = gc3s_range,
+  ENC_expected = enc_expected
+)
+
+# Create enhanced ENC plot
+p_enc_cdc <- ggplot() +
+  # Background: non-significant genes
+  geom_point(data = enc_cdc_data %>% filter(!CDC_significant | is.na(CDC_significant)),
+             aes(x = GC3s, y = ENC), 
+             color = "gray70", alpha = 0.3, size = 0.8) +
+  # Foreground: CDC-significant genes
+  geom_point(data = enc_cdc_data %>% filter(CDC_significant),
+             aes(x = GC3s, y = ENC, color = CDC_category), 
+             size = 2, alpha = 0.7) +
+  # Expected neutrality curve (Wright 1990)
+  geom_line(data = expected_curve, 
+            aes(x = GC3s, y = ENC_expected), 
+            color = "black", linewidth = 1.2, linetype = "solid") +
+  scale_color_manual(
+    values = c("p < 0.001" = "#d73027",     # Dark red
+               "p < 0.01" = "#fc8d59",      # Orange
+               "p < 0.05" = "#fee08b"),     # Yellow
+    name = "CDC Significance"
+  ) +
+  labs(
+    title = "ENC Plot with CDC-Significant Genes Highlighted",
+    subtitle = sprintf("Black curve = expected ENC under mutation-drift equilibrium\nGenes below curve = selection for codon bias\n%d genes (%.1f%%) have significant CDC", 
+                       n_sig, pct_sig),
+    x = "GC3s (GC content at synonymous 3rd codon positions)",
+    y = "ENC (Effective Number of Codons)"
+  ) +
+  ylim(20, 61) +
+  xlim(0, 1) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 10)
+  )
+
+ggsave("./results/ENC_plot_CDC_highlighted.pdf", p_enc_cdc, 
+       width = 11, height = 7)
+
+cat("Enhanced ENC plot saved: ./results/ENC_plot_CDC_highlighted.pdf\n\n")
+
+# Analyze CDC-significant genes: are they below the curve (under selection)?
+cat("=== Position Analysis: CDC-Significant Genes Relative to Neutrality Curve ===\n")
+
+# Calculate deviation from expected ENC
+enc_cdc_data <- enc_cdc_data %>%
+  mutate(
+    ENC_expected = 2 + GC3s + 29 / (GC3s^2 + (1 - GC3s)^2),
+    ENC_deviation = ENC - ENC_expected,
+    Below_curve = ENC_deviation < 0
+  )
+
+# Compare CDC-significant vs non-significant genes
+cdc_position_summary <- enc_cdc_data %>%
+  filter(!is.na(CDC_significant)) %>%
+  group_by(CDC_significant) %>%
+  summarize(
+    n = n(),
+    mean_ENC = mean(ENC, na.rm = TRUE),
+    mean_ENC_expected = mean(ENC_expected, na.rm = TRUE),
+    mean_deviation = mean(ENC_deviation, na.rm = TRUE),
+    pct_below_curve = 100 * sum(Below_curve, na.rm = TRUE) / n(),
+    mean_CDC = mean(CDC, na.rm = TRUE)
+  )
+
+print(cdc_position_summary)
+
+# Statistical tests
+if (n_sig > 0) {
+  cat("\n=== Statistical Comparisons ===\n")
+  
+  # Test if CDC-significant genes have different ENC deviation
+  wilcox_enc <- wilcox.test(
+    ENC_deviation ~ CDC_significant,
+    data = enc_cdc_data %>% filter(!is.na(CDC_significant))
+  )
+  cat(sprintf("ENC deviation (CDC-sig vs non-sig): W = %.0f, p = %.2e\n", 
+              wilcox_enc$statistic, wilcox_enc$p.value))
+  
+  # Test if more CDC-significant genes are below the curve
+  below_curve_table <- table(
+    enc_cdc_data %>% filter(!is.na(CDC_significant)) %>% select(CDC_significant, Below_curve)
+  )
+  chi_test <- chisq.test(below_curve_table)
+  cat(sprintf("Position relative to curve (chi-squared): X² = %.2f, p = %.2e\n", 
+              chi_test$statistic, chi_test$p.value))
+}
+
+# Create density plot of ENC deviation
+p_enc_deviation <- ggplot(enc_cdc_data %>% filter(!is.na(CDC_significant)), 
+                          aes(x = ENC_deviation, fill = CDC_significant)) +
+  geom_density(alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_fill_manual(
+    values = c("TRUE" = "#E41A1C", "FALSE" = "gray60"),
+    labels = c("TRUE" = "CDC Significant", "FALSE" = "Not Significant"),
+    name = ""
+  ) +
+  labs(
+    title = "ENC Deviation from Expected: CDC-Significant vs Non-Significant Genes",
+    subtitle = "Negative values = below neutrality curve (selection for codon bias)",
+    x = "ENC Deviation (Observed - Expected)",
+    y = "Density"
+  ) +
+  theme_bw() +
+  theme(legend.position = "top")
+
+ggsave("./results/ENC_deviation_by_CDC.pdf", p_enc_deviation, width = 9, height = 6)
+
+## *****************************************************************************
+## 6) Modeling relationship between CDC and Expression profiles ----
+## _____________________________________________________________________________
 
 # Box-Cox Transformation of expression data (lambda = 0.1) Log2 for simplicity
 # Adding a small offset to the expression value (BoxCox works over positive numbers)
@@ -442,7 +613,7 @@ if (length(middle_enc_de) > 0 && length(bottom5_enc_de) > 0) {
 cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
 ## *****************************************************************************
-## 6) Calculate Codon Adaptation Index (CAI) ----
+## 7) Calculate Codon Adaptation Index (CAI) ----
 ## _____________________________________________________________________________
 
 cat("\n=== Step 10: Codon Adaptation Index (CAI) ===\n")
@@ -635,7 +806,7 @@ p_cai_enc <- ggplot(integrated_data, aes(x = ENC, y = CAI, color = Expression_Gr
 
 ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cai_enc, width = 10, height = 6)
 
-# 6.2) Comparing preferred codon of Mimulus guttatus to other plants ----
+# 7.2) Comparing preferred codon of Mimulus guttatus to other plants ----
 
 # Use w_table from CAI analysis (already calculated preferred codons)
 cat("Using optimal codons from CAI reference set...\n")
@@ -966,7 +1137,7 @@ for (i in 1:nrow(mg_summary)) {
 
 cat("\n")
 
-## 6.3) Preferred codon usage: Selected vs Neutral genes ----
+## 7.3) Preferred codon usage: Selected vs Neutral genes ----
 
 # Get preferred codons (w = 1.0 from CAI)
 preferred_codons_vec <- w_table |>
@@ -1093,7 +1264,7 @@ ggsave("./results/preferred_codon_usage_comparison.pdf", p_comparison,
 
 cat("\n")
 
-# 6.3.1) Statistical testing for codon-level differences ----
+# 7.3.1) Statistical testing for codon-level differences ----
 
 cat("=== Statistical Testing: Per-Codon Proportion Differences ===\n\n")
 
@@ -1163,7 +1334,7 @@ if (nrow(sig_preferred) > 0) {
 
 cat("\n")
 
-# 6.3.2) Diagnose CAI vs Proportion Discrepancies ----
+# 7.3.2) Diagnose CAI vs Proportion Discrepancies ----
 
 cat("=== Diagnosing CAI w-values vs Proportion Differences ===\n\n")
 
@@ -1203,7 +1374,7 @@ codon_test_results <- codon_test_results %>%
     Classification = Combined_Classification
   )
 
-# 6.4) Split 6-codon amino acids by degeneracy ----
+# 7.4) Split 6-codon amino acids by degeneracy ----
 
 # Define codon families for 6-codon amino acids
 # Arg: CGN (4-fold) + AGA/AGG (2-fold)
@@ -1332,10 +1503,10 @@ ggsave("./results/preferred_codon_usage_degeneracy.pdf", p_degeneracy,
 cat("\n✓ Plot saved: ./results/preferred_codon_usage_degeneracy.pdf\n\n")
 
 ## *****************************************************************************
-## 7) Correspondence analysis over counts and PCA over RSCU ----
+## 8) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
 
-# 7.1) CA analysis ---- 
+# 8.1) CA analysis ---- 
 
 codon_usage_m <- as.matrix(codon_usage[, -1])
 rownames(codon_usage_m) <- codon_usage[[1]]
@@ -1554,7 +1725,7 @@ for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
               ifelse(wtest$p.value < 0.05, "***", "")))
 }
 
-# 7.2) PCA analysis ----
+# 8.2) PCA analysis ----
 
 rscu_m <- as.matrix(cub_results$rscu_results[, -1])
 rownames(rscu_m) <- cub_results$rscu_results[[1]]
@@ -1805,7 +1976,7 @@ pca_loadings <- analyze_codon_loadings(
 )
 
 ## *****************************************************************************
-## xx) tRNA abundance correlation analysis ----
+## 10) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
 
 # Analysis 1: By tRNA gene copy number (traditional approach)
@@ -1872,184 +2043,7 @@ tRNA_expression_top5_results <- tRNA_codon_correlation(
 cat("\n✓ tRNA expression correlation analysis (top 5%) complete!\n")
 
 ## *****************************************************************************
-## xx) CDC-based analysis ----
-## _____________________________________________________________________________
-
-# Full integration with your pipeline
-cdc_results <- integrate_cdc_analysis(codon_usage, genetic_code_dna_long, 
-                                      integrated_data, n_bootstrap = 10000,
-                                      n_cores = 10)
-
-# Re-plotting ENC-based neutrality plot highlighting the significant genes with CDC ----
-
-cat("\n=== Creating Enhanced ENC Plot with CDC-Significant Genes ===\n")
-cat("Highlighting genes deviating from neutral codon usage (significant CDC)\n\n")
-
-# Check what columns cdc_results has
-cat("CDC results columns:", paste(names(cdc_results), collapse = ", "), "\n")
-cat(sprintf("CDC results has %d rows\n", nrow(cdc_results)))
-
-# Clean gene names: remove .1 suffix from all data frames
-enc_values_clean <- cub_results$enc_results |>
-  dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
-
-gc_content_clean <- cub_results$gc_results |>
-  dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
-
-# Extract just CDC columns we need
-cdc_for_merge <- cdc_results |>
-  dplyr::select(Gene_name, CDC, p_value, p_adj) |>
-  dplyr::filter(!is.na(CDC))  # Remove genes without CDC
-
-cat(sprintf("Valid CDC results: %d genes\n", nrow(cdc_for_merge)))
-
-# Merge ENC, GC3s, and CDC results
-enc_cdc_data <- enc_values_clean |>
-  dplyr::left_join(gc_content_clean |> dplyr::select(Gene_name, GC3s), by = "Gene_name") |>
-  dplyr::left_join(cdc_for_merge, by = "Gene_name") |>
-  dplyr::filter(is.finite(ENC) & is.finite(GC3s) & ENC > 0 & ENC <= 61) |>
-  dplyr::mutate(
-    CDC_significant = !is.na(p_value) & p_value < 0.05,
-    CDC_category = dplyr::case_when(
-      is.na(p_value) ~ "No CDC data",
-      p_value < 0.001 ~ "p < 0.001",
-      p_value < 0.01 ~ "p < 0.01",
-      p_value < 0.05 ~ "p < 0.05",
-      TRUE ~ "Not significant"
-    )
-  )
-
-# Count significant genes
-n_sig <- sum(enc_cdc_data$CDC_significant, na.rm = TRUE)
-n_total <- sum(!is.na(enc_cdc_data$p_value))
-pct_sig <- 100 * n_sig / n_total
-
-cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (p < 0.05)\n", 
-            n_sig, n_total, pct_sig))
-
-# Calculate expected ENC under mutation-drift equilibrium (Wright 1990)
-# ENC_expected = 2 + GC3s + 29/(GC3s^2 + (1-GC3s)^2)
-gc3s_range <- seq(0, 1, by = 0.01)
-enc_expected <- 2 + gc3s_range + 29 / (gc3s_range^2 + (1 - gc3s_range)^2)
-
-expected_curve <- data.frame(
-  GC3s = gc3s_range,
-  ENC_expected = enc_expected
-)
-
-# Create enhanced ENC plot
-p_enc_cdc <- ggplot() +
-  # Background: non-significant genes
-  geom_point(data = enc_cdc_data %>% filter(!CDC_significant | is.na(CDC_significant)),
-             aes(x = GC3s, y = ENC), 
-             color = "gray70", alpha = 0.3, size = 0.8) +
-  # Foreground: CDC-significant genes
-  geom_point(data = enc_cdc_data %>% filter(CDC_significant),
-             aes(x = GC3s, y = ENC, color = CDC_category), 
-             size = 2, alpha = 0.7) +
-  # Expected neutrality curve (Wright 1990)
-  geom_line(data = expected_curve, 
-            aes(x = GC3s, y = ENC_expected), 
-            color = "black", linewidth = 1.2, linetype = "solid") +
-  scale_color_manual(
-    values = c("p < 0.001" = "#d73027",     # Dark red
-               "p < 0.01" = "#fc8d59",      # Orange
-               "p < 0.05" = "#fee08b"),     # Yellow
-    name = "CDC Significance"
-  ) +
-  labs(
-    title = "ENC Plot with CDC-Significant Genes Highlighted",
-    subtitle = sprintf("Black curve = expected ENC under mutation-drift equilibrium\nGenes below curve = selection for codon bias\n%d genes (%.1f%%) have significant CDC", 
-                      n_sig, pct_sig),
-    x = "GC3s (GC content at synonymous 3rd codon positions)",
-    y = "ENC (Effective Number of Codons)"
-  ) +
-  ylim(20, 61) +
-  xlim(0, 1) +
-  theme_bw(base_size = 12) +
-  theme(
-    legend.position = "right",
-    plot.title = element_text(face = "bold"),
-    plot.subtitle = element_text(size = 10)
-  )
-
-ggsave("./results/ENC_plot_CDC_highlighted.pdf", p_enc_cdc, 
-       width = 11, height = 7)
-
-cat("Enhanced ENC plot saved: ./results/ENC_plot_CDC_highlighted.pdf\n\n")
-
-# Analyze CDC-significant genes: are they below the curve (under selection)?
-cat("=== Position Analysis: CDC-Significant Genes Relative to Neutrality Curve ===\n")
-
-# Calculate deviation from expected ENC
-enc_cdc_data <- enc_cdc_data %>%
-  mutate(
-    ENC_expected = 2 + GC3s + 29 / (GC3s^2 + (1 - GC3s)^2),
-    ENC_deviation = ENC - ENC_expected,
-    Below_curve = ENC_deviation < 0
-  )
-
-# Compare CDC-significant vs non-significant genes
-cdc_position_summary <- enc_cdc_data %>%
-  filter(!is.na(CDC_significant)) %>%
-  group_by(CDC_significant) %>%
-  summarize(
-    n = n(),
-    mean_ENC = mean(ENC, na.rm = TRUE),
-    mean_ENC_expected = mean(ENC_expected, na.rm = TRUE),
-    mean_deviation = mean(ENC_deviation, na.rm = TRUE),
-    pct_below_curve = 100 * sum(Below_curve, na.rm = TRUE) / n(),
-    mean_CDC = mean(CDC, na.rm = TRUE)
-  )
-
-print(cdc_position_summary)
-
-# Statistical tests
-if (n_sig > 0) {
-  cat("\n=== Statistical Comparisons ===\n")
-  
-  # Test if CDC-significant genes have different ENC deviation
-  wilcox_enc <- wilcox.test(
-    ENC_deviation ~ CDC_significant,
-    data = enc_cdc_data %>% filter(!is.na(CDC_significant))
-  )
-  cat(sprintf("ENC deviation (CDC-sig vs non-sig): W = %.0f, p = %.2e\n", 
-              wilcox_enc$statistic, wilcox_enc$p.value))
-  
-  # Test if more CDC-significant genes are below the curve
-  below_curve_table <- table(
-    enc_cdc_data %>% filter(!is.na(CDC_significant)) %>% select(CDC_significant, Below_curve)
-  )
-  chi_test <- chisq.test(below_curve_table)
-  cat(sprintf("Position relative to curve (chi-squared): X² = %.2f, p = %.2e\n", 
-              chi_test$statistic, chi_test$p.value))
-}
-
-# Create density plot of ENC deviation
-p_enc_deviation <- ggplot(enc_cdc_data %>% filter(!is.na(CDC_significant)), 
-                          aes(x = ENC_deviation, fill = CDC_significant)) +
-  geom_density(alpha = 0.5) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
-  scale_fill_manual(
-    values = c("TRUE" = "#E41A1C", "FALSE" = "gray60"),
-    labels = c("TRUE" = "CDC Significant", "FALSE" = "Not Significant"),
-    name = ""
-  ) +
-  labs(
-    title = "ENC Deviation from Expected: CDC-Significant vs Non-Significant Genes",
-    subtitle = "Negative values = below neutrality curve (selection for codon bias)",
-    x = "ENC Deviation (Observed - Expected)",
-    y = "Density"
-  ) +
-  theme_bw() +
-  theme(legend.position = "top")
-
-ggsave("./results/ENC_deviation_by_CDC.pdf", p_enc_deviation, width = 9, height = 6)
-
-# Relationship between CDC and expression levels ----
-
-## *****************************************************************************
-## xx) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
+## 11) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
 ## _____________________________________________________________________________
 
 cat("\n=== SELECTION COEFFICIENT ANALYSIS ===\n")
@@ -2151,9 +2145,7 @@ write.table(Ne_sensitivity,
 cat("\n✓ Selection coefficient analysis complete!\n")
 cat("  Results saved to ./results/selection_coefficients.csv\n")
 
-# Add polymorphism data integration here if available (not implemented)
-
-## xx) Polymorphism data integration ----
+## 12) Polymorphism data integration ----
 
 pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
 

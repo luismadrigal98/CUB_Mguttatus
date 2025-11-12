@@ -23,7 +23,7 @@ if (!require("Biostrings")) {
 }
 library(Biostrings)
 
-# Define genetic code (59 sense codons excluding single-codon amino acids) - compatible with main analysis
+# Define genetic code (sense codons excluding single-codon amino acids) - compatible with main analysis
 get_sense_codons <- function(genetic_code) {
   # Extract codons that are not stop codons
   sense_codons <- names(genetic_code)[genetic_code != "STOP"]
@@ -36,12 +36,14 @@ get_sense_codons <- function(genetic_code) {
   return(sense_codons)
 }
 
-#' Calculate nucleotide composition at each codon position from codon counts
-#'
-#' @param codon_counts Named vector of codon counts for one gene
-#' @param genetic_code Named vector mapping codons to amino acids
-#' @return List with GC and purine contents at each codon position
-get_positional_composition_from_counts <- function(codon_counts, genetic_code) {
+get_positional_composition_from_counts <- function(codon_counts, genetic_code) 
+{
+  #' Calculate nucleotide composition at each codon position from codon counts
+  #'
+  #' @param codon_counts Named vector of codon counts for one gene
+  #' @param genetic_code Named vector mapping codons to amino acids
+  #' @return List with GC and purine contents at each codon position
+  #' ___________________________________________________________________________
   
   # Get sense codons (exclude stop codons)
   sense_codons <- get_sense_codons(genetic_code)
@@ -116,12 +118,15 @@ get_positional_composition_from_counts <- function(codon_counts, genetic_code) {
   )
 }
 
-#' Calculate expected nucleotide frequencies at each position
-#'
-#' @param S GC content at position i
-#' @param R Purine content at position i
-#' @return Named vector with expected frequencies of A, T, G, C
-calc_expected_nucleotides <- function(S, R) {
+calc_expected_nucleotides <- function(S, R) 
+{
+  #' Calculate expected nucleotide frequencies at each position
+  #'
+  #' @param S GC content at position i
+  #' @param R Purine content at position i
+  #' @return Named vector with expected frequencies of A, T, G, C
+  #' ___________________________________________________________________________
+  
   # Strip names from S and R to avoid name concatenation
   S <- as.numeric(S)
   R <- as.numeric(R)
@@ -134,12 +139,14 @@ calc_expected_nucleotides <- function(S, R) {
   )
 }
 
-#' Calculate expected codon usage based on positional composition
-#'
-#' @param comp List of positional compositions (S1, S2, S3, R1, R2, R3)
-#' @param genetic_code Named vector mapping codons to amino acids
-#' @return Named vector of expected codon frequencies
 calc_expected_codon_usage <- function(comp, genetic_code) {
+  #' Calculate expected codon usage based on positional composition
+  #'
+  #' @param comp List of positional compositions (S1, S2, S3, R1, R2, R3)
+  #' @param genetic_code Named vector mapping codons to amino acids
+  #' @return Named vector of expected codon frequencies
+  #' ___________________________________________________________________________
+  
   # Get sense codons
   sense_codons <- get_sense_codons(genetic_code)
   
@@ -164,12 +171,15 @@ calc_expected_codon_usage <- function(comp, genetic_code) {
   expected / sum(expected)
 }
 
-#' Calculate observed codon usage from codon counts
-#'
-#' @param codon_counts Named vector of codon counts for one gene
-#' @param genetic_code Named vector mapping codons to amino acids
-#' @return Named vector of observed codon frequencies
-calc_observed_codon_usage <- function(codon_counts, genetic_code) {
+calc_observed_codon_usage <- function(codon_counts, genetic_code) 
+{
+  #' Calculate observed codon usage from codon counts
+  #'
+  #' @param codon_counts Named vector of codon counts for one gene
+  #' @param genetic_code Named vector mapping codons to amino acids
+  #' @return Named vector of observed codon frequencies
+  #' ___________________________________________________________________________
+  
   # Get sense codons
   sense_codons <- get_sense_codons(genetic_code)
   
@@ -201,12 +211,15 @@ calc_observed_codon_usage <- function(codon_counts, genetic_code) {
   full_observed / total
 }
 
-#' Calculate CDC using cosine distance metric
-#'
-#' @param expected Named vector of expected codon frequencies
-#' @param observed Named vector of observed codon frequencies
-#' @return CDC value (0 = no bias, 1 = maximum bias)
-calc_cdc <- function(expected, observed) {
+calc_cdc <- function(expected, observed) 
+{
+  #' Calculate CDC using cosine distance metric
+  #'
+  #' @param expected Named vector of expected codon frequencies
+  #' @param observed Named vector of observed codon frequencies
+  #' @return CDC value (0 = no bias, 1 = maximum bias)
+  #' ___________________________________________________________________________
+  
   # Ensure vectors are aligned
   codons <- intersect(names(expected), names(observed))
   expected <- expected[codons]
@@ -221,13 +234,16 @@ calc_cdc <- function(expected, observed) {
   1 - cosine_sim
 }
 
-#' Generate random codon counts based on positional composition
-#'
-#' @param comp List of positional compositions
-#' @param total_codons Total number of codons to generate
-#' @param genetic_code Named vector mapping codons to amino acids
-#' @return Named vector of random codon counts
-generate_random_codon_counts <- function(comp, total_codons, genetic_code) {
+generate_random_codon_counts <- function(comp, total_codons, genetic_code) 
+{
+  #' Generate random codon counts based on positional composition
+  #'
+  #' @param comp List of positional compositions
+  #' @param total_codons Total number of codons to generate
+  #' @param genetic_code Named vector mapping codons to amino acids
+  #' @return Named vector of random codon counts
+  #' ___________________________________________________________________________
+  
   nuc1 <- calc_expected_nucleotides(comp$S1, comp$R1)
   nuc2 <- calc_expected_nucleotides(comp$S2, comp$R2)
   nuc3 <- calc_expected_nucleotides(comp$S3, comp$R3)
@@ -274,13 +290,16 @@ generate_random_codon_counts <- function(comp, total_codons, genetic_code) {
   return(random_counts)
 }
 
-#' Calculate CDC with bootstrap significance test for single gene
-#'
-#' @param codon_counts Named vector of codon counts for one gene
-#' @param genetic_code Named vector mapping codons to amino acids
-#' @param n_bootstrap Number of bootstrap replicates (default: 1000)
-#' @return List containing CDC value, p-value, and bootstrap distribution
-calculate_cdc_single <- function(codon_counts, genetic_code, n_bootstrap = 1000) {
+calculate_cdc_single <- function(codon_counts, genetic_code, 
+                                 n_bootstrap = 1000)
+{
+  #' Calculate CDC with bootstrap significance test for single gene
+  #'
+  #' @param codon_counts Named vector of codon counts for one gene
+  #' @param genetic_code Named vector mapping codons to amino acids
+  #' @param n_bootstrap Number of bootstrap replicates (default: 1000)
+  #' @return List containing CDC value, p-value, and bootstrap distribution
+  #' ___________________________________________________________________________
   
   # Handle data.frame/data.table row input
   if (is.data.frame(codon_counts)) {
@@ -387,14 +406,17 @@ calculate_cdc_single <- function(codon_counts, genetic_code, n_bootstrap = 1000)
   )
 }
 
-#' Calculate CDC for all genes in codon usage data frame (optimized with parallel processing)
-#'
-#' @param codon_usage_df Data frame with Gene_name column and codon count columns
-#' @param genetic_code Named vector mapping codons to amino acids
-#' @param n_bootstrap Number of bootstrap replicates per gene (default: 1000)
-#' @param n_cores Number of cores for parallel processing (default: detect available)
-#' @return Data frame with Gene_name, CDC, and p_value columns
-calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000, n_cores = NULL) {
+calculate_cdc_all <- function(codon_usage_df, genetic_code, 
+                              n_bootstrap = 1000, n_cores = NULL)
+{
+  #' Calculate CDC for all genes in codon usage data frame (optimized with parallel processing)
+  #'
+  #' @param codon_usage_df Data frame with Gene_name column and codon count columns
+  #' @param genetic_code Named vector mapping codons to amino acids
+  #' @param n_bootstrap Number of bootstrap replicates per gene (default: 1000)
+  #' @param n_cores Number of cores for parallel processing (default: detect available)
+  #' @return Data frame with Gene_name, CDC, and p_value columns
+  #' ___________________________________________________________________________
   
   cat(sprintf("\n=== Calculating CDC for %d genes ===\n", nrow(codon_usage_df)))
   cat(sprintf("Bootstrap replicates per gene: %d\n", n_bootstrap))
@@ -461,7 +483,8 @@ calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000, 
   cat(sprintf("Mean CDC: %.4f\n", mean(results$CDC, na.rm = TRUE)))
   cat(sprintf("Median CDC: %.4f\n", median(results$CDC, na.rm = TRUE)))
   cat(sprintf("SD CDC: %.4f\n", sd(results$CDC, na.rm = TRUE)))
-  cat(sprintf("Range: %.4f - %.4f\n", min(results$CDC, na.rm = TRUE), max(results$CDC, na.rm = TRUE)))
+  cat(sprintf("Range: %.4f - %.4f\n", min(results$CDC, na.rm = TRUE),
+              max(results$CDC, na.rm = TRUE)))
   
   # Significance summary - uncorrected and FDR-corrected
   sig_count_raw <- sum(results$p_value < 0.05, na.rm = TRUE)
@@ -476,10 +499,13 @@ calculate_cdc_all <- function(codon_usage_df, genetic_code, n_bootstrap = 1000, 
   return(results)
 }
 
-#' Plot bootstrap distribution with observed CDC
-#'
-#' @param cdc_result Result object from calculate_cdc_single()
-plot_cdc_bootstrap <- function(cdc_result) {
+plot_cdc_bootstrap <- function(cdc_result) 
+{
+  #' Plot bootstrap distribution with observed CDC
+  #'
+  #' @param cdc_result Result object from calculate_cdc_single()
+  #' ___________________________________________________________________________
+  
   if (is.null(cdc_result$bootstrap_distribution)) {
     warning("No bootstrap distribution available")
     return(NULL)
@@ -504,15 +530,20 @@ plot_cdc_bootstrap <- function(cdc_result) {
          bty = "n")
 }
 
-#' Integrate CDC analysis with main analysis pipeline
-#'
-#' @param codon_usage Data frame from main analysis (with Gene_name column)
-#' @param genetic_code Named vector from main analysis
-#' @param expression_data Optional: data frame with Gene_name and expression info
-#' @param n_bootstrap Number of bootstrap replicates (default: 100 for speed)
-#' @param n_cores Number of cores for parallel processing (default: auto-detect)
-#' @return Data frame with CDC results, optionally merged with expression data
-integrate_cdc_analysis <- function(codon_usage, genetic_code, expression_data = NULL, n_bootstrap = 100, n_cores = NULL) {
+integrate_cdc_analysis <- function(codon_usage, genetic_code, 
+                                   expression_data = NULL, 
+                                   n_bootstrap = 100, 
+                                   n_cores = NULL) 
+{
+  #' Integrate CDC analysis with main analysis pipeline
+  #'
+  #' @param codon_usage Data frame from main analysis (with Gene_name column)
+  #' @param genetic_code Named vector from main analysis
+  #' @param expression_data Optional: data frame with Gene_name and expression info
+  #' @param n_bootstrap Number of bootstrap replicates (default: 100 for speed)
+  #' @param n_cores Number of cores for parallel processing (default: auto-detect)
+  #' @return Data frame with CDC results, optionally merged with expression data
+  #' ___________________________________________________________________________
   
   cat("\n=== Integrating CDC Analysis with Main Pipeline ===\n")
   
@@ -523,12 +554,17 @@ integrate_cdc_analysis <- function(codon_usage, genetic_code, expression_data = 
   }
   
   # Calculate CDC for all genes
-  cdc_results <- calculate_cdc_all(codon_usage, genetic_code, n_bootstrap, n_cores)
+  cdc_results <- calculate_cdc_all(codon_usage, 
+                                   genetic_code, 
+                                   n_bootstrap, 
+                                   n_cores)
   
   # Merge with expression data if provided
   if (!is.null(expression_data)) {
     cat("Merging CDC results with expression data\n")
-    final_results <- merge(expression_data, cdc_results, by = "Gene_name", all.x = TRUE)
+    final_results <- merge(expression_data, 
+                           cdc_results, 
+                           by = "Gene_name", all.x = TRUE)
     
     # Check merge success
     merged_count <- sum(!is.na(final_results$CDC))
