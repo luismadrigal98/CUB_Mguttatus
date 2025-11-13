@@ -4,7 +4,7 @@
 #SBATCH --error=logs/codon_poly_%A_%a.err
 #SBATCH --array=1-14
 #SBATCH --time=12-00:00:00
-#SBATCH --mem=16G
+#SBATCH --mem=32G
 #SBATCH --cpus-per-task=1
 #SBATCH --partition=kucg,eeb,kelly
 #
