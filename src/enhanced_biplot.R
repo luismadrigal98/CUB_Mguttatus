@@ -42,18 +42,24 @@ create_enhanced_biplot <- function(ordination_result,
   # Extract ordination type
   is_ca <- inherits(ordination_result, "coa")
   is_pca <- inherits(ordination_result, c("prcomp", "princomp"))
+  is_factominer_pca <- inherits(ordination_result, "PCA")
   
   # Get gene scores
   if (is_ca) {
     gene_scores <- as.data.frame(ordination_result$li)
     codon_loadings <- as.data.frame(ordination_result$co)
     variance_explained <- ordination_result$eig / sum(ordination_result$eig) * 100
+  } else if (is_factominer_pca) {
+    # FactoMineR::PCA object
+    gene_scores <- as.data.frame(ordination_result$ind$coord)
+    codon_loadings <- as.data.frame(ordination_result$var$coord)
+    variance_explained <- ordination_result$eig[, "percentage of variance"]
   } else if (is_pca) {
     gene_scores <- as.data.frame(ordination_result$x)
     codon_loadings <- as.data.frame(ordination_result$rotation)
     variance_explained <- (ordination_result$sdev^2) / sum(ordination_result$sdev^2) * 100
   } else {
-    stop("Ordination result must be from CA (ade4::dudi.coa) or PCA (prcomp)")
+    stop("Ordination result must be from CA (ade4::dudi.coa), PCA (prcomp), or PCA (FactoMineR::PCA)")
   }
   
   # Add gene names
@@ -288,18 +294,23 @@ create_biplot_panel <- function(ordination_result, gene_data,
 ##' @param ordination_result CA or PCA result
 ##' @param codon_test_results Codon test results
 ##' @param dims Dimensions to analyze
+##' @param preferred_codons Data frame with Codon and relative_adaptiveness columns (optional)
 ##'
 ##' @return Data frame with loading analysis
 
 analyze_codon_loading_patterns <- function(ordination_result, 
                                            codon_test_results,
-                                           dims = c(1, 2)) {
+                                           dims = c(1, 2),
+                                           preferred_codons = NULL) {
   
   cat("\n=== Analyzing Codon Loading Patterns ===\n")
   
   # Extract loadings
   if (inherits(ordination_result, "coa")) {
     loadings <- as.data.frame(ordination_result$co)
+  } else if (inherits(ordination_result, "PCA")) {
+    # FactoMineR::PCA object
+    loadings <- as.data.frame(ordination_result$var$coord)
   } else {
     loadings <- as.data.frame(ordination_result$rotation)
   }
@@ -308,7 +319,18 @@ analyze_codon_loading_patterns <- function(ordination_result,
   
   # Merge with test results
   analysis <- loadings %>%
-    left_join(codon_test_results, by = "Codon") %>%
+    left_join(codon_test_results, by = "Codon")
+  
+  # Merge with preferred codons if provided
+  if (!is.null(preferred_codons)) {
+    # Match column names - could be Codon or codon
+    codon_col <- if("Codon" %in% colnames(preferred_codons)) "Codon" else "codon"
+    analysis <- analysis %>%
+      left_join(preferred_codons %>% dplyr::select(!!sym(codon_col), relative_adaptiveness),
+                by = c("Codon" = codon_col))
+  }
+  
+  analysis <- analysis %>%
     mutate(
       Loading_Dim1 = .data[[colnames(loadings)[dims[1]]]],
       Loading_Dim2 = .data[[colnames(loadings)[dims[2]]]],
@@ -329,8 +351,14 @@ analyze_codon_loading_patterns <- function(ordination_result,
   cat(sprintf("  Wilcoxon p-value: %.4f\n\n", wilcox_test$p.value))
   
   # Test 2: Do preferred codons load in positive direction?
-  preferred_codons <- analysis %>% 
-    dplyr::filter(relative_adaptiveness == 1.0, Significant)
+  # Check if relative_adaptiveness column exists
+  if ("relative_adaptiveness" %in% colnames(analysis)) {
+    preferred_codons <- analysis %>% 
+      dplyr::filter(relative_adaptiveness == 1.0, Significant)
+  } else {
+    # Skip this test if column doesn't exist
+    preferred_codons <- data.frame()
+  }
   
   if (nrow(preferred_codons) > 0) {
     cat(sprintf("Preferred + significant codons (n=%d):\n", nrow(preferred_codons)))

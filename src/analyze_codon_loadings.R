@@ -44,7 +44,7 @@ analyze_codon_loadings <- function(analysis_result,
   
   # Add nucleotide information
   loading_df <- loading_df %>%
-    mutate(
+    dplyr::mutate(
       Third_Position = substr(Codon, 3, 3),
       GC_Type = case_when(
         Third_Position %in% c("G", "C") ~ "GC-ending",
@@ -53,7 +53,7 @@ analyze_codon_loadings <- function(analysis_result,
       ),
       AA = genetic_code[Codon]
     ) %>%
-    filter(AA != "STOP")  # Remove stop codons
+    dplyr::filter(AA != "STOP")  # Remove stop codons
   
   # Calculate mean loadings by GC type
   gc_summary <- loading_df %>%

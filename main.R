@@ -375,7 +375,7 @@ ggplot(data = integrated_data,
   geom_smooth(method = lm, color = 'red') +
   theme_custom()
 
-ggsave("./results/ENC_raw_vs_expression_density.pdf", 
+ggsave("./results/CDC_raw_vs_expression_density.pdf", 
        width = 10, height = 8)
 
 # CDC ~ GC3
@@ -385,7 +385,7 @@ ggplot(data = integrated_data,
   geom_smooth(method = lm, color = 'red') +
   theme_custom()
 
-ggsave("./results/ENC_raw_vs_GC3_density.pdf", 
+ggsave("./results/CDC_raw_vs_GC3_density.pdf", 
        width = 10, height = 8)
 
 # Enc ~ Gene length
@@ -395,7 +395,7 @@ ggplot(data = integrated_data,
   geom_smooth(method = lm, color = 'red') +
   theme_custom()
 
-ggsave("./results/ENC_raw_vs_gene_length_density.pdf", 
+ggsave("./results/CDC_raw_vs_gene_length_density.pdf", 
        width = 10, height = 8)
 
 # GAM models ----
@@ -424,8 +424,8 @@ p_detrended <- ggplot(integrated_data, aes(x = High_exp_log2, y = CDC_detrended)
   geom_smooth(method = "lm", color = "red", se = FALSE) +
   
   labs(
-    title = "Detrended ENC vs. Gene Expression",
-    subtitle = "Showing ENC after accounting for non-linear effects of GC3 and gene length",
+    title = "Detrended CDC vs. Gene Expression",
+    subtitle = "Showing CDC after accounting for non-linear effects of gene length",
     y = "ENC Residuals (Detrended)",
     x = "log2(Expression + 1)"
   ) +
@@ -1654,12 +1654,52 @@ write.table(x = preferred_codons, file = 'results/preferred_codons.txt',
             col.names = F, row.names = F, quote = F)
 
 # Get preferred codons (those with relative_adaptiveness == 1.0)
-preferred_codons_mg <- w_table |>
-  dplyr::filter(relative_adaptiveness == 1.0) |>
-  dplyr::mutate(Codon_RNA = gsub("T", "U", codon)) |>
-  dplyr::select(Amino_Acid = amino_acid, Codon_RNA, relative_adaptiveness)
+preferred_codons_comparative <- preferred_codons_mg |>
+  dplyr::mutate(Codon_RNA = gsub("T", "U", Codon)) |>
+  dplyr::select(Amino_Acid = AA, Codon_RNA, relative_adaptiveness)
 
-cat(sprintf("Found %d preferred codons for M. guttatus\n\n", nrow(preferred_codons_mg)))
+# Collapse amino acids with six codons back into six, based on relative adaptiveness
+
+preferred_codons_comparative <- preferred_codons_comparative |>
+  dplyr::mutate(AA_root = sapply(preferred_codons_comparative$Amino_Acid, 
+                                 function(x) 
+    {
+    unlist(strsplit(x, "_"))[1]
+  }))
+
+merge_2_and_4_to_6_fold <- function(preference_df, AA_family_col)
+{
+  #' This function will condense together the 4 and 2 fold families from a 6-fold
+  #' aminoacid family back to the one preferred codon per amino acid. It will take
+  #' the aminoacid with the greater adaptiveness.
+  #' 
+  #' FOR COMPATIBILITY WITH OTHER PLANT STUDIES
+  #' 
+  #' Args:
+  #' preference_df: Data frame with columns for Amino Acid, Codon_RNA, relative_adaptiveness
+  #' AA_family_col: Column name indicating the root amino acid family (e.g., "Leu" for "Leu_2" and "Leu_4")
+  #' 
+  #' ___________________________________________________________________________
+  
+  condensed_preferences <- preference_df |>
+    dplyr::group_by(!!sym(AA_family_col)) |>
+    dplyr::arrange(!!sym(AA_family_col), 
+                   dplyr::desc(relative_adaptiveness)) |>
+    dplyr::slice(1) |>
+    dplyr::ungroup() |>
+    dplyr::select(Amino_Acid = !!sym(AA_family_col), 
+                  Codon_RNA, relative_adaptiveness)
+  
+  return(condensed_preferences)
+}
+
+preferred_codons_mg <- merge_2_and_4_to_6_fold(
+  preferred_codons_comparative,
+  "AA_root"
+)
+
+cat(sprintf("Found %d preferred codons for M. guttatus\n\n", 
+            nrow(preferred_codons_mg)))
 
 # Add M. guttatus to the global plant comparison table
 mg_prefs <- preferred_codons_mg |>
@@ -2171,7 +2211,8 @@ cat("\n6. Analyzing codon loading patterns...\n")
 ca_loading_analysis <- analyze_codon_loading_patterns(
   ordination_result = ca_for_biplot,
   codon_test_results = codon_test_results,
-  dims = c(1, 2)
+  dims = c(1, 2),
+  preferred_codons = preferred_codons_corrected
 )
 
 write.csv(ca_loading_analysis, 
@@ -2367,7 +2408,8 @@ cat("\n6. Analyzing PCA codon loading patterns...\n")
 pca_loading_analysis <- analyze_codon_loading_patterns(
   ordination_result = rscu_PCA,
   codon_test_results = codon_test_results,
-  dims = c(1, 2)
+  dims = c(1, 2),
+  preferred_codons = preferred_codons_corrected
 )
 
 write.csv(pca_loading_analysis, 
@@ -2416,6 +2458,88 @@ for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
               dim, wtest$statistic, wtest$p.value,
               ifelse(wtest$p.value < 0.05, "***", "")))
 }
+
+# 8.3) 3D visuals for PCA results ----
+
+cat("\n=== 8.3: Creating 3D PCA Visualizations ===\n")
+
+source("./src/create_3d_pca_video.R")
+
+# 8.3.1) Generate dynamics 3D videos for presentation ----
+
+cat("\n8.3.1: Creating interactive 3D PCA plot...\n")
+
+# Create interactive 3D plot (HTML)
+pca_3d_interactive <- create_3d_pca_plot(
+  pca_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  preferred_codons = preferred_codons_corrected,
+  dims = c(1, 2, 3),
+  color_by = "expression",
+  show_loadings = TRUE,
+  loading_scale = 5.0,
+  title = "3D PCA: RSCU Analysis with Codon Loadings"
+)
+
+# Save interactive plot
+htmlwidgets::saveWidget(
+  widget = pca_3d_interactive,
+  file = "./results/PCA_3D_interactive.html",
+  selfcontained = TRUE
+)
+
+cat("✓ Interactive 3D plot saved: ./results/PCA_3D_interactive.html\n")
+cat("  Open in browser to explore (rotate, zoom, hover for details)\n\n")
+
+# Create rotating animation (HTML with auto-rotation)
+cat("8.3.2: Creating rotating 3D animation...\n")
+
+pca_3d_animation <- create_3d_pca_animation(
+  pca_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  codon_test_results = codon_test_results,
+  preferred_codons = preferred_codons_corrected,
+  dims = c(1, 2, 3),
+  color_by = "expression",
+  show_loadings = TRUE,
+  loading_scale = 5.0,
+  title = "3D PCA Animation - RSCU Analysis",
+  output_file = "./results/PCA_3D_animation.html",
+  n_frames = 360,
+  frame_duration = 50
+)
+
+# Create simple GIF animation (uses ggplot2, no heavy dependencies)
+cat("8.3.3: Creating simple GIF video...\n")
+if (requireNamespace("magick", quietly = TRUE)) {
+  
+  source("./src/create_simple_3d_gif.R")
+  
+  create_simple_3d_gif(
+    pca_result = rscu_PCA,
+    gene_data = gene_data_pca,
+    codon_test_results = codon_test_results,
+    preferred_codons = preferred_codons_corrected,
+    dims = c(1, 2, 3),
+    color_by = "expression",
+    show_loadings = TRUE,
+    loading_scale = 5.0,
+    title = "3D PCA - RSCU Analysis",
+    output_file = "./results/PCA_3D_rotation.gif",
+    n_frames = 60,
+    width = 1000,
+    height = 800,
+    point_size = 1.5,
+    resolution = 120
+  )
+  
+} else {
+  cat("  Skipping GIF creation (requires 'magick' package)\n")
+  cat("  Install with: install.packages('magick')\n\n")
+}
+
+cat("✓ 3D visualizations complete\n\n")
 
 ## *****************************************************************************
 ## 9) Analyze codon loading patterns (AT vs GC bias) ----
@@ -2511,8 +2635,83 @@ tRNA_expression_top5_results <- tRNA_codon_correlation(
 
 cat("\n✓ tRNA expression correlation analysis (top 5%) complete!\n")
 
+# Sanity check: Does amino acid frequency match tRNA supply?
+cat("\n=== Sanity Check: Amino Acid Frequency vs tRNA Supply ===\n")
+cat("Testing if amino acids with more tRNA genes are used more frequently\n")
+cat("This validates the tRNA adaptation hypothesis at the amino acid level\n\n")
+
+source("./src/check_aa_trna_supply.R")
+
+aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
+  codon_usage = codon_usage,
+  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
+  genetic_code = genetic_code_dna_long,
+  output_dir = "./results/aa_trna_sanity_check"
+)
+
+cat("✓ Amino acid vs tRNA supply sanity check complete!\n\n")
+
+## 11) Polymorphism data integration ----
+
+pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
+
+# Homogenizing gene names to match the previous convention
+
+pi_data <- pi_data |>
+  dplyr::select(Chr, Gene, contains("Tajima"), contains("mean")) |>
+  dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
+  dplyr::rename(Gene_name = Gene)
+
+# Analyzing the diversity of synonymous sites 
+
+integrated_data <- integrated_data |>
+  left_join(y = pi_data, by = "Gene_name")
+
+# Exploring the relationship between diversity (4-fold) and ENC
+
+plot(x = integrated_data$Pi_mean_4fold, 
+           y = integrated_data$High_exp_log2)
+lm(High_exp_log2 ~ Pi_mean_4fold, data = integrated_data)
+plot(x = integrated_data$Pi_mean_all, 
+     y = integrated_data$High_exp_log2)
+lm(High_exp_log2 ~ Pi_mean_all, data = integrated_data)
+
+# Does 4-fold differs from background?
+
+t.test(integrated_data$Pi_mean_4fold, integrated_data$Pi_mean_all)
+
+# Boxplot for expression groups and 4-fold pi
+
+p_pi_4fold <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_4fold)) +
+  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
+  labs(title = "Nucleotide Diversity at 4-fold Synonymous Sites by Expression Group",
+       x = "Expression Group",
+       y = "Pi (4-fold Synonymous Sites)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)) +
+  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
+  labs(title = "Nucleotide Diversity by Expression Group",
+       x = "Expression Group",
+       y = "Pi (overall)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+# Bringing in the CDC results
+
+integrated_data <- integrated_data |>
+  left_join(cdc_results[, c("Gene_name", "CDC", "p_adj")], by = 'Gene_name')
+
+int_variables <- integrated_data |>
+  dplyr::select("CDC", "Pi_mean_0fold", "Pi_mean_2fold", "Pi_mean_3fold",
+                "Pi_mean_4fold", "Pi_mean_all", "p_adj", "ENC") |>
+  as.matrix()
+
+int_cor <- corrr::correlate(x = int_variables)
+
 ## *****************************************************************************
-## 11) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
+## 12) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
 ## _____________________________________________________________________________
 
 cat("\n=== SELECTION COEFFICIENT ANALYSIS ===\n")
@@ -2613,64 +2812,5 @@ write.table(Ne_sensitivity,
 
 cat("\n✓ Selection coefficient analysis complete!\n")
 cat("  Results saved to ./results/selection_coefficients.csv\n")
-
-## 12) Polymorphism data integration ----
-
-pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
-
-# Homogenizing gene names to match the previous convention
-
-pi_data <- pi_data |>
-  dplyr::select(Chr, Gene, contains("Tajima"), contains("mean")) |>
-  dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
-  dplyr::rename(Gene_name = Gene)
-
-# Analyzing the diversity of synonymous sites 
-
-integrated_data <- integrated_data |>
-  left_join(y = pi_data, by = "Gene_name")
-
-# Exploring the relationship between diversity (4-fold) and ENC
-
-plot(x = integrated_data$Pi_mean_4fold, 
-           y = integrated_data$High_exp_log2)
-lm(High_exp_log2 ~ Pi_mean_4fold, data = integrated_data)
-plot(x = integrated_data$Pi_mean_all, 
-     y = integrated_data$High_exp_log2)
-lm(High_exp_log2 ~ Pi_mean_all, data = integrated_data)
-
-# Does 4-fold differs from background?
-
-t.test(integrated_data$Pi_mean_4fold, integrated_data$Pi_mean_all)
-
-# Boxplot for expression groups and 4-fold pi
-
-p_pi_4fold <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_4fold)) +
-  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
-  labs(title = "Nucleotide Diversity at 4-fold Synonymous Sites by Expression Group",
-       x = "Expression Group",
-       y = "Pi (4-fold Synonymous Sites)") +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-
-overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)) +
-  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
-  labs(title = "Nucleotide Diversity by Expression Group",
-       x = "Expression Group",
-       y = "Pi (overall)") +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-
-# Bringing in the CDC results
-
-integrated_data <- integrated_data |>
-  left_join(cdc_results[, c("Gene_name", "CDC", "p_adj")], by = 'Gene_name')
-
-int_variables <- integrated_data |>
-  dplyr::select("CDC", "Pi_mean_0fold", "Pi_mean_2fold", "Pi_mean_3fold",
-                "Pi_mean_4fold", "Pi_mean_all", "p_adj", "ENC") |>
-  as.matrix()
-
-int_cor <- corrr::correlate(x = int_variables)
 
 save.image('Env')
