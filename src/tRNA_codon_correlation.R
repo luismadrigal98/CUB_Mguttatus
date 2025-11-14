@@ -364,7 +364,7 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   # Create analysis dataset
   analysis_data <- data.frame(
     Codon = names(total_codon_usage),
-    Codon_usage = as.numeric(total_codon_usage),
+    Codon_count = as.numeric(total_codon_usage),
     AA = genetic_code[names(total_codon_usage)],
     stringsAsFactors = FALSE
   )
@@ -373,6 +373,10 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   analysis_data <- analysis_data[analysis_data$AA != "STOP" &
                                    analysis_data$AA != "Trp" &
                                    analysis_data$AA != "Met", ]
+  
+  # Calculate simple genome-wide frequency
+  total_codons <- sum(analysis_data$Codon_count)
+  analysis_data$Codon_frequency <- analysis_data$Codon_count / total_codons
   
   # Merge with tRNA abundance data (either from expression or copy number)
   abundance_col <- if (mode == "by.expression") "tRNA_abundance" else "tRNA_abundance"
@@ -384,53 +388,88 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   # Rename for consistency
   names(analysis_data)[names(analysis_data) == abundance_col] <- "tRNA_supply"
   
-  # Calculate relative frequencies (RSCU)
+  # Convert to data.table
   analysis_dt <- as.data.table(analysis_data)
-  analysis_dt[, Codon_freq := Codon_usage / sum(Codon_usage), by = AA]
-  analysis_dt[, RSCU := Codon_freq / (1 / .N), by = AA]
   
-  # Perform correlation tests
+  # Add some useful metrics
+  analysis_dt[, N_synonyms := .N, by = AA]
+  
+  # For within-family comparisons, also calculate proportions within each AA
+  analysis_dt[, Total_AA_count := sum(Codon_count), by = AA]
+  analysis_dt[, Codon_proportion_in_AA := Codon_count / Total_AA_count]
+  analysis_dt[, Total_tRNA_per_AA := sum(tRNA_supply), by = AA]
+  analysis_dt[, tRNA_proportion_in_AA := ifelse(Total_tRNA_per_AA > 0, 
+                                                 tRNA_supply / Total_tRNA_per_AA, 
+                                                 0)]
+  
+  # Perform correlation tests - SIMPLE APPROACH
   correlation_results <- list()
   
-  # Overall correlation
+  # Overall correlation: genome-wide codon frequency vs tRNA supply
   if (sum(analysis_dt$tRNA_supply > 0) > 2) {
-    overall_cor <- cor.test(analysis_dt$RSCU, analysis_dt$tRNA_supply, 
-                            method = test_method, exact = FALSE)
+    # Main test: simple codon frequency vs tRNA supply
+    overall_cor <- cor.test(analysis_dt$Codon_frequency, 
+                           analysis_dt$tRNA_supply, 
+                           method = test_method, exact = FALSE)
     correlation_results$overall <- overall_cor
   }
   
   # Per amino acid correlations
+  # Within each AA family: codon proportion vs tRNA proportion
   aa_correlations <- list()
+  
   for (aa in unique(analysis_dt$AA)) {
     aa_data <- analysis_dt[AA == aa]
-    # Check for variance in both variables to avoid errors
-    if (nrow(aa_data) > 2 && sum(aa_data$tRNA_supply > 0) >= 2 && 
-        var(aa_data$RSCU) > 0 && var(aa_data$tRNA_supply) > 0) {
-      
-      aa_cor <- cor.test(aa_data$RSCU, aa_data$tRNA_supply, 
-                         method = test_method, exact = FALSE)
-      aa_correlations[[aa]] <- aa_cor
-    }
+    
+    # Skip if not enough codons
+    if (nrow(aa_data) < 3) next  # Need at least 3 for meaningful correlation
+    
+    # Check for actual variation (handle edge cases)
+    codon_var <- var(aa_data$Codon_proportion_in_AA, na.rm = TRUE)
+    trna_var <- var(aa_data$tRNA_proportion_in_AA, na.rm = TRUE)
+    
+    # Skip if no variation or NA variance
+    if (is.na(codon_var) || is.na(trna_var) || 
+        codon_var < 1e-10 || trna_var < 1e-10) next
+    
+    # Test within-family: does codon proportion match tRNA proportion?
+    tryCatch({
+      aa_cor <- cor.test(aa_data$Codon_proportion_in_AA, 
+                        aa_data$tRNA_proportion_in_AA,
+                        method = test_method, exact = FALSE)
+      # Only store if we got a valid result
+      if (!is.na(aa_cor$estimate) && !is.na(aa_cor$p.value)) {
+        aa_correlations[[aa]] <- aa_cor
+      }
+    }, error = function(e) {
+      # Skip this AA if correlation fails
+    })
   }
+  
   correlation_results$per_amino_acid <- aa_correlations
   
   # --- Create Visualizations ---
   
-  # 1. Overall scatter plot
-  p1 <- ggplot(analysis_dt, aes(x = tRNA_supply, y = RSCU, color = AA)) +
+  # 1. Overall scatter plot: genome-wide codon frequency vs tRNA supply
+  p1 <- ggplot(analysis_dt, aes(x = tRNA_supply, y = Codon_frequency, color = AA)) +
     geom_point(size = 3, alpha = 0.7) +
     geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
-    theme_minimal() +
-    labs(title = "Codon Usage (RSCU) vs tRNA Supply (GCN)",
-         subtitle = paste("Overall correlation:", 
-                          ifelse(exists("overall_cor", correlation_results), 
-                                 round(correlation_results$overall$estimate, 3), "N/A")),
-         x = "tRNA Supply (Gene Copy Number)", 
-         y = "Relative Synonymous Codon Usage (RSCU)",
+    theme_minimal(base_size = 12) +
+    labs(title = "Genome-wide Codon Frequency vs tRNA Supply",
+         subtitle = sprintf("%s r = %.3f (p = %.2e) | %d codons", 
+                          tools::toTitleCase(test_method),
+                          ifelse(!is.null(correlation_results$overall), 
+                                 correlation_results$overall$estimate, NA),
+                          ifelse(!is.null(correlation_results$overall), 
+                                 correlation_results$overall$p.value, NA),
+                          nrow(analysis_dt)),
+         x = "tRNA Supply (gene count or expression)", 
+         y = "Codon Frequency (proportion of all codons)",
          color = "Amino Acid") +
-    theme(legend.position = "none")
+    theme(plot.title = element_text(face = "bold", hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5))
   
-  # 2. Per amino acid correlations bar plot
+  # 2. Per amino acid correlations bar plot (using proportion-based)
   aa_cor_data <- data.frame()
   if (length(aa_correlations) > 0) {
     for (aa in names(aa_correlations)) {
@@ -441,22 +480,30 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
         Significant = aa_correlations[[aa]]$p.value < 0.05
       ))
     }
+    
+    # Add info about number of codons per AA
+    aa_info <- analysis_dt[, .(N_codons = .N), by = AA]
+    aa_cor_data <- merge(aa_cor_data, aa_info, by = "AA")
   }
   
   p2 <- NULL # Initialize as NULL
   if (nrow(aa_cor_data) > 0) {
     p2 <- ggplot(aa_cor_data, aes(x = reorder(AA, Correlation), y = Correlation, 
                                   fill = Significant)) +
-      geom_bar(stat = "identity") +
+      geom_bar(stat = "identity", width = 0.7) +
       geom_hline(yintercept = 0, linetype = "dashed") +
-      scale_fill_manual(values = c("FALSE" = "lightgray", "TRUE" = "red")) +
-      theme_minimal() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-      labs(title = "Codon Usage - tRNA Abundance Correlations by Amino Acid",
-           subtitle = paste("Method:", test_method),
-           x = "Amino Acid", 
-           y = paste(tools::toTitleCase(test_method), "Correlation"),
-           fill = "Significant (p < 0.05)")
+      scale_fill_manual(values = c("FALSE" = "#CCCCCC", "TRUE" = "#E74C3C"),
+                       name = "p < 0.05") +
+      theme_minimal(base_size = 12) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),
+            plot.title = element_text(face = "bold", hjust = 0.5),
+            plot.subtitle = element_text(hjust = 0.5)) +
+      labs(title = "Codon-tRNA Correlation by Amino Acid",
+           subtitle = sprintf("Using proportion-based measures | Method: %s", test_method),
+           x = "Amino Acid (sorted by correlation strength)", 
+           y = paste(tools::toTitleCase(test_method), "Correlation (r)"),
+           caption = sprintf("%d / %d families show significant correlation",
+                           sum(aa_cor_data$Significant), nrow(aa_cor_data)))
   }
   
   # 3. Faceted scatter plots for significant correlations
@@ -464,17 +511,32 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   if (nrow(aa_cor_data) > 0) {
     significant_aas <- aa_cor_data$AA[aa_cor_data$Significant]
     
-    if (length(significant_aas) > 0) {
+    if (length(significant_aas) > 0 && !any(is.na(significant_aas))) {
       sig_data <- analysis_dt[AA %in% significant_aas]
       
-      p3 <- ggplot(sig_data, aes(x = tRNA_supply, y = RSCU)) +
-        geom_point(size = 2) +
-        geom_smooth(method = "lm", se = TRUE) +
-        facet_wrap(~ AA, scales = "free") +
-        theme_minimal() +
-        labs(title = "Significant Correlations: Codon Usage vs tRNA Abundance",
-             x = "tRNA Supply (Gene Copy Number)",
-             y = "RSCU")
+      if (nrow(sig_data) > 0) {
+        # Add correlation info to facet labels
+        facet_labels <- sapply(significant_aas, function(aa) {
+          cor_val <- aa_cor_data$Correlation[aa_cor_data$AA == aa]
+          p_val <- aa_cor_data$P_value[aa_cor_data$AA == aa]
+          sprintf("%s (r=%.2f, p=%.3f)", aa, cor_val, p_val)
+        })
+        names(facet_labels) <- significant_aas
+        
+        p3 <- ggplot(sig_data, aes(x = tRNA_proportion_in_AA, y = Codon_proportion_in_AA)) +
+          geom_point(size = 3, alpha = 0.7, color = "#3498DB") +
+          geom_smooth(method = "lm", se = TRUE, color = "#E74C3C", fill = "#E74C3C") +
+          geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "gray50") +
+          facet_wrap(~ AA, scales = "free", labeller = labeller(AA = facet_labels)) +
+          theme_minimal(base_size = 11) +
+          theme(strip.text = element_text(face = "bold", size = 9),
+                plot.title = element_text(face = "bold", hjust = 0.5)) +
+          labs(title = "Within-Family Correlations: Codon vs tRNA Proportions",
+               subtitle = sprintf("%d amino acid families with p < 0.05", length(significant_aas)),
+               x = "tRNA Proportion (within family)",
+               y = "Codon Proportion (within family)",
+               caption = "Dotted line = perfect agreement")
+      }
     }
   }
   
@@ -495,28 +557,40 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
   }
   
   # Save correlation results as CSV
-  if (exists("overall_cor", correlation_results)) {
-    overall_results <- data.frame(
+  all_results <- list()
+  
+  if (!is.null(correlation_results$overall)) {
+    overall <- data.frame(
       Test = "Overall",
       Correlation = correlation_results$overall$estimate,
       P_value = correlation_results$overall$p.value,
-      Method = test_method
+      Method = test_method,
+      Measure = "Genome-wide frequency vs tRNA supply",
+      N_codons = sum(analysis_dt$Codon_count > 0)
     )
-    
-    if (nrow(aa_cor_data) > 0) {
-      aa_results <- data.frame(
-        Test = paste("AA:", aa_cor_data$AA),
-        Correlation = aa_cor_data$Correlation,
-        P_value = aa_cor_data$P_value,
-        Method = test_method
-      )
-      
-      all_results <- rbind(overall_results, aa_results)
-    } else {
-      all_results <- overall_results
-    }
-    
-    fwrite(all_results, file.path(output_dir, "tRNA_codon_correlations.csv"))
+    all_results[[1]] <- overall
+  }
+  
+  # Check if per_amino_acid exists and is a list with results
+  if (!is.null(correlation_results$per_amino_acid) && 
+      length(correlation_results$per_amino_acid) > 0) {
+    # Convert list to data frame
+    aa_results <- data.frame(
+      Test = paste0("AA_", names(correlation_results$per_amino_acid)),
+      Correlation = sapply(correlation_results$per_amino_acid, function(x) x$estimate),
+      P_value = sapply(correlation_results$per_amino_acid, function(x) x$p.value),
+      Method = test_method,
+      Measure = "Within-family proportion",
+      N_codons = sapply(names(correlation_results$per_amino_acid), function(aa) {
+        sum(analysis_dt$AA == aa)
+      })
+    )
+    all_results[[2]] <- aa_results
+  }
+  
+  if (length(all_results) > 0) {
+    all_results_df <- do.call(rbind, all_results)
+    fwrite(all_results_df, file.path(output_dir, "tRNA_codon_correlations.csv"))
   }
   
   # Save analysis data
@@ -532,19 +606,44 @@ tRNA_codon_correlation <- function(codon_counts, tRNA_file, genetic_code,
     tAI_analysis <- analyze_tAI_expression(tAI_results, expression_data, output_dir)
   }
   
+  # Print summary statistics
+  cat("\n=== Correlation Summary ===\n")
+  if (!is.null(correlation_results$overall)) {
+    cat(sprintf("Overall genome-wide frequency: r = %.3f, p = %.2e\n",
+                correlation_results$overall$estimate,
+                correlation_results$overall$p.value))
+  }
+  
   # Extract significant per-AA correlations for summary
   significant_aa <- NULL
-  if (length(aa_correlations) > 0 && nrow(aa_cor_data) > 0) {
-    significant_aa <- aa_cor_data[aa_cor_data$Significant, ]
+  if (!is.null(correlation_results$per_amino_acid) && length(correlation_results$per_amino_acid) > 0) {
+    # per_amino_acid is a list, convert to data frame
+    aa_summary <- data.frame(
+      amino_acid = names(correlation_results$per_amino_acid),
+      correlation = sapply(correlation_results$per_amino_acid, function(x) x$estimate),
+      p_value = sapply(correlation_results$per_amino_acid, function(x) x$p.value),
+      n_codons = sapply(names(correlation_results$per_amino_acid), function(aa) {
+        sum(analysis_dt$AA == aa)
+      })
+    )
+    
+    significant_aa <- aa_summary[aa_summary$p_value < 0.05, ]
     if (nrow(significant_aa) > 0) {
-      cat(sprintf("\n%d amino acids show significant correlation (p < 0.05):\n", 
-                  nrow(significant_aa)))
-      for (i in 1:nrow(significant_aa)) {
-        cat(sprintf("  %s: ρ = %.3f (p = %.3f)\n", 
-                    significant_aa$AA[i], 
-                    significant_aa$Correlation[i],
-                    significant_aa$P_value[i]))
+      cat(sprintf("\n%d / %d amino acid families show significant within-family correlation (p < 0.05):\n", 
+                  nrow(significant_aa), nrow(aa_summary)))
+      significant_aa <- significant_aa[order(-abs(significant_aa$correlation)), ]
+      for (i in seq_len(min(10, nrow(significant_aa)))) {
+        cat(sprintf("  %s (%d codons): r = %.3f (p = %.2e)\n", 
+                    significant_aa$amino_acid[i],
+                    significant_aa$n_codons[i],
+                    significant_aa$correlation[i],
+                    significant_aa$p_value[i]))
       }
+      if (nrow(significant_aa) > 10) {
+        cat(sprintf("  ... and %d more\n", nrow(significant_aa) - 10))
+      }
+    } else {
+      cat("\nNo amino acid families show significant within-family correlation\n")
     }
   }
   

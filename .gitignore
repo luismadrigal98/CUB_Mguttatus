@@ -18,3 +18,6 @@ Todo
 miscellanea_code/proc2.py
 data/all_chromosomes.bygene.pi.txt
 data/all_chromosomes.codon_frequencies_preferred_centric.txt
+data/all_chromosomes.codon_frequencies.txt
+data/all_chromosomes.codon_frequencies_preferred.txt
+data/all_chromosomes.site_freq_by_preference.txt

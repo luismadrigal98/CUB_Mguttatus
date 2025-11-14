@@ -2651,6 +2651,78 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
 
 cat("✓ Amino acid vs tRNA supply sanity check complete!\n\n")
 
+# ---- Final Analysis: Translational Accuracy Hypothesis ----
+cat("\n=== TRANSLATIONAL ACCURACY HYPOTHESIS TEST ===\n")
+cat("Testing if selection favors Watson-Crick pairing (high fidelity) over wobble pairing\n")
+cat("Hypothesis: Preferred codons should use accurate Watson-Crick pairs at wobble position\n\n")
+
+source("./src/classify_codon_anticodon_pairing.R")
+
+# Load tRNA data for the pairing analysis
+tRNA_data <- fread("./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt")
+
+# Get codon supply from the copy number analysis (already calculated)
+codon_supply <- tRNA_copynumber_results$codon_supply
+
+# Use CA loadings to define "preferred" codons
+# Codons with high positive loadings on Dim 1 (which separates high vs low expression)
+# Get codon loadings from CA
+ca_codon_loadings <- as.data.frame(codon_usage_CA$col$coord)
+ca_codon_loadings$Codon <- rownames(ca_codon_loadings)
+
+# Get top codons on Dim 1 (one per amino acid family for non-circular test)
+ca_codon_loadings$Amino_Acid <- genetic_code_dna_long[ca_codon_loadings$Codon]
+ca_codon_loadings <- ca_codon_loadings[ca_codon_loadings$Amino_Acid != "STOP", ]
+
+# Create full codon status table (all codons, not just top ones)
+# Rank all codons by Dim 1 within each amino acid family
+ca_codon_status <- ca_codon_loadings %>%
+  group_by(Amino_Acid) %>%
+  mutate(
+    Rank = rank(-`Dim 1`, ties.method = "first"),
+    Status = ifelse(Rank == 1, "Preferred", "Non-Preferred")
+  ) %>%
+  ungroup() %>%
+  select(Codon, Amino_Acid, Status, `Dim 1`, Rank) %>%
+  as.data.frame()
+
+# Convert codons to RNA format (T -> U) for compatibility with pairing function
+ca_codon_status$Codon <- gsub("T", "U", ca_codon_status$Codon)
+
+n_preferred <- sum(ca_codon_status$Status == "Preferred")
+n_total <- nrow(ca_codon_status)
+
+cat("Using CA Dimension 1 to classify all codons:\n")
+cat("  Preferred:", n_preferred, "codons (highest Dim 1 in each AA family)\n")
+cat("  Non-Preferred:", n_total - n_preferred, "codons\n")
+cat("  Total:", n_total, "codons\n\n")
+
+# Run the translational accuracy test
+pairing_analysis <- classify_codon_anticodon_pairing(
+  tRNA_data = tRNA_data,
+  codon_supply = codon_supply,
+  preferred_codons = ca_codon_status[, c("Codon", "Amino_Acid", "Status")],
+  output_dir = "./results/tRNA_analysis_pairing",
+  save_results = TRUE
+)
+
+cat("\n✓ Translational accuracy hypothesis test complete!\n")
+cat("  Results saved to: ./results/tRNA_analysis_pairing/\n\n")
+
+# ---- Parallel Analysis: Using Expression-Based Preferred Codons ----
+cat("\n=== PARALLEL ANALYSIS: Expression-Based Preferred Codons ===\n")
+cat("Testing if results change when using CAI-derived preferred codons (w = 1.0)\n")
+cat("This provides an independent test using a different criterion\n\n")
+
+# Run parallel analysis with expression-based preferred codons
+pairing_analysis_expression <- classify_pairing_with_expression_preferred(
+  tRNA_data = tRNA_data,
+  codon_supply = codon_supply,
+  preferred_codons_corrected = preferred_codons_corrected,
+  output_dir = "./results/tRNA_analysis_pairing_expression",
+  save_results = TRUE
+)
+
 ## 11) Polymorphism data integration ----
 
 pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
@@ -2698,17 +2770,50 @@ overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)
   theme_minimal(base_size = 12) +
   theme(plot.title = element_text(face = "bold"))
 
-# Bringing in the CDC results
-
-integrated_data <- integrated_data |>
-  left_join(cdc_results[, c("Gene_name", "CDC", "p_adj")], by = 'Gene_name')
-
 int_variables <- integrated_data |>
-  dplyr::select("CDC", "Pi_mean_0fold", "Pi_mean_2fold", "Pi_mean_3fold",
+  dplyr::select("CDC", "CDC_detrended", "Pi_mean_0fold", "Pi_mean_2fold", "Pi_mean_3fold",
                 "Pi_mean_4fold", "Pi_mean_all", "p_adj", "ENC") |>
   as.matrix()
 
 int_cor <- corrr::correlate(x = int_variables)
+
+# 11.1) Searching for purifying selection signatures ----
+
+# Run the GAM (to control for confounders)
+# This asks: "Does expression predict Tajima's D at 4-fold sites?"
+model_tajimaD <- gam(TajimaD_4fold ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
+                     data = integrated_data)
+
+summary(model_tajimaD)
+
+# Plot it
+ggplot(integrated_data, aes(x = High_exp_log2, y = TajimaD_4fold)) +
+  geom_pointdensity() +
+  geom_smooth(method = "gam") +
+  theme_custom() +
+  labs(title = "Selection Signature vs. Expression",
+       y = "Tajima's D (4-fold Synonymous Sites)",
+       x = "log2(Expression)")
+
+# 11.2) TajimaD vs CDC ----
+
+model_cdc_tajima <- gam(TajimaD_4fold ~ CDC + s(CDS_length_nt) + s(GC3s),
+                        data = integrated_data)
+
+summary(model_cdc_tajima)
+
+# 11.3) pi vs expression ----
+
+model_pi <- gam(Pi_mean_4fold ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
+                data = integrated_data)
+
+summary(model_pi)
+
+# 11.4) Loading the site specific data ----
+
+sfp_data <- fread("data/all_chromosomes.site_freq_by_preference.txt")
+
+# 11.5) Loading the codon specific data ----
 
 ## *****************************************************************************
 ## 12) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----

@@ -355,10 +355,18 @@ def write_output(counts, chrom, output_file):
             for degeneracy in ['0-fold', '2-fold', '3-fold', '4-fold']:
                 data = gene_counts[degeneracy]
                 
+                # Calculate average π by dividing by number of sites
+                sites_pref = data['sites_pref_ref']
+                sites_nonpref = data['sites_nonpref_ref']
+                
+                # Average π per site (divide sum by number of sites)
+                avg_pi_pref = data['pi_pref_ref'] / sites_pref if sites_pref > 0 else 0.0
+                avg_pi_nonpref = data['pi_nonpref_ref'] / sites_nonpref if sites_nonpref > 0 else 0.0
+                
                 out.write(f"{chrom}\t{gene_id}\t{degeneracy}\t")
-                out.write(f"{data['sites_pref_ref']}\t{data['sites_nonpref_ref']}\t")
+                out.write(f"{sites_pref}\t{sites_nonpref}\t")
                 out.write(f"{data['poly_pref_to_nonpref']}\t{data['poly_nonpref_to_pref']}\t")
-                out.write(f"{data['pi_pref_ref']:.6f}\t{data['pi_nonpref_ref']:.6f}\n")
+                out.write(f"{avg_pi_pref:.6f}\t{avg_pi_nonpref:.6f}\n")
 
 def main():
     if len(sys.argv) != 5:
