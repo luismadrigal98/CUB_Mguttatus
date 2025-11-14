@@ -2815,6 +2815,64 @@ sfp_data <- fread("data/all_chromosomes.site_freq_by_preference.txt")
 
 # 11.5) Loading the codon specific data ----
 
+csf_data <- fread("data/all_chromosomes.codon_frequencies_preferred.txt")
+csf_data <- csf_data |>
+  dplyr::mutate(Gene_name = paste0("MgIM767.", Gene))
+
+# 11.5.1) F_preferred vs Expression ----
+
+all_codon_data <- integrated_data %>%
+  left_join(csf_data, by = "Gene_name") %>%
+  na.omit()
+
+# Standardizing the gene position from 0 to 1 per gene
+
+all_codon_data <- all_codon_data |>
+  dplyr::group_by(Gene_name) |>
+  dplyr::mutate(
+    Codon_Pos_Rel = (Codon_Pos + 1) / (max(Codon_Pos) + 1)
+  ) |>
+  dplyr::ungroup()
+
+n <- nrow(all_codon_data)
+all_codon_data$Preferred_Freq_beta <- (all_codon_data$Preferred_Freq * (n - 1) + 0.5) / n
+
+model_selection <- gam(
+  Preferred_Freq_beta ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
+  family = betar(link = "logit"),
+  data = all_codon_data
+)
+
+summary(model_selection)
+
+# 11.5.2) 5' towards 3' idea ----
+
+model_position <- gam(
+  Preferred_Freq_beta ~ s(Codon_Pos, k = 20),
+  family = betar(link = "logit"),
+  data = all_codon_data
+)
+
+plot(model_position, pages = 1, residuals = TRUE)
+
+p_pos_trend <- ggplot(all_codon_data, aes(x = Codon_Pos_Rel, y = Preferred_Freq)) +
+  # geom_hex shows density, solving the "black blob" problem
+  geom_hex(bins = 70) + 
+  scale_fill_viridis_c(trans = "log10", name = "Codon Count") +
+  
+  # geom_smooth() will draw the average trend line
+  geom_smooth(method = "gam", color = "red", se = FALSE) + 
+  
+  labs(
+    title = "Selection Strength vs. Gene Expression",
+    subtitle = "Trend shows preferred codon frequency increases with expression",
+    y = "Preferred freq",
+    x = "Codon position (relative)"
+  ) +
+  theme_bw()
+
+print(p_pos_trend)
+
 ## *****************************************************************************
 ## 12) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
 ## _____________________________________________________________________________
