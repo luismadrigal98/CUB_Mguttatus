@@ -1621,6 +1621,9 @@ model_ala <- vgam(
   na.action = na.exclude
 )
 
+plotvgam(model_ala)
+
+
 cat("Model fitted successfully!\n\n")
 
 # View summary
@@ -1641,7 +1644,342 @@ coef_table <- data.frame(
 # Show just the High_exp_log2 terms (selection effects)
 coef_table[grep("High_exp_log2", rownames(coef_table)), ]
 
-# 9) Comparing preferred codon of Mimulus guttatus to other plants ----
+## *****************************************************************************
+## 8.1) Pairwise Binomial Regression Analysis ----
+## _____________________________________________________________________________
+
+cat("\n\n===============================================================\n")
+cat("SECTION 8.1: PAIRWISE BINOMIAL REGRESSION ANALYSIS\n")
+cat("===============================================================\n\n")
+
+cat("This section fits pairwise binomial regressions for each amino acid family\n")
+cat("to model codon choice as a function of expression level (selection),\n")
+cat("while controlling for confounding effects of gene length and GC content.\n\n")
+
+cat("Two parallel approaches are implemented:\n")
+cat("  1. GAM approach: Uses smoothers s() for non-linear confounders\n")
+cat("  2. GLM approach: Uses Box-Cox transformed confounders for interpretability\n\n")
+
+# Source the necessary functions
+source("./src/fit_pairwise_binomial_models.R")
+source("./src/plot_scurves.R")
+source("./src/check_concordance.R")
+
+# Get all synonymous amino acid families (exclude Met, Trp, STOP)
+all_families <- unique(genetic_code_dna_long[
+  !(genetic_code_dna_long %in% c("STOP", "Met", "Trp"))
+])
+
+cat(sprintf("Analyzing %d amino acid families with synonymous codons\n\n", 
+            length(all_families)))
+
+cat("Using existing preferred codons as baseline for interpretability.\n")
+cat("This ensures all non-preferred codons get negative slopes.\n\n")
+
+# 8.1.1) GAM-based approach ----
+
+cat("=== 8.1.1: GAM Approach (Smoothers for Confounders) ===\n\n")
+
+all_gam_results <- lapply(all_families, function(fam) {
+  cat(sprintf("Fitting GAM models for family: %s\n", fam))
+  tryCatch(
+    fit_pairwise_gams(
+      family_name = fam,
+      genetic_code = genetic_code_dna_long,
+      usage_dt = codon_usage,
+      meta_dt = integrated_data,
+      preferred_codons_df = preferred_codons_mg  # Use existing preferred codons
+    ),
+    error = function(e) {
+      cat(sprintf("  ERROR: %s\n", e$message))
+      return(NULL)
+    }
+  )
+})
+
+names(all_gam_results) <- all_families
+
+# Remove NULL results
+all_gam_results <- all_gam_results[!sapply(all_gam_results, is.null)]
+
+cat(sprintf("\n✓ Successfully fitted models for %d families\n\n", 
+            length(all_gam_results)))
+
+# Aggregate coefficient tables
+master_gam_table <- data.table::rbindlist(
+  lapply(all_gam_results, function(x) x$coefficients)
+)
+
+# Save results
+write.csv(master_gam_table, 
+          "./results/section_8.1_GAM_selection_coefficients.csv",
+          row.names = FALSE)
+
+cat("✓ GAM coefficients saved: ./results/section_8.1_GAM_selection_coefficients.csv\n\n")
+
+# Find data-driven preferred codons (highest selection slope per family)
+gam_preferred_codons <- master_gam_table %>%
+  dplyr::group_by(Family) %>%
+  dplyr::filter(Selection_Slope == max(Selection_Slope)) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(Family, Codon, Selection_Slope, p_value)
+
+cat("=== Data-Driven Preferred Codons (GAM approach) ===\n")
+print(gam_preferred_codons, n = Inf)
+cat("\n")
+
+write.csv(gam_preferred_codons,
+          "./results/section_8.1_GAM_preferred_codons.csv",
+          row.names = FALSE)
+
+cat("Note: GAM results saved for comparison, but GLM is the gold standard\n\n")
+
+# 8.1.2) GLM approach with Box-Cox transformation ----
+
+cat("\n=== 8.1.2: GLM Approach (Box-Cox Transformed Confounders) ===\n\n")
+cat("This approach transforms confounders to achieve linearity,\n")
+cat("avoiding the need for GAM smoothers and improving interpretability.\n\n")
+
+all_glm_results <- lapply(all_families, function(fam) {
+  cat(sprintf("Fitting GLM models with Box-Cox for family: %s\n", fam))
+  tryCatch(
+    fit_pairwise_glms(
+      family_name = fam,
+      genetic_code = genetic_code_dna_long,
+      usage_dt = codon_usage,
+      meta_dt = integrated_data,
+      boxcox_confounders = TRUE,
+      preferred_codons_df = preferred_codons_mg  # Use existing preferred codons
+    ),
+    error = function(e) {
+      cat(sprintf("  ERROR: %s\n", e$message))
+      return(NULL)
+    }
+  )
+})
+
+names(all_glm_results) <- all_families
+
+# Remove NULL results
+all_glm_results <- all_glm_results[!sapply(all_glm_results, is.null)]
+
+cat(sprintf("\n✓ Successfully fitted GLM models for %d families\n\n", 
+            length(all_glm_results)))
+
+# Aggregate coefficient tables
+master_glm_table <- data.table::rbindlist(
+  lapply(all_glm_results, function(x) x$coefficients)
+)
+
+# Save results
+write.csv(master_glm_table, 
+          "./results/section_8.1_GLM_BoxCox_selection_coefficients.csv",
+          row.names = FALSE)
+
+cat("✓ GLM coefficients saved: ./results/section_8.1_GLM_BoxCox_selection_coefficients.csv\n\n")
+
+# Find data-driven preferred codons (GLM approach)
+glm_preferred_codons <- master_glm_table %>%
+  dplyr::group_by(Family) %>%
+  dplyr::filter(Selection_Slope == max(Selection_Slope)) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(Family, Codon, Selection_Slope, p_value)
+
+cat("=== Data-Driven Preferred Codons (GLM Box-Cox approach) ===\n")
+print(glm_preferred_codons, n = Inf)
+cat("\n")
+
+write.csv(glm_preferred_codons,
+          "./results/section_8.1_GLM_preferred_codons.csv",
+          row.names = FALSE)
+
+cat("Note: GLM detected 3 additional significant cases vs GAM - using as gold standard\n\n")
+
+# 8.1.2.1) Update preferred codons based on GLM results (Gold Standard) ----
+
+cat("\n=== 8.1.2.1: Updating Preferred Codons Based on GLM Significance Patterns ===\n\n")
+cat("GLM models are used as gold standard (detected 3 additional significant cases vs GAM)\n")
+cat("This analysis identifies:\n")
+cat("  - Families with single clear preference\n")
+cat("  - Families with multiple co-optimal codons\n")
+cat("  - Families with no clear preference (all non-significant)\n\n")
+
+source("./src/update_preferred_codons.R")
+
+# Update preferences based on GLM significance patterns
+preferences_updated_glm <- update_preferred_codons_from_models(
+  model_results = all_glm_results,
+  existing_preferred_codons = preferred_codons_mg
+)
+
+# Save updated preferences
+write.csv(preferences_updated_glm,
+          "./results/section_8.1_GLM_updated_preferences_patterns.csv",
+          row.names = FALSE)
+
+cat("✓ Updated preference patterns saved\n\n")
+
+# Create formatted table for downstream use
+preferred_codons_updated <- create_preferred_codons_table(preferences_updated_glm)
+
+write.csv(preferred_codons_updated,
+          "./results/section_8.1_GLM_preferred_codons_updated.csv",
+          row.names = FALSE)
+
+cat("✓ Updated preferred codons table saved: ./results/section_8.1_GLM_preferred_codons_updated.csv\n\n")
+
+# Show summary
+cat("Summary of preference patterns:\n")
+summary_table <- preferences_updated_glm %>%
+  dplyr::group_by(Preference_Pattern) %>%
+  dplyr::summarise(Count = n(), .groups = "drop")
+print(summary_table)
+cat("\n")
+
+# 8.1.3) Compare GAM vs GLM approaches ----
+
+cat("\n=== 8.1.3: Comparing GAM vs GLM Approaches ===\n\n")
+
+comparison_df <- compare_gam_vs_glm(
+  gam_results = all_gam_results,
+  glm_results = all_glm_results,
+  output_file = "./results/section_8.1_GAM_vs_GLM_comparison.pdf"
+)
+
+# Save comparison table
+write.csv(comparison_df,
+          "./results/section_8.1_GAM_vs_GLM_comparison_table.csv",
+          row.names = FALSE)
+
+cat("✓ Comparison table saved: ./results/section_8.1_GAM_vs_GLM_comparison_table.csv\n\n")
+
+# 8.1.4) Visualize S-curves using GLM models (Gold Standard) ----
+
+cat("\n=== 8.1.4: Creating S-Curve Visualizations (GLM Models) ===\n\n")
+cat("Using GLM models as gold standard (more sensitive, detected 3 additional cases)\n")
+cat("Visualizations reflect updated preference patterns:\n")
+cat("  - ★ marks preferred codon(s)\n")
+cat("  - Multiple ★ for co-optimal codons\n")
+cat("  - No ★ for families without clear preference\n")
+cat("  - Solid lines = significant, Dashed lines = non-significant\n\n")
+
+# Create individual plots for interesting families
+selected_families <- c("Ala", "Leu_4", "Ser_4", "Arg_4", "Gly", "Val")
+
+cat("Creating individual S-curve plots for selected families...\n")
+for (fam in selected_families) {
+  if (fam %in% names(all_glm_results)) {
+    plot_family_scurves(
+      model_result = all_glm_results[[fam]],
+      meta_dt = integrated_data,
+      output_file = sprintf("./results/section_8.1_scurve_GLM_%s.pdf", fam),
+      alpha_significance = 0.05,
+      preferred_codons_updated = preferences_updated_glm
+    )
+  }
+}
+
+cat("\n")
+
+# Create multi-panel plot with all families
+cat("Creating multi-panel plot with all families...\n")
+plot_all_families_panel(
+  all_model_results = all_glm_results,
+  meta_dt = integrated_data,
+  output_file = "./results/section_8.1_all_families_scurves_GLM.pdf",
+  ncol = 4,
+  preferred_codons_updated = preferences_updated_glm
+)
+
+cat("\n")
+
+# 8.1.5) Statistical summary ----
+
+cat("\n=== 8.1.5: Statistical Summary ===\n\n")
+
+# How many codons show significant selection (using FDR-corrected p-values)?
+gam_significant <- master_gam_table %>%
+  dplyr::filter(Codon != Baseline, 
+                !is.na(p_adj),
+                p_adj < 0.05)
+
+glm_significant <- master_glm_table %>%
+  dplyr::filter(Codon != Baseline, 
+                !is.na(p_adj),
+                p_adj < 0.05)
+
+cat(sprintf("GAM approach: %d / %d codons show significant selection (p < 0.05)\n",
+            nrow(gam_significant), 
+            nrow(master_gam_table %>% dplyr::filter(Codon != Baseline))))
+
+cat(sprintf("GLM approach: %d / %d codons show significant selection (p < 0.05)\n\n",
+            nrow(glm_significant),
+            nrow(master_glm_table %>% dplyr::filter(Codon != Baseline))))
+
+# Direction of selection (positive = increases with expression)
+cat("Direction of selection:\n")
+cat(sprintf("  GAM: %d positive, %d negative\n",
+            sum(gam_significant$Selection_Slope > 0),
+            sum(gam_significant$Selection_Slope < 0)))
+cat(sprintf("  GLM: %d positive, %d negative\n\n",
+            sum(glm_significant$Selection_Slope > 0),
+            sum(glm_significant$Selection_Slope < 0)))
+
+# Families with strongest selection signal
+cat("Families with strongest selection signal (GAM approach):\n")
+family_summary_gam <- master_gam_table %>%
+  dplyr::filter(Codon != Baseline) %>%
+  dplyr::group_by(Family) %>%
+  dplyr::summarise(
+    Max_Slope = max(Selection_Slope),
+    Min_p = min(p_value),
+    N_Significant = sum(p_value < 0.05)
+  ) %>%
+  dplyr::arrange(dplyr::desc(N_Significant), Min_p)
+
+print(family_summary_gam, n = 10)
+cat("\n")
+
+# Compare with previous CAI-based preferred codons
+cat("=== Comparing with CAI-Based Preferred Codons ===\n\n")
+
+# Merge GAM preferred with CAI preferred
+cai_vs_gam <- preferred_codons_corrected %>%
+  dplyr::select(Family = AA, CAI_Preferred = Codon) %>%
+  dplyr::left_join(
+    gam_preferred_codons %>% dplyr::select(Family, GAM_Preferred = Codon),
+    by = "Family"
+  ) %>%
+  dplyr::mutate(Agreement = (CAI_Preferred == GAM_Preferred))
+
+cat(sprintf("Agreement between CAI and GAM preferred codons: %d / %d (%.1f%%)\n\n",
+            sum(cai_vs_gam$Agreement, na.rm = TRUE),
+            nrow(cai_vs_gam),
+            100 * mean(cai_vs_gam$Agreement, na.rm = TRUE)))
+
+# Show disagreements
+disagreements <- cai_vs_gam %>% dplyr::filter(!Agreement)
+if (nrow(disagreements) > 0) {
+  cat("Families where CAI and GAM disagree:\n")
+  print(disagreements)
+  cat("\n")
+}
+
+write.csv(cai_vs_gam,
+          "./results/section_8.1_CAI_vs_GAM_comparison.csv",
+          row.names = FALSE)
+
+cat("✓ CAI vs GAM comparison saved: ./results/section_8.1_CAI_vs_GAM_comparison.csv\n\n")
+
+cat("===============================================================\n")
+cat("SECTION 8.1 COMPLETE\n")
+cat("===============================================================\n\n")
+
+## *****************************************************************************
+## 9) Comparing preferred codon of Mimulus guttatus to other plants ----
+## _____________________________________________________________________________
 
 # Use w_table from CAI analysis (already calculated preferred codons)
 cat("Using optimal codons from corrected reference set...\n")
@@ -2809,6 +3147,11 @@ model_pi <- gam(Pi_mean_4fold ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
 
 summary(model_pi)
 
+ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
+  geom_pointdensity() +
+  geom_smooth(method = "lm") +
+  theme_custom()
+
 # 11.4) Loading the site specific data ----
 
 sfp_data <- fread("data/all_chromosomes.site_freq_by_preference.txt")
@@ -2830,8 +3173,8 @@ all_codon_data <- integrated_data %>%
 all_codon_data <- all_codon_data |>
   dplyr::group_by(Gene_name) |>
   dplyr::mutate(
-    Codon_Pos_Rel = (Codon_Pos + 1) / (max(Codon_Pos) + 1)
-  ) |>
+    Codon_Pos_Rel = Codon_Pos / max(Codon_Pos)
+    ) |>
   dplyr::ungroup()
 
 n <- nrow(all_codon_data)
@@ -2853,25 +3196,20 @@ model_position <- gam(
   data = all_codon_data
 )
 
-plot(model_position, pages = 1, residuals = TRUE)
+summary(model_position)
 
 p_pos_trend <- ggplot(all_codon_data, aes(x = Codon_Pos_Rel, y = Preferred_Freq)) +
-  # geom_hex shows density, solving the "black blob" problem
-  geom_hex(bins = 70) + 
-  scale_fill_viridis_c(trans = "log10", name = "Codon Count") +
-  
   # geom_smooth() will draw the average trend line
-  geom_smooth(method = "gam", color = "red", se = FALSE) + 
-  
+  geom_smooth(method = "lm", color = "red", se = FALSE) + 
+  geom_pointdensity() +
   labs(
-    title = "Selection Strength vs. Gene Expression",
-    subtitle = "Trend shows preferred codon frequency increases with expression",
+    title = "Frequence of preferred codons vs position",
     y = "Preferred freq",
     x = "Codon position (relative)"
   ) +
   theme_bw()
 
-print(p_pos_trend)
+ggsave(filename = "results/FPvsPosition.pdf", plot = p_pos_trend)
 
 ## *****************************************************************************
 ## 12) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
@@ -2884,16 +3222,15 @@ cat("Estimating population-scaled selection (S = 4Nes) using Hershberg & Petrov 
 source("./src/selection_coefficient_analysis.R")
 
 # Get preferred codons from CAI analysis (w = 1.0)
-preferred_codons <- cai_results$w_table |>
-  filter(relative_adaptiveness == 1.0, amino_acid != "STOP") |>
-  pull(codon)
+preferred_codons <- preferred_codons_corrected |>
+  pull(Codon)
 
 cat(sprintf("Using %d optimal codons as 'preferred' codons:\n", length(preferred_codons)))
 cat(paste(preferred_codons, collapse = ", "), "\n")
 
 # Prepare expression data (using High_exp from bud tissue as primary metric)
 expression_df <- integrated_data |>
-  select(Gene_name, Expression = High_exp)
+  dplyr::select(Gene_name, Expression = High_exp_log2)
 
 # Calculate selection coefficients for all genes
 selection_results <- calculate_selection_coefficients(
@@ -2903,6 +3240,17 @@ selection_results <- calculate_selection_coefficients(
   genetic_code = genetic_code_dna_long,
   low_expr_quantile = 0.10  # Use bottom 10% to estimate mutation bias
 )
+
+selection_results_long <- selection_results |>
+  pivot_longer(cols = c("P_preferred", "S"), names_to = "Metric",
+               values_to = "Values")
+
+ggplot(data = selection_results_long, mapping = aes(x = Expression,
+                                                    y = Values,
+                                                    color = Metric,
+                                                    fill = Metric)) +
+  geom_smooth() +
+  theme_custom()
 
 # Sensitivity analysis: How does s vary with different Ne values?
 # Literature estimates for M. guttatus Ne: ~200,000 - 500,000
@@ -2918,7 +3266,8 @@ plot_S_distribution(selection_results, "./results/S_distribution.pdf")
 
 # Compare S between expression groups
 selection_with_groups <- selection_results |>
-  left_join(integrated_data |> select(Gene_name, Expression_Group), by = "Gene_name")
+  left_join(integrated_data |> 
+              dplyr::select(Gene_name, Expression_Group), by = "Gene_name")
 
 cat("\n=== S by Expression Group ===\n")
 S_by_group <- selection_with_groups |>
