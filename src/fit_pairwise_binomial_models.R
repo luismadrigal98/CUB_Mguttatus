@@ -6,7 +6,7 @@ fit_pairwise_gams <- function(family_name, genetic_code, usage_dt, meta_dt,
   #' @param family_name The name of the amino acid family (e.g., "Ala", "Leu_4")
   #' @param genetic_code Named vector: codon -> amino acid
   #' @param usage_dt Codon usage data.table with Gene_name column (COUNTS per gene)
-  #' @param meta_dt Metadata with High_exp_log2, CDS_length_nt, GC3s
+  #' @param meta_dt Metadata with High_exp_log2, CDS_length_nt, GC12
   #' @param preferred_codons_df Optional data frame with Codon and AA columns to use as baseline
   #' @return List with family info, models, and coefficient table
   
@@ -48,7 +48,7 @@ fit_pairwise_gams <- function(family_name, genetic_code, usage_dt, meta_dt,
   
   # 3. Prepare the base data for this family
   family_data <- as.data.frame(meta_dt) %>%
-    dplyr::select(Gene_name, High_exp_log2, CDS_length_nt, GC3s) %>%
+    dplyr::select(Gene_name, High_exp_log2, CDS_length_nt, GC12) %>%
     dplyr::left_join(
       as.data.frame(usage_dt) %>% dplyr::select(dplyr::all_of(c("Gene_name", codons_in_family))),
       by = "Gene_name"
@@ -64,7 +64,7 @@ fit_pairwise_gams <- function(family_name, genetic_code, usage_dt, meta_dt,
     # Create data for this specific pair
     pair_data <- family_data %>%
       dplyr::select(
-        Gene_name, High_exp_log2, CDS_length_nt, GC3s,
+        Gene_name, High_exp_log2, CDS_length_nt, GC12,
         dplyr::all_of(c(response_codon, baseline_codon))
       ) %>%
       # Important: weights are the sum of *only these two* codons
@@ -78,7 +78,7 @@ fit_pairwise_gams <- function(family_name, genetic_code, usage_dt, meta_dt,
     
     # 5. Fit the binomial GAM
     formula_str <- sprintf(
-      "cbind(%s, %s) ~ High_exp_log2 + s(CDS_length_nt, k = 5) + s(GC3s, k = 5)",
+      "cbind(%s, %s) ~ High_exp_log2 + s(CDS_length_nt, k = 5) + s(GC12, k = 5)",
       response_codon, baseline_codon
     )
     
@@ -154,8 +154,8 @@ fit_pairwise_glms <- function(family_name, genetic_code, usage_dt, meta_dt,
   #' @param family_name The name of the amino acid family
   #' @param genetic_code Named vector: codon -> amino acid
   #' @param usage_dt Codon usage data.table with Gene_name column (COUNTS per gene)
-  #' @param meta_dt Metadata with High_exp_log2, CDS_length_nt, GC3s
-  #' @param boxcox_confounders If TRUE, apply Box-Cox to CDS_length_nt and GC3s
+  #' @param meta_dt Metadata with High_exp_log2, CDS_length_nt, GC12
+  #' @param boxcox_confounders If TRUE, apply Box-Cox to CDS_length_nt and GC12
   #' @param preferred_codons_df Optional data frame with Codon and AA columns to use as baseline
   #' @return List with family info, models, and coefficient table
   
@@ -196,7 +196,7 @@ fit_pairwise_glms <- function(family_name, genetic_code, usage_dt, meta_dt,
   
   # 3. Prepare the base data for this family
   family_data <- as.data.frame(meta_dt) %>%
-    dplyr::select(Gene_name, High_exp_log2, CDS_length_nt, GC3s) %>%
+    dplyr::select(Gene_name, High_exp_log2, CDS_length_nt, GC12) %>%
     dplyr::left_join(
       as.data.frame(usage_dt) %>% dplyr::select(dplyr::all_of(c("Gene_name", codons_in_family))),
       by = "Gene_name"
@@ -225,24 +225,24 @@ fit_pairwise_glms <- function(family_name, genetic_code, usage_dt, meta_dt,
       family_data$CDS_length_BC <- (family_data$CDS_length_nt^lambda_length - 1) / lambda_length
     }
     
-    # Box-Cox for GC3s (must be in (0, 1), scale to avoid boundary issues)
-    gc3s_scaled <- family_data$GC3s * 0.98 + 0.01  # Avoid exact 0 or 1
+    # Box-Cox for GC12 (must be in (0, 1), scale to avoid boundary issues)
+    GC12_scaled <- family_data$GC12 * 0.98 + 0.01  # Avoid exact 0 or 1
     
-    bc_gc <- MASS::boxcox(gc3s_scaled ~ 1, 
+    bc_gc <- MASS::boxcox(GC12_scaled ~ 1, 
                           data = family_data, 
                           plotit = FALSE)
     lambda_gc <- bc_gc$x[which.max(bc_gc$y)]
     
     # Apply transformation
     if (abs(lambda_gc) < 0.01) {
-      family_data$GC3s_BC <- log(gc3s_scaled)
+      family_data$GC12_BC <- log(GC12_scaled)
     } else {
-      family_data$GC3s_BC <- (gc3s_scaled^lambda_gc - 1) / lambda_gc
+      family_data$GC12_BC <- (GC12_scaled^lambda_gc - 1) / lambda_gc
     }
     
-    confounder_formula <- "High_exp_log2 + CDS_length_BC + GC3s_BC"
+    confounder_formula <- "High_exp_log2 + CDS_length_BC + GC12_BC"
   } else {
-    confounder_formula <- "High_exp_log2 + CDS_length_nt + GC3s"
+    confounder_formula <- "High_exp_log2 + CDS_length_nt + GC12"
   }
   
   fitted_models <- list()
@@ -255,7 +255,7 @@ fit_pairwise_glms <- function(family_name, genetic_code, usage_dt, meta_dt,
     pair_data <- family_data %>%
       dplyr::select(
         Gene_name, High_exp_log2, 
-        dplyr::any_of(c("CDS_length_nt", "GC3s", "CDS_length_BC", "GC3s_BC")),
+        dplyr::any_of(c("CDS_length_nt", "GC12", "CDS_length_BC", "GC12_BC")),
         dplyr::all_of(c(response_codon, baseline_codon))
       ) %>%
       dplyr::mutate(Total_Pair_Count = .data[[response_codon]] + .data[[baseline_codon]]) %>%
@@ -369,7 +369,7 @@ predict_codon_frequencies <- function(model_result, meta_dt,
   
   # Use mean values for confounders
   prediction_grid$CDS_length_nt <- mean(meta_dt$CDS_length_nt, na.rm = TRUE)
-  prediction_grid$GC3s <- mean(meta_dt$GC3s, na.rm = TRUE)
+  prediction_grid$GC12 <- mean(meta_dt$GC12, na.rm = TRUE)
   
   # If Box-Cox was applied, need to transform confounders
   # Check if first model has CDS_length_BC variable
@@ -379,8 +379,8 @@ predict_codon_frequencies <- function(model_result, meta_dt,
       # Extract Box-Cox parameters from the original fit
       # For simplicity, apply log transform (most common)
       prediction_grid$CDS_length_BC <- log(prediction_grid$CDS_length_nt)
-      gc3s_scaled <- prediction_grid$GC3s * 0.98 + 0.01
-      prediction_grid$GC3s_BC <- log(gc3s_scaled)
+      GC12_scaled <- prediction_grid$GC12 * 0.98 + 0.01
+      prediction_grid$GC12_BC <- log(GC12_scaled)
     }
   }
   

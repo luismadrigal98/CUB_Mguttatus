@@ -6,7 +6,7 @@
 ##' @param ordination_result CA or PCA result object
 ##' @param gene_data Data frame with gene scores and expression groups
 ##' @param codon_test_results Output from test_codon_proportions()
-##' @param w_table CAI weight table with preferred codons
+##' @param preferred_codons Data frame withc columens Preferred_Codons and Family
 ##' @param dims Dimensions to plot (default: c(1,2))
 ##' @param color_by How to color codons: "selection", "preference", "ending", "combined"
 ##' @param show_only_significant Show only significant codons? (default: FALSE)
@@ -22,7 +22,7 @@
 create_enhanced_biplot <- function(ordination_result,
                                    gene_data,
                                    codon_test_results,
-                                   w_table,
+                                   preferred_codons,
                                    dims = c(1, 2),
                                    color_by = "combined",
                                    show_only_significant = FALSE,
@@ -77,24 +77,17 @@ create_enhanced_biplot <- function(ordination_result,
                 dplyr::select(Codon, Classification, Significant, 
                        Difference, Ending, Amino_Acid),
               by = "Codon") %>%
-    left_join(w_table %>% dplyr::select(codon, relative_adaptiveness),
-              by = c("Codon" = "codon")) %>%
-    mutate(
-      Preferred = relative_adaptiveness == 1.0,
+    dplyr::mutate(
+      Preferred = Codon %in% preferred_codons$Preferred_Codons,
       # Use corrected classification if available
-      Category = if ("Combined_Classification" %in% names(codon_test_results)) {
-        Classification
-      } else {
-        # Fallback to simple classification
-        case_when(
+      Category = case_when(
           !Significant ~ "Neutral",
-          Difference > 0 & Preferred ~ "Selection + Preferred (w=1)",
-          Difference > 0 & !Preferred ~ "Under Selection (not pref)",
-          Difference < 0 & Preferred ~ "Rel. Preferred (AA avoided)",
-          Difference < 0 ~ "Avoided in High Expr",
+          Difference > 0 & Preferred ~ "Selection + Preferred (w = 1)",
+          Difference > 0 & !Preferred ~ "Enriched (not pref)",
+          Difference < 0 & Preferred ~ "Depleted (preferred)",
+          Difference < 0 ~ "Depleted",
           TRUE ~ "Neutral"
         )
-      }
     )
   
   # Filter to significant only if requested
@@ -118,8 +111,8 @@ create_enhanced_biplot <- function(ordination_result,
   if (color_by == "selection") {
     # Color by selection status only
     colors <- c(
-      "Selection + Preferred (w=1)" = "#d73027",
-      "Under Selection (not pref)" = "#fc8d59",
+      "Enriched + Preferred (w = 1)" = "#d73027",
+      "Enriched (not pref)" = "#fc8d59",
       "Avoided in High Expr" = "#4575b4",
       "Neutral" = "gray70"
     )

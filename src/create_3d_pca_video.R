@@ -48,7 +48,7 @@ create_3d_pca_plot <- function(pca_result,
   if (color_by == "expression") {
     colors <- c("Top 5%" = "#D62728", "Bottom 95%" = "#1F77B4")
   } else {
-    colors <- c("Selected" = "#2CA02C", "Neutral" = "#FF7F0E")
+    colors <- c("Preferred" = "#2CA02C", "Non-preferred" = "#FF7F0E")
   }
   
   # Create 3D scatter plot for genes
@@ -102,11 +102,7 @@ create_3d_pca_plot <- function(pca_result,
     
     # Add loading vectors as cones/arrows
     for (i in 1:nrow(loadings)) {
-      codon_color <- if (!is.null(codon_test_results) && !is.na(loadings$Significant[i]) && loadings$Significant[i]) {
-        if (loadings$Difference[i] > 0) "#2CA02C" else "#FF7F0E"  # Green for enriched, orange for depleted
-      } else {
-        "#999999"  # Gray for non-significant
-      }
+      codon_color <- ifelse(loadings$is_preferred[i], "#2CA02C", "#FF7F0E")  # Green for preferred
       
       p <- p %>%
         add_trace(

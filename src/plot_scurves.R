@@ -2,7 +2,8 @@ plot_family_scurves <- function(model_result, meta_dt,
                                expression_range = NULL,
                                output_file = NULL,
                                alpha_significance = 0.05,
-                               preferred_codons_updated = NULL) {
+                               preferred_codons_updated = NULL,
+                               n_points = 1000) {
   #' Plots S-curves showing codon frequency vs expression for an amino acid family
   #' Handles multiple preferred codons and no-preference cases
   #'
@@ -12,6 +13,8 @@ plot_family_scurves <- function(model_result, meta_dt,
   #' @param output_file Path to save PDF, or NULL to return plot object
   #' @param alpha_significance Significance threshold (default 0.05)
   #' @param preferred_codons_updated Optional updated preferences from update_preferred_codons_from_models
+  #' @param n_points Number of points to defined the prediction grid
+  #' 
   #' @return ggplot object
   
   suppressPackageStartupMessages({
@@ -27,7 +30,7 @@ plot_family_scurves <- function(model_result, meta_dt,
     model_result = model_result,
     meta_dt = meta_dt,
     expression_range = expression_range,
-    n_points = 100
+    n_points = n_points
   )
   
   # Get coefficient table with significance info
@@ -103,7 +106,7 @@ plot_family_scurves <- function(model_result, meta_dt,
     subtitle_text <- sprintf("Co-optimal codons ★: %s | Baseline: %s", 
                             paste(preferred_list, collapse = ", "), baseline_codon)
   } else {
-    subtitle_text <- sprintf("Preferred: %s ★ | Baseline: %s | Controlling for gene length and GC3s",
+    subtitle_text <- sprintf("Preferred: %s ★ | Baseline: %s | Controlling for gene length and GC12",
                             preferred_list[1], baseline_codon)
   }
   
@@ -176,7 +179,7 @@ plot_all_families_panel <- function(all_model_results, meta_dt,
     pred <- predict_codon_frequencies(
       model_result = result,
       meta_dt = meta_dt,
-      n_points = 50  # Fewer points for speed
+      n_points = n_points  # Fewer points for speed
     )
     pred$Family <- fam_name
     return(pred)
