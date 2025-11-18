@@ -145,7 +145,7 @@ def load_genome_sequence(fasta_file, chrom):
     if len(result) == 0:
         print(f"\nERROR: Chromosome '{chrom}' not found in {fasta_file}!", file=sys.stderr)
         print(f"Available chromosomes (first 5):", file=sys.stderr)
-        for i, c in enumerate(found_chroms[:5]):
+        for _, c in enumerate(found_chroms[:5]):
             print(f"  {c}", file=sys.stderr)
         if len(found_chroms) > 5:
             print(f"  ... and {len(found_chroms) - 5} more", file=sys.stderr)
@@ -274,7 +274,7 @@ def parse_gff3(gff3_file, chrom):
     if len(genes) == 0:
         print(f"\nERROR: No genes found for chromosome '{chrom}' in GFF3!", file=sys.stderr)
         print(f"Chromosomes found in GFF3 (first 10):", file=sys.stderr)
-        for i, c in enumerate(sorted(found_chroms)[:10]):
+        for _, c in enumerate(sorted(found_chroms)[:10]):
             print(f"  {c}", file=sys.stderr)
         if len(found_chroms) > 10:
             print(f"  ... and {len(found_chroms) - 10} more", file=sys.stderr)
@@ -304,7 +304,7 @@ def validate_cds_sequences(genes, genome_seq, cds_seqs, max_genes_to_check=20):
         'perfect_matches': 0,
         'length_mismatches': 0,
         'sequence_mismatches': 0,
-        'missing_in_fasta': 0,
+        'missing_in_cds_fasta': 0,
         'warnings': []
     }
     
@@ -321,7 +321,7 @@ def validate_cds_sequences(genes, genome_seq, cds_seqs, max_genes_to_check=20):
         
         # Check if gene exists in CDS FASTA
         if gene_id not in cds_seqs:
-            validation_results['missing_in_fasta'] += 1
+            validation_results['missing_in_cds_fasta'] += 1
             continue
         
         genes_checked += 1
@@ -367,7 +367,7 @@ def validate_cds_sequences(genes, genome_seq, cds_seqs, max_genes_to_check=20):
     print(f"  Perfect matches: {validation_results['perfect_matches']}")
     print(f"  Length mismatches: {validation_results['length_mismatches']}")
     print(f"  Sequence mismatches: {validation_results['sequence_mismatches']}")
-    print(f"  Missing in CDS FASTA: {validation_results['missing_in_fasta']}")
+    print(f"  Missing in CDS FASTA: {validation_results['missing_in_cds_fasta']}")
     
     if validation_results['warnings']:
         print(f"\nWarnings (showing first 10):")

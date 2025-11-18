@@ -23,7 +23,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'factoextra', 'dplyr', 'GenomicFeatures',
                         'ape', 'tidyr', 'caret', 'ggpointdensity',
                         'DescTools', 'mgcv', 'nnet', 'VGAM',
-                        'gratia', 'viridis')
+                        'gratia', 'viridis', 'cubar', 'kohonen')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -3500,4 +3500,23 @@ write.table(Ne_sensitivity,
 cat("\n✓ Selection coefficient analysis complete!\n")
 cat("  Results saved to ./results/selection_coefficients.csv\n")
 
-save.image('Env')
+## *****************************************************************************
+## 14) AnaCoDa-based analysis ----
+## _____________________________________________________________________________
+
+# 14.1) Clustering ----
+
+# 14.1.1) CLARA with k = 2 ----
+
+# 14.1.2) SOM ----
+
+som_grid <- somgrid(xdim = 10, ydim = 10, topo = "hexagonal")
+
+som_model <- som(as.matrix(codon_usage_CA_coord[, c("Dim.1", "Dim.2", 
+                                                    "Dim.3", "Dim.4",
+                                                    "Dim.5")]), 
+                 grid = som_grid, 
+                 rlen = 1000, alpha = c(0.05, 0.01))
+
+# Step 4: Visualize node counts (number of data points per node)
+plot(som_model, type = "count", main = "Node Counts") 
