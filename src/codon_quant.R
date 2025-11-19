@@ -18,10 +18,6 @@ codon_quant <- function(transcripts, codons, parallel = T,
   assertthat::assert_that(class(transcripts) == "DNAStringSet",
                           msg = "Input object (transcripts) must be of class `DNAStringSet`")
   
-  # Check that the gene has a canonical start ATG
-  filter <- check_canonical_start(transcripts)
-  transcripts <- transcripts[filter] # Filter out non-canonical genes
-  
   # Check that the reading frame is correct (length of transcript is multiple of 3)
   transcripts <- transcripts[sapply(1:length(transcripts), function(i){
     length(splitInPartsAux(as.character(transcripts[[i]]), 1)) %% 3 == 0

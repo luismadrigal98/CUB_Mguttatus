@@ -75,7 +75,7 @@ model_plants_PC <- read.table(file = "data/plant_preferred_codons.txt",
 
 ## 3.1) Analysis from transcript (if available is a shortcut) ----
 
-trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa", 
+trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnlyClean.fa", 
                                       format = 'fasta')
 
 trans <- trans |> check_cds()
