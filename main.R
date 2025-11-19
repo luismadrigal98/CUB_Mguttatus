@@ -22,8 +22,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'ggseqlogo', 'FactoMineR',
                         'factoextra', 'dplyr', 'GenomicFeatures',
                         'ape', 'tidyr', 'caret', 'ggpointdensity',
-                        'DescTools', 'mgcv', 'nnet', 'VGAM',
-                        'gratia', 'viridis', 'cubar', 'kohonen',
+                        'DescTools', 'mgcv', 'nnet', 'VGAM', 
+                        'viridis', 'cubar', 'kohonen',
                         'AnaCoDa')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
@@ -77,6 +77,8 @@ model_plants_PC <- read.table(file = "data/plant_preferred_codons.txt",
 
 trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa", 
                                       format = 'fasta')
+
+trans <- trans |> check_cds()
 
 codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long), 
                            parallel = T)
@@ -3505,11 +3507,43 @@ cat("  Results saved to ./results/selection_coefficients.csv\n")
 ## 14) AnaCoDa-based analysis ----
 ## _____________________________________________________________________________
 
-# 14.1) Clustering ----
+# 14.1) Fitting the initial modeling assuming ConstMut model ----
 
-# 14.1.1) CLARA with k = 2 ----
+# Read in genome
+genome <- initializeGenomeObject(file = "data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa")
 
-# 14.1.2) SOM ----
+# Define the parameters for the MCMC
+parameter <- initializeParameterObject(genome = genome, 
+                                       sphi = 1, 
+                                       num.mixtures = 1, 
+                                       gene.assignment = rep(1, length(genome)))
+
+# Initialize the model
+model_ConstMut <- initializeModelObject(parameter = parameter, model = "ROC")
+
+# Initialize the MCMC object
+mcmc_ConstMut <- initializeMCMCObject(samples = 5000, 
+                                      thinning = 10, 
+                                      adaptive.width=50)
+
+# Run the MCMC
+runMCMC(mcmc = mcmc_ConstMut, 
+        genome = genome, 
+        model = model_ConstMut)
+
+# Saving results
+writeParameterObject(parameter = parameter, file = "results/parameter_ConstMut_out.Rda")
+writeMCMCObject(mcmc = mcmc, file = "results/mcmc_ConstMut_out.Rda")
+
+# Reading in into R
+parameter <- loadParameterObject(file = "results/parameter_ConstMut_out.Rda")
+mcmc <- loadMCMCObject(file = "results/mcmc_ConstMut_out.Rda")
+
+# 14.2) Clustering genes first ----
+
+# 14.2.1) CLARA with k = 2 ----
+
+# 14.2.2) SOM ----
 
 som_grid <- somgrid(xdim = 10, ydim = 10, topo = "hexagonal")
 
