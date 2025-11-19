@@ -453,6 +453,7 @@ def annotate_positions(chrom, genes, genome_seq, cds_seqs):
             codon_end = codon_start + 3
             
             if codon_end > len(cds_seq):
+                print(f"Warning: Incomplete codon for gene {gene_id} at position {genomic_pos}", file=sys.stderr)
                 break
             
             codon = cds_seq[codon_start:codon_end]
@@ -529,7 +530,7 @@ def main():
     print(f"  Found {len(genes)} genes")
     
     # Validate CDS sequences
-    validation_results = validate_cds_sequences(genes, genome_seq, cds_seqs, max_genes_to_check=20)
+    _ = validate_cds_sequences(genes, genome_seq, cds_seqs, max_genes_to_check=20)
     
     print("Annotating positions...")
     annotations = annotate_positions(chrom, genes, genome_seq, cds_seqs)
