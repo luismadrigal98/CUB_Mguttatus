@@ -23,7 +23,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'factoextra', 'dplyr', 'GenomicFeatures',
                         'ape', 'tidyr', 'caret', 'ggpointdensity',
                         'DescTools', 'mgcv', 'nnet', 'VGAM',
-                        'gratia', 'viridis', 'cubar', 'kohonen')
+                        'gratia', 'viridis', 'cubar', 'kohonen',
+                        'AnaCoDa')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
