@@ -78,20 +78,18 @@ model_plants_PC <- read.table(file = "data/plant_preferred_codons.txt",
 trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnlyClean.fa", 
                                       format = 'fasta')
 
-trans <- trans |> check_cds()
+trans <- trans[check_canonical_start(trans)] |> check_cds()
 
 codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long), 
                            parallel = T)
 
 ## 3.2) Clean the codon usage object (remove the STOP codon, alongside Trp and Met) ----
 
-codon_usage <- codon_usage |>
-  trim_uninformative(genetic_code = genetic_code_dna_long)
+# codon_usage <- codon_usage |>
+#   trim_uninformative(genetic_code = genetic_code_dna_long)
+#   >> check_cds already does that
 
 ## 3.3) Load the expression data ----
-
-# Trimming suffix in gene names
-cub_results$enc_results[, Gene_name := sub("\\.1$", "", Gene_name)]
 
 exp_data_bud <- read.table(file = "./data/bud_gene_expression_cpm_remapped.txt",
                            header = T) |>
@@ -144,13 +142,6 @@ message("Performing comprehensive codon usage bias analysis...")
 cub_results <- cub_summary(codon_usage, genetic_code_dna_long, 
                           output_dir = "./results",
                           aa_group = aa_chemistry_df)
-
-# Clean gene names: remove .1 suffix from all data frames
-enc_values_clean <- cub_results$enc_results |>
-  dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
-
-gc_content_clean <- cub_results$gc_results |>
-  dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
 
 # Creation of integrated data ----
 
@@ -3533,10 +3524,10 @@ runMCMC(mcmc = mcmc_ConstMut,
 
 # Saving results
 writeParameterObject(parameter = parameter, file = "results/parameter_ConstMut_out.Rda")
-writeMCMCObject(mcmc = mcmc, file = "results/mcmc_ConstMut_out.Rda")
+writeMCMCObject(mcmc = mcmc_ConstMut, file = "results/mcmc_ConstMut_out.Rda")
 
 # Reading in into R
-parameter <- loadParameterObject(file = "results/parameter_ConstMut_out.Rda")
+parameter_ConstMut <- AnaCoDa::loadParameterObject(files = "results/parameter_ConstMut_out.Rda")
 mcmc <- loadMCMCObject(file = "results/mcmc_ConstMut_out.Rda")
 
 # 14.2) Clustering genes first ----
