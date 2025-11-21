@@ -16,6 +16,7 @@ library(AnaCoDa)
 # ______________________________________________________________________________
 
 parser <- ArgumentParser()
+
 parser$add_argument("-i",
                     "--input",
                     help = "FASTA file with CDSs (transcript-based fasta file)",
@@ -154,19 +155,33 @@ init.sphi <- args$init_sphi
 # 2) Auxiliary functions ----
 # ______________________________________________________________________________
 
-calcDeltaMFromIntronsLocal <- function()
-{
-  break # Define this function
+
+# -----------------------------------------------------------------------------
+# calcDeltaMFromIntronsLocal: Returns 0 as a placeholder. Replace with actual
+# logic if mutation prior mean from intron data is needed.
+# -----------------------------------------------------------------------------
+calcDeltaMFromIntronsLocal <- function(...) {
+  return(0)
 }
 
+# -----------------------------------------------------------------------------
+# calcDeltaMFromIntronsLocal: Placeholder for function to calculate mutation
+# prior mean from intron data. Needs implementation or removal if not used.
+# -----------------------------------------------------------------------------
+
 ## Outputs CSP estimates
-createParameterOutput <- function(parameter,numMixtures,samples,mixture.labels,samples.percent.keep=1,relative.to.optimal.codon=F,report.original.ref=T)
+createParameterOutput <- function(parameter, dir_name, numMixtures, samples, mixture.labels, samples.percent.keep=1, relative.to.optimal.codon=F, report.original.ref=T)
 {
   for (i in 1:numMixtures)
   {
-    getCSPEstimates(parameter,paste(dir_name,"Parameter_est",mixture.labels[i],sep="/"),i,samples*samples.percent.keep,relative.to.optimal.codon=relative.to.optimal.codon,report.original.ref = report.original.ref)#,thin=thin)
+    getCSPEstimates(parameter, paste(dir_name, "Parameter_est", mixture.labels[i], sep="/"), i, samples*samples.percent.keep, relative.to.optimal.codon=relative.to.optimal.codon, report.original.ref = report.original.ref)
   }
 }
+
+# -----------------------------------------------------------------------------
+# createParameterOutput: Outputs CSP estimates for each mixture using the
+# getCSPEstimates function. Results are saved in the Parameter_est directory.
+# -----------------------------------------------------------------------------
 
 
 ## Outputs traces for CSPs and plots expected frequencies as function of log10(\phi) 
@@ -188,8 +203,16 @@ createTracePlots <- function(trace,
   plot(trace, what="AcceptanceRatio")
 }
 
+# -----------------------------------------------------------------------------
+# createTracePlots: Generates trace plots for mutation, selection, expected
+# frequencies, and acceptance ratio for each mixture. Plots are saved as PDFs.
+# -----------------------------------------------------------------------------
+
 # ******************************************************************************
 # 3) Setting up the MCMC ----
+# -----------------------------------------------------------------------------
+# MCMC setup: initializes genome, mixtures, phi, sphi, priors, and prepares for iterative MCMC runs.
+# -----------------------------------------------------------------------------
 # ______________________________________________________________________________
 
 if (with.phi && !is.null(obs.phi))
@@ -279,6 +302,28 @@ if (!is.null(prior.from.gc))
 # ______________________________________________________________________________
 
 if (!dir.exists(directory)) dir.create(directory)
+
+# Check if input FASTA file exists
+if (!file.exists(input)) {
+  stop(paste("Input FASTA file not found:", input))
+}
+
+# Helper function for safe directory creation
+safe_dir_create <- function(path) {
+  if (!dir.exists(path)) {
+    dir.create(path, recursive = TRUE, showWarnings = FALSE)
+    if (!dir.exists(path)) {
+      stop(paste("Failed to create directory:", path))
+    }
+  }
+}
+
+safe_dir_create(directory)
+
+# -----------------------------------------------------------------------------
+# MCMC iterative run section: runs the AnaCoDa MCMC analysis for up to
+# max_num_runs, adapting parameters and saving outputs for each run.
+# -----------------------------------------------------------------------------
 done <- FALSE
 done.adapt <- FALSE
 run_number <- 1
@@ -296,16 +341,20 @@ while((!done) && (run_number <= max_num_runs))
   }
   if (is.null(restart.file))
   {
-    parameter <- initializeParameterObject(genome,sphi_init,numMixtures, geneAssignment,init.sepsilon = s_eps,split.serine = TRUE, mixture.definition = mixDef, initial.expression.values = init_phi,init.w.obs.phi=with.phi,mutation.prior.mean=mutation.prior.mean)
+    parameter <- initializeParameterObject(genome,sphi_init,numMixtures, geneAssignment,init.sepsilon = s_eps,split.serine = TRUE, mixture.definition = mix.def, initial.expression.values = init_phi,init.w.obs.phi=with.phi,mutation.prior.mean=mutation.prior.mean)
     if (length(dM.file) > 0)
     {
+      if (!file.exists(dM.file)) {
+        stop(paste("dM file not found:", dM.file))
+      }
       parameter$initMutationCategories(dM.file,1,fix_dM)
-      
     } 
     if (length(dEta.file) > 0)
     {
+      if (!file.exists(dEta.file)) {
+        stop(paste("dEta file not found:", dEta.file))
+      }
       parameter$initSelectionCategories(dEta.file,1,fix_dEta)
-      
     }
     
   } else {
@@ -320,11 +369,11 @@ while((!done) && (run_number <= max_num_runs))
   }
   steps.to.adapt <- (samples*thinning)*(1-percent.to.keep)
   dir_name <- paste0(directory,"/run_",run_number)
-  dir.create(dir_name)
-  dir.create(paste(dir_name,"Graphs",sep="/"))
-  dir.create(paste(dir_name,"Restart_files",sep="/"))
-  dir.create(paste(dir_name,"Parameter_est",sep="/"))
-  dir.create(paste(dir_name,"R_objects",sep="/"))
+    safe_dir_create(dir_name)
+    safe_dir_create(paste(dir_name,"Graphs",sep="/"))
+    safe_dir_create(paste(dir_name,"Restart_files",sep="/"))
+    safe_dir_create(paste(dir_name,"Parameter_est",sep="/"))
+    safe_dir_create(paste(dir_name,"R_objects",sep="/"))
   
   mcmc <- initializeMCMCObject(samples=samples, thinning=thinning, adaptive.width=adaptiveWidth,
                                est.expression=est.phi, est.csp=est.csp, est.hyper=est.hyp,est.mix=est.mix)
@@ -351,7 +400,7 @@ while((!done) && (run_number <= max_num_runs))
   
   
   ## Output CSP file
-  createParameterOutput(parameter = parameter,numMixtures = numMixtures,samples = samples,mixture.labels = mixture.labels,samples.percent.keep = percent.to.keep,relative.to.optimal.codon = F,report.original.ref = T)#,thin=thinning)
+  createParameterOutput(parameter = parameter, dir_name = dir_name, numMixtures = numMixtures, samples = samples, mixture.labels = mixture.labels, samples.percent.keep = percent.to.keep, relative.to.optimal.codon = F, report.original.ref = T)
   
   ## Output phi file
   expressionValues <- getExpressionEstimates(parameter,c(1:size),samples*percent.to.keep,genome = genome)

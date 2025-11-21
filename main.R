@@ -24,7 +24,9 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'ape', 'tidyr', 'caret', 'ggpointdensity',
                         'DescTools', 'mgcv', 'nnet', 'VGAM', 
                         'viridis', 'cubar', 'kohonen',
-                        'AnaCoDa')
+                        'AnaCoDa', 'rtracklayer', 'tidyverse',
+                        'txdbmaker', 'Rsamtools', 'purrr',
+                        'abind')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -3493,6 +3495,47 @@ write.table(Ne_sensitivity,
 
 cat("\n✓ Selection coefficient analysis complete!\n")
 cat("  Results saved to ./results/selection_coefficients.csv\n")
+
+## *****************************************************************************
+## Estimate mutation rates ----
+## _____________________________________________________________________________
+
+# Extract intronic sequences
+introns_list <- get_intron_sequences(fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.fa",
+                                     ann_file = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
+                                     organism = "Mimulus guttatus")
+
+# Calculate nucleotide composicion per window
+nuc_composition <- get_base_composition_per_windows(genome_seqinfo = introns_list$genome_seqinfo, 
+                                                    trimmed_introns = introns_list$trimmed_introns,
+                                                    intron_seqs = introns_list$intron_seqs,
+                                                    window_size = 100000)
+
+windows_thinned <- refine_windows_for_genes(nuc_composition, 1000)
+
+nuc_composition_filtered <- nuc_composition %>%
+  filter(total_bp >= 1000)
+
+# Calculate Q matrix
+
+Q_matrices <- apply_q_matrix_to_windows(nuc_composition_filtered)
+
+# Extract the list of matrices from the data frame
+q_list <- nuc_composition_filtered$Q_matrix
+
+# Use abind to stack the matrices along the third dimension (windows)
+# The dimensions will be [from base, to base, window index]
+Q_array <- abind::abind(q_list, along = 3)
+
+# Assign dimnames for clarity (optional, but good practice)
+dimnames(Q_array) <- list(
+  From = c("A", "C", "G", "T"), 
+  To = c("A", "C", "G", "T"), 
+  Window = nuc_composition_filtered$window_idx
+)
+
+message(paste("Created Q_array with dimensions:", 
+              paste(dim(Q_array), collapse = " x ")))
 
 ## *****************************************************************************
 ## 14) AnaCoDa-based analysis ----
