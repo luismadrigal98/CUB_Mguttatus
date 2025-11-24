@@ -116,7 +116,22 @@ parser$add_argument("--init_sphi",
 args <- parser$parse_args()
 
 message("Setting up AnaCoDa run with the following arguments ...")
-message(args)
+message("========================================================")
+message("          AnaCoDa MCMC Configuration Summary            ")
+message("========================================================")
+
+for (name in names(args)) {
+  val <- args[[name]]
+  # Handle NULLs so they print nicely
+  if (is.null(val)) {
+    val_str <- "NULL"
+  } else {
+    val_str <- as.character(val)
+  }
+  # Print aligned key-value pairs
+  message(sprintf("%-25s : %s", name, val_str))
+}
+message("========================================================")
 
 input <- args$input
 directory <- args$output
