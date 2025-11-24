@@ -298,7 +298,7 @@ done.adapt <- FALSE
 run_number <- 1
 param.conv <- TRUE
 
-while((!done) && (run_number <= max_num_runs))
+while((!done) && (run_number <= max.num.runs))
 {
   if (adaptiveWidth == 0)
   {
