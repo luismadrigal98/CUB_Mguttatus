@@ -3521,7 +3521,7 @@ nuc_composition_filtered <- nuc_composition %>%
 Q_matrices <- apply_q_matrix_to_windows(nuc_composition_filtered)
 
 # Extract the list of matrices from the data frame
-q_list <- nuc_composition_filtered$Q_matrix
+q_list <- Q_matrices$Q_matrix
 
 # Use abind to stack the matrices along the third dimension (windows)
 # The dimensions will be [from base, to base, window index]
@@ -3531,11 +3531,50 @@ Q_array <- abind::abind(q_list, along = 3)
 dimnames(Q_array) <- list(
   From = c("A", "C", "G", "T"), 
   To = c("A", "C", "G", "T"), 
-  Window = nuc_composition_filtered$window_idx
+  Window = Q_matrices$window_idx
 )
 
 message(paste("Created Q_array with dimensions:", 
               paste(dim(Q_array), collapse = " x ")))
+
+# Searching for evidence of variation in M
+
+df_analysis <- Q_matrices %>%
+  # Add the extracted rate as a new column
+  dplyr::mutate(Q_AG_rate = Q_array["A", "G", ]) %>%
+  dplyr::mutate(Q_AT_rate = Q_array["A", "T", ]) %>%
+  # Ensure chromosome names are a factor for ANOVA
+  dplyr::mutate(seqnames = as.factor(seqnames))
+
+# Test if the mean A->G transition rate differs significantly by chromosome
+rate_anova <- aov(Q_AT_rate ~ seqnames, data = df_analysis)
+summary(rate_anova)
+
+df_analysis <- df_analysis %>%
+  dplyr::mutate(GC_content = pi_G + pi_C)
+
+GC_content <- aov(GC_content ~ seqnames, data = df_analysis)
+summary(GC_content)
+
+df_plot <- df_analysis %>%
+  
+  # 1. Calculate Midpoint for plotting (Window coordinates)
+  dplyr::mutate(midpoint = (start + end) / 2) %>%
+  
+  # 2. Define the analysis variables to plot
+  dplyr::select(seqnames, midpoint, GC_content, Q_AG_rate) %>%
+  
+  # 3. Gather the data for easy plotting in facets
+  tidyr::pivot_longer(
+    cols = c(GC_content, Q_AG_rate),
+    names_to = "Variable",
+    values_to = "Rate_Value"
+  )
+
+final_plot <- plot_genomic_rate_variation(df_plot)
+ggsave(filename = "./results/Proxy_Mutation_per_windows.pdf)", 
+       plot = final_plot, height = 8,
+       width = 10)
 
 ## *****************************************************************************
 ## 14) AnaCoDa-based analysis ----
