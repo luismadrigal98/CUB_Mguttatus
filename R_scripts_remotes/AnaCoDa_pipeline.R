@@ -10,6 +10,7 @@
 
 library(argparse)
 library(AnaCoDa)
+library(stringr)
 
 # ******************************************************************************
 # 1) Parsing arguments ----
@@ -56,6 +57,9 @@ parser$add_argument("-n",
                     help = "Number of threads to use for MCMC",
                     type = "integer",
                     default = 1)
+parser$add_argument("--obs_phi",
+                    type = "character",
+                    default = NULL)
 parser$add_argument("--dEta",
                     help = "Initial dEta values. Assumes csv format with columns AA,Codon,DEta. First line should be a header.",
                     type = "character")
@@ -102,16 +106,8 @@ parser$add_argument("--mixture_assignment",
 parser$add_argument("--codon_table",
                     type = "integer",
                     default = 1)
-parser$add_argument("--with_phi",
-                    action = "store_true")
-parser$add_argument("--obs_phi",
-                    type = "character",
-                    default = NULL)
 parser$add_argument("--restart_file",
                     type = "character",
-                    default = NULL)
-parser$add_argument("--prior_from_gc",
-                    type = "double",
                     default = NULL)
 parser$add_argument("--init_sphi",
                     type = "character",
@@ -122,28 +118,25 @@ args <- parser$parse_args()
 message("Setting up AnaCoDa run with the following arguments ...")
 message(args)
 
-div <- args$div
 input <- args$input
 directory <- args$output
+div <- args$div
+samples <- args$samp
+adaptiveWidth <- args$adapt
 thinning <- args$thin
 percentage.to.keep <- args$percentage_to_keep
-adaptiveWidth <- args$adapt
-samples <- args$samp
 num.threads <- args$threads
-sphi.init <- args$sphi_initial_values
-phi.files <- args$phi
 dEta.file <- args$dEta
 dM.file <- args$dM
-est.phi <- args$est_phi
+sphi.init <- args$sphi_initial_values
+phi.files <- args$phi
 est.csp <- args$est_csp
+est.phi <- args$est_phi
 est.hyp <- args$est_hyp
 est.mix <- args$est_mix
 max.num.runs <- args$max_num_runs
 fix.dEta <- args$fix_dEta
 fix.dM <- args$fix_dM
-with.phi <- args$with_phi
-obs.phi <- args$obs_phi
-prior.from.gc <- args$prior_from_gc
 number.of.mixtures <- args$number_of_mixtures
 mix.def <- args$mix_def
 mix.assign <- args$mixture_assignment
@@ -151,38 +144,34 @@ restart.file <- args$restart_file
 codon.table <- args$codon_table
 init.sphi <- args$init_sphi
 
+# Expression
+obs.phi <- args$phi 
+with.phi <- !is.null(obs.phi)
+
 # ******************************************************************************
 # 2) Auxiliary functions ----
 # ______________________________________________________________________________
 
-
-# -----------------------------------------------------------------------------
-# calcDeltaMFromIntronsLocal: Returns 0 as a placeholder. Replace with actual
-# logic if mutation prior mean from intron data is needed.
-# -----------------------------------------------------------------------------
 calcDeltaMFromIntronsLocal <- function(...) {
   return(0)
 }
 
-# -----------------------------------------------------------------------------
-# calcDeltaMFromIntronsLocal: Placeholder for function to calculate mutation
-# prior mean from intron data. Needs implementation or removal if not used.
-# -----------------------------------------------------------------------------
-
 ## Outputs CSP estimates
-createParameterOutput <- function(parameter, dir_name, numMixtures, samples, mixture.labels, samples.percent.keep=1, relative.to.optimal.codon=F, report.original.ref=T)
+createParameterOutput <- function(parameter, dir_name, numMixtures, 
+                                  samples, mixture.labels, 
+                                  samples.percent.keep=1, 
+                                  relative.to.optimal.codon=F, 
+                                  report.original.ref=T)
 {
   for (i in 1:numMixtures)
   {
-    getCSPEstimates(parameter, paste(dir_name, "Parameter_est", mixture.labels[i], sep="/"), i, samples*samples.percent.keep, relative.to.optimal.codon=relative.to.optimal.codon, report.original.ref = report.original.ref)
+    getCSPEstimates(parameter, paste(dir_name, "Parameter_est", 
+                                     mixture.labels[i], sep="/"), i, 
+                    samples*samples.percent.keep, 
+                    relative.to.optimal.codon=relative.to.optimal.codon, 
+                    report.original.ref = report.original.ref)
   }
 }
-
-# -----------------------------------------------------------------------------
-# createParameterOutput: Outputs CSP estimates for each mixture using the
-# getCSPEstimates function. Results are saved in the Parameter_est directory.
-# -----------------------------------------------------------------------------
-
 
 ## Outputs traces for CSPs and plots expected frequencies as function of log10(\phi) 
 createTracePlots <- function(trace, 
@@ -198,27 +187,19 @@ createTracePlots <- function(trace,
     plot(trace, what = "Mutation", mixture = i)
     plot(trace, what = "Selection", mixture = i)
     
-    plot(model, genome, samples = samples*samples.percent.keep, mixture = i,main = mixture.labels[i])
+    plot(model, genome, samples = samples*samples.percent.keep, 
+         mixture = i,main = mixture.labels[i])
   }
   plot(trace, what="AcceptanceRatio")
 }
 
-# -----------------------------------------------------------------------------
-# createTracePlots: Generates trace plots for mutation, selection, expected
-# frequencies, and acceptance ratio for each mixture. Plots are saved as PDFs.
-# -----------------------------------------------------------------------------
-
 # ******************************************************************************
 # 3) Setting up the MCMC ----
-# -----------------------------------------------------------------------------
-# MCMC setup: initializes genome, mixtures, phi, sphi, priors, and prepares for iterative MCMC runs.
-# -----------------------------------------------------------------------------
 # ______________________________________________________________________________
 
 if (with.phi && !is.null(obs.phi))
 {
   genome <- initializeGenomeObject(file = input,
-                                   codon_table = codon.table,
                                    match.expression.by.id = TRUE,
                                    observed.expression.file = obs.phi)
 } else
@@ -245,8 +226,7 @@ if (!is.null(mix.assign))
 } else
 {
   geneAssignment <- rep(1,size)
-  mixture.labels <- unlist(strsplit(input,"/"))
-  mixture.labels <- mixture.labels[length(mixture.labels)]
+  mixture.labels <- paste0("Cluster_", geneAssignment)
   numMixtures <- 1
 }
 
@@ -288,14 +268,7 @@ if (!is.null(obs.phi))
   s_eps <- 0.1
 }
 
-if (!is.null(prior.from.gc))
-{
-  mutation.prior.mean <- calcDeltaMFromIntronsLocal(prior.from.gc, F)
-  mutation.prior.mean <- rep(mutation.prior.mean, number.of.mixtures)
-} else 
-{
-  mutation.prior.mean <- 0
-}
+mutation.prior.mean <- 0
 
 # ******************************************************************************
 # 4) Layout for running the MCMC iteratively ----
@@ -320,13 +293,10 @@ safe_dir_create <- function(path) {
 
 safe_dir_create(directory)
 
-# -----------------------------------------------------------------------------
-# MCMC iterative run section: runs the AnaCoDa MCMC analysis for up to
-# max_num_runs, adapting parameters and saving outputs for each run.
-# -----------------------------------------------------------------------------
 done <- FALSE
 done.adapt <- FALSE
 run_number <- 1
+param.conv <- TRUE
 
 while((!done) && (run_number <= max_num_runs))
 {
@@ -375,38 +345,53 @@ while((!done) && (run_number <= max_num_runs))
     safe_dir_create(paste(dir_name,"Parameter_est",sep="/"))
     safe_dir_create(paste(dir_name,"R_objects",sep="/"))
   
-  mcmc <- initializeMCMCObject(samples=samples, thinning=thinning, adaptive.width=adaptiveWidth,
-                               est.expression=est.phi, est.csp=est.csp, est.hyper=est.hyp,est.mix=est.mix)
+  mcmc <- initializeMCMCObject(samples = samples, thinning = thinning, 
+                               adaptive.width = adaptiveWidth,
+                               est.expression = est.phi, 
+                               est.csp = est.csp, 
+                               est.hyper = est.hyp,
+                               est.mix = est.mix)
   
   mcmc$setStepsToAdapt(steps.to.adapt)
   
-  
-  model <- initializeModelObject(parameter, "ROC", with.phi,fix.observation.noise=F)
-  setRestartSettings(mcmc, paste(dir_name,"Restart_files/rstartFile.rst",sep="/"), adaptiveWidth, F)
+  model <- initializeModelObject(parameter, 
+                                 "ROC", 
+                                 with.phi,
+                                 fix.observation.noise=F)
+  setRestartSettings(mcmc, 
+                     paste(dir_name,"Restart_files/rstartFile.rst",sep="/"), 
+                     adaptiveWidth, F)
   
   
   sys.runtime <- system.time(
-    runMCMC(mcmc, genome, model, num_threads,div=div_run)
+    runMCMC(mcmc, genome, model, num.threads, div = div_run)
   )
   
-  ## Output runtime for mcmc
-  sys.runtime <- data.frame(Value=names(sys.runtime),Time=as.vector(sys.runtime))
-  write.table(sys.runtime,file=paste(dir_name,"mcmc_runtime.csv",sep="/"),sep=",",col.names = T,row.names = T,quote=F)
+  # Output runtime for mcmc
+  sys.runtime <- data.frame(Value = names(sys.runtime),
+                            Time = as.vector(sys.runtime))
+  write.table(sys.runtime,file = paste(dir_name,"mcmc_runtime.csv",sep="/"),
+              sep=",", col.names = T, row.names = T, quote = F)
   
+  # Creates R objects, which can be later loaded for re-analzying already completed runs
+  writeParameterObject(parameter, paste(dir_name,"R_objects/parameter.Rda",
+                                        sep="/"))
+  writeMCMCObject(mcmc, 
+                  file=paste(dir_name,"R_objects/mcmc.Rda",sep="/"))
   
-  ## Creates R objects, which can be later loaded for re-analzying already completed runs
-  writeParameterObject(parameter,paste(dir_name,"R_objects/parameter.Rda",sep="/"))
-  writeMCMCObject(mcmc,file=paste(dir_name,"R_objects/mcmc.Rda",sep="/"))
-  
-  
-  ## Output CSP file
+  # Output CSP file
   createParameterOutput(parameter = parameter, dir_name = dir_name, numMixtures = numMixtures, samples = samples, mixture.labels = mixture.labels, samples.percent.keep = percent.to.keep, relative.to.optimal.codon = F, report.original.ref = T)
   
-  ## Output phi file
-  expressionValues <- getExpressionEstimates(parameter,c(1:size),samples*percent.to.keep,genome = genome)
-  write.table(expressionValues,file=paste(dir_name,"Parameter_est/gene_expression.txt",sep="/"),sep=",",col.names = T,quote = F,row.names = F)
+  # Output phi file
+  expressionValues <- getExpressionEstimates(parameter,c(1:size),
+                                             samples*percent.to.keep,
+                                             genome = genome)
+  write.table(expressionValues,file=paste(dir_name,
+                                          "Parameter_est/gene_expression.txt",
+                                          sep="/"), sep=",", col.names = T, 
+              quote = F, row.names = F)
   
-  #plots different aspects of trace
+  # Plots different aspects of trace
   trace <- parameter$getTraceObject()
   pdf(paste(dir_name,"Graphs/mcmc_traces.pdf",sep="/"))
   plot(mcmc,what = "LogPosterior")
@@ -458,7 +443,6 @@ while((!done) && (run_number <= max_num_runs))
   pdf(paste(dir_name,"Graphs/CSP_traces_CUB_plot.pdf",sep="/"), width = 11, height = 12)
   createTracePlots(trace=trace,model=model,genome=genome,numMixtures=numMixtures,samples=samples,samples.percent.keep = percent.to.keep,mixture.labels = mixture.labels)
   dev.off()
-  
   
   diag <- convergence.test(mcmc,samples = samples*percent.to.keep,thin=thinning,frac1=0.1)
   z<-abs(diag$z)

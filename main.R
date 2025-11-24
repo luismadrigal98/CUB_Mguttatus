@@ -3556,26 +3556,6 @@ df_analysis <- df_analysis %>%
 GC_content <- aov(GC_content ~ seqnames, data = df_analysis)
 summary(GC_content)
 
-df_plot <- df_analysis %>%
-  
-  # 1. Calculate Midpoint for plotting (Window coordinates)
-  dplyr::mutate(midpoint = (start + end) / 2) %>%
-  
-  # 2. Define the analysis variables to plot
-  dplyr::select(seqnames, midpoint, GC_content, Q_AG_rate) %>%
-  
-  # 3. Gather the data for easy plotting in facets
-  tidyr::pivot_longer(
-    cols = c(GC_content, Q_AG_rate),
-    names_to = "Variable",
-    values_to = "Rate_Value"
-  )
-
-final_plot <- plot_genomic_rate_variation(df_plot)
-ggsave(filename = "./results/Proxy_Mutation_per_windows.pdf)", 
-       plot = final_plot, height = 8,
-       width = 10)
-
 ## *****************************************************************************
 ## 14) AnaCoDa-based analysis ----
 ## _____________________________________________________________________________
