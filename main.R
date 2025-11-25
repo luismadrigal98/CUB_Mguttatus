@@ -3564,11 +3564,11 @@ summary(GC_content)
 # Getting rates out for each nucleotide and normalized directional mutation spectrum
 
 window_data <- data.frame(window_idx = Q_matrices$window_idx)
-out_rates <- base::do.call(base::sapply(X = q_list, FUN = function(x)
+out_rates <- base::do.call("rbind", base::lapply(X = q_list, FUN = function(x)
                     {
                       diag(x)
-                    }), 
-                     "rbind")
+                    }))
+window_data <- window_data |> cbind(as.data.frame(out_rates))
 
 # Calcultate dM
 
