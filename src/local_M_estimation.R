@@ -8,7 +8,7 @@
 #' _____________________________________________________________________________ 
 
 # ******************************************************************************
-# STEP 1: Extract and Filter Introns
+# STEP 1: Extract and Filter Introns ----
 # ______________________________________________________________________________
 
 get_intron_sequences <- function(fasta_file, ann_file,
@@ -162,7 +162,7 @@ get_intron_sequences <- function(fasta_file, ann_file,
 }
 
 # ******************************************************************************
-# STEP 2: Measure Base Composition per Window
+# STEP 2: Measure Base Composition per Window ----
 # ______________________________________________________________________________
 
 # Create a mapping function to aggregate counts
@@ -339,8 +339,9 @@ refine_windows_for_genes <- function(nuc_composition, min_bp = 1000)
 }
 
 # ******************************************************************************
-# STEP 3: Solve for Mutation Rate Matrix (Q)
+# STEP 3: Solve for Mutation Rate Matrix (Q) ----
 # ______________________________________________________________________________
+
 message("Step 3: Solving for Mutation Matrix Q...")
 
 # Function to generate the Q matrix from Equilibrium Frequencies
@@ -393,7 +394,8 @@ solve_Q_matrix <- function(pi_A, pi_C, pi_G, pi_T, kappa = 2) {
 
 apply_q_matrix_to_windows <- function(nuc_composition_df, kappa = 2) {
   
-  message(paste("Calculating Q matrices for", nrow(nuc_composition_df), "windows..."))
+  message(paste("Calculating Q matrices for", nrow(nuc_composition_df), 
+                "windows..."))
   
   # Use dplyr to iterate over rows and apply the function
   df_with_q_matrix <- nuc_composition_df %>%
@@ -464,4 +466,73 @@ plot_genomic_rate_variation <- function(df_plot)
     )
   
   return(p)
+}
+
+# ******************************************************************************
+# STEP 4: Cluster genomic windows by mutational pressure ----
+# ______________________________________________________________________________
+
+
+
+# ******************************************************************************
+# STEP 5: Generate AnaCoDa dM File ----
+# ______________________________________________________________________________
+
+generate_anacoda_dM <- function(pi_A, pi_C, pi_G, pi_T, output_file) {
+  
+  message("Generating AnaCoDa dM (Mutation Bias) file...")
+  
+  # 1. Define Standard Genetic Code
+  # Exclude Stop codons (*), Methionine (M), and Tryptophan (W)
+  # M and W have only 1 codon, so dM is undefined/irrelevant for them.
+  genetic_code <- Biostrings::GENETIC_CODE
+  valid_codons <- names(genetic_code)[!genetic_code %in% c("*", "M", "W")]
+  
+  # 2. Create Data Frame for calculations
+  dM_df <- data.frame(
+    AA = genetic_code[valid_codons],
+    Codon = valid_codons,
+    stringsAsFactors = FALSE
+  )
+  
+  # 3. Calculate Expected Frequency based on Nucleotide Pi
+  # (Assuming independence of positions, which is standard for intron-derived priors)
+  
+  # Helper to get prob of a triplet string
+  get_codon_prob <- function(codon) {
+    bases <- strsplit(codon, "")[[1]]
+    probs <- c(A=pi_A, C=pi_C, G=pi_G, T=pi_T)
+    return(prod(probs[bases]))
+  }
+  
+  dM_df$Expected_Freq <- sapply(dM_df$Codon, get_codon_prob)
+  
+  # 4. Calculate dM relative to reference codon
+  # AnaCoDa typically uses the last codon alphabetically as reference, 
+  # or simply requires log(freq / ref_freq).
+  
+  dM_df$dM <- NA
+  
+  for (aa in unique(dM_df$AA)) {
+    # Subset for this Amino Acid
+    aa_indices <- which(dM_df$AA == aa)
+    sub_data <- dM_df[aa_indices, ]
+    
+    # Identify Reference Codon (Last alphabetically is standard convention)
+    # e.g., for Alanine: GCA, GCC, GCG, GCT -> Reference is GCT
+    ref_codon_row <- sub_data[order(sub_data$Codon, decreasing = FALSE), ][nrow(sub_data), ]
+    ref_freq <- ref_codon_row$Expected_Freq
+    
+    # Calculate Log Ratio
+    # dM = log( frequency_current / frequency_ref )
+    dM_df$dM[aa_indices] <- log(dM_df$Expected_Freq[aa_indices] / ref_freq)
+  }
+  
+  # 5. Write to CSV
+  # AnaCoDa expects columns: AA, Codon, dM
+  write.csv(dM_df[, c("AA", "Codon", "dM")], file = output_file, 
+            row.names = FALSE, quote = FALSE)
+  
+  message(paste("dM file written to:", output_file))
+  return(dM_df)
 }

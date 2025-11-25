@@ -3522,6 +3522,7 @@ Q_matrices <- apply_q_matrix_to_windows(nuc_composition_filtered)
 
 # Extract the list of matrices from the data frame
 q_list <- Q_matrices$Q_matrix
+names(q_list) <- Q_matrices$window_idx
 
 # Use abind to stack the matrices along the third dimension (windows)
 # The dimensions will be [from base, to base, window index]
@@ -3555,6 +3556,42 @@ df_analysis <- df_analysis %>%
 
 GC_content <- aov(GC_content ~ seqnames, data = df_analysis)
 summary(GC_content)
+
+# These analysis suggest that the mutational pressure is not shared across all
+# genes. Let's cluster windows as a function of these matrices and exmploy Gaussian
+# mixed models to get putative clusters.
+
+# Getting rates out for each nucleotide and normalized directional mutation spectrum
+
+window_data <- data.frame(window_idx = Q_matrices$window_idx)
+out_rates <- base::do.call(base::sapply(X = q_list, FUN = function(x)
+                    {
+                      diag(x)
+                    }), 
+                     "rbind")
+
+# Calcultate dM
+
+# 1. Calculate Global Average Nucleotide Frequencies (weighted by total_bp)
+global_stats <- nuc_composition_filtered %>%
+  summarize(
+    total_genome_bp = sum(total_bp),
+    avg_pi_A = sum(pi_A * total_bp) / total_genome_bp,
+    avg_pi_C = sum(pi_C * total_bp) / total_genome_bp,
+    avg_pi_G = sum(pi_G * total_bp) / total_genome_bp,
+    avg_pi_T = sum(pi_T * total_bp) / total_genome_bp
+  )
+
+# 2. Generate the file
+dM_data <- generate_anacoda_dM(
+  pi_A = global_stats$avg_pi_A,
+  pi_C = global_stats$avg_pi_C,
+  pi_G = global_stats$avg_pi_G,
+  pi_T = global_stats$avg_pi_T,
+  output_file = "./data/Mguttatus_intron_derived_dM.csv"
+)
+
+
 
 ## *****************************************************************************
 ## 14) AnaCoDa-based analysis ----

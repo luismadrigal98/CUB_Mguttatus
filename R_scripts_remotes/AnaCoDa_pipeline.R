@@ -339,7 +339,7 @@ while((!done) && (run_number <= max.num.runs))
       if (!file.exists(dEta.file)) {
         stop(paste("dEta file not found:", dEta.file))
       }
-      parameter$initSelectionCategories(dEta.file,1,fix_dEta)
+      parameter$initSelectionCategories(dEta.file,1,fix.dEta)
     }
     
   } else {
@@ -424,7 +424,7 @@ while((!done) && (run_number <= max.num.runs))
   {
     ## Calculate auto-correlation and convergence of CSP traces
     param.conv <- TRUE
-    if (!fix_dEta)
+    if (!fix.dEta)
     {
       acfCSP(parameter,csp="Selection",numMixtures = numMixtures,samples=samples*percent.to.keep)
       for (i in 1:numMixtures)
