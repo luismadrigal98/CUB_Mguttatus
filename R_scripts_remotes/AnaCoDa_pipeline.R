@@ -332,7 +332,7 @@ while((!done) && (run_number <= max.num.runs))
       if (!file.exists(dM.file)) {
         stop(paste("dM file not found:", dM.file))
       }
-      parameter$initMutationCategories(dM.file,1,fix_dM)
+      parameter$initMutationCategories(dM.file,1,fix.dM)
     } 
     if (length(dEta.file) > 0)
     {
@@ -426,10 +426,18 @@ while((!done) && (run_number <= max.num.runs))
     param.conv <- TRUE
     if (!fix.dEta)
     {
-      acfCSP(parameter,csp="Selection",numMixtures = numMixtures,samples=samples*percent.to.keep)
+      acfCSP(parameter,
+             csp = "Selection",
+             numMixtures = numMixtures,
+             samples = samples * percent.to.keep)
       for (i in 1:numMixtures)
       {
-        param.diag<-convergence.test(trace,samples=samples*percent.to.keep,thin = thinning,what="Selection",mixture=i,frac1=0.25,frac2=0.5)
+        param.diag<-convergence.test(trace,
+                                     samples = samples * percent.to.keep,
+                                     thin = thinning,
+                                     what = "Selection",
+                                     mixture = i,
+                                     frac1 = 0.25,frac2 = 0.5)
         z.scores <- param.diag$z[which(abs(param.diag$z) > 1.96)]
         if (length(z.scores) > 5)
         {
@@ -438,18 +446,25 @@ while((!done) && (run_number <= max.num.runs))
         write(param.diag$z,paste0(dir_name,"/Parameter_est/convergence_delta_eta_",i,".txt"),ncolumns = 1)
       }
     }
-    if (!fix_dM)
+    if (!fix.dM)
     {
-      acfCSP(parameter,csp="Mutation",numMixtures = numMixtures,samples=samples*percent.to.keep)
+      acfCSP(parameter,csp = "Mutation",
+             numMixtures = numMixtures,
+             samples = samples * percent.to.keep)
       for (i in 1:numMixtures)
       {
-        param.diag<-convergence.test(trace,samples=samples*percent.to.keep,thin = thinning,what="Mutation",mixture=i,frac1=0.25,frac2=0.5)
+        param.diag<-convergence.test(trace,samples=samples*percent.to.keep,
+                                     thin = thinning,what="Mutation",
+                                     mixture = i,frac1 = 0.25, frac2 = 0.5)
         z.scores <- param.diag$z[which(abs(param.diag$z) > 1.96)]
         if (length(z.scores) > 5)
         {
           param.conv <- FALSE
         }
-        write(param.diag$z,paste0(dir_name,"/Parameter_est/convergence_delta_M_",i,".txt"),ncolumns = 1)
+        write(param.diag$z,
+              paste0(dir_name,
+                     "/Parameter_est/convergence_delta_M_",i,".txt"),
+              ncolumns = 1)
       }
     }
   }
@@ -459,8 +474,12 @@ while((!done) && (run_number <= max.num.runs))
   createTracePlots(trace=trace,model=model,genome=genome,numMixtures=numMixtures,samples=samples,samples.percent.keep = percent.to.keep,mixture.labels = mixture.labels)
   dev.off()
   
-  diag <- convergence.test(mcmc,samples = samples*percent.to.keep,thin=thinning,frac1=0.1)
-  z<-abs(diag$z)
+  diag <- convergence.test(mcmc,
+                           samples = samples * percent.to.keep,
+                           thin = thinning, 
+                           frac1 = 0.1,
+                           frac2 = 0.5)
+  z <- abs(diag$z)
   
   ## Can end if overall log(posterior) and CSP parameters have converged
   #done <- (z < 1.96) && param.conv

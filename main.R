@@ -3570,6 +3570,22 @@ out_rates <- base::do.call("rbind", base::lapply(X = q_list, FUN = function(x)
                     }))
 window_data <- window_data |> cbind(as.data.frame(out_rates))
 
+# Getting six representative instantaneous transition rates
+
+trans_rates <- base::do.call("rbind", base::lapply(X = q_list, FUN = function(x)
+{
+  c(
+    "A>C" = x["A", "C"], # A --> C
+    "A>G" = x["A", "G"], # A --> G
+    "A>T" = x["A", "T"], # A --> T
+    "C>G" = x["C", "G"], # C --> G
+    "C>T" = x["C", "T"], # C --> T
+    "G>T" = x["G", "T"] # G --> T
+  )
+}))
+
+window_data <- window_data |> cbind(trans_rates)
+
 # Calcultate dM
 
 # 1. Calculate Global Average Nucleotide Frequencies (weighted by total_bp)
@@ -3590,8 +3606,6 @@ dM_data <- generate_anacoda_dM(
   pi_T = global_stats$avg_pi_T,
   output_file = "./data/Mguttatus_intron_derived_dM.csv"
 )
-
-
 
 ## *****************************************************************************
 ## 14) AnaCoDa-based analysis ----
