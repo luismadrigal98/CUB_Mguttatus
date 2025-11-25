@@ -419,67 +419,122 @@ apply_q_matrix_to_windows <- function(nuc_composition_df, kappa = 2) {
   return(df_with_q_matrix)
 }
 
-plot_genomic_rate_variation <- function(df_plot) 
-{
-  #' @title Plot Mutational Pressure and GC Content Across the Genome
-  #'
-  #' @description Generates a faceted plot showing the change in a mutation rate (Q_AG) 
-  #' and GC content across all genomic windows, grouped by chromosome.
-  #'
-  #' @param df_plot Data frame in long format containing seqnames, midpoint, Variable, and Rate_Value.
-  #' @return A ggplot object.
-  #' ___________________________________________________________________________
+plot_genomic_rate_variation <- function(df_plot) {
   
-  # Define labels for the facets
+  #' @title Plot Mutational Pressure and GC Content (with Legend)
+  
+  require(ggplot2)
+  require(scales)
+  
+  # Define nice labels for the facet rows
   facet_labels <- c(
-    "GC_content" = "Intron GC Content (pi_C + pi_G)",
-    "Q_AG_rate" = "A -> G Transition Rate (Q_AG)"
+    "GC_content" = "Intron GC Content",
+    "Q_AG_rate" = "A -> G Transition Rate"
   )
   
-  p <- ggplot(df_plot, aes(x = midpoint, y = Rate_Value, color = seqnames)) +
+  p <- ggplot(df_plot, aes(x = midpoint, y = Rate_Value, color = Variable)) +
     
-    # Plot data as points (or use geom_line/smooth if preferred)
-    geom_point(alpha = 0.6, size = 1.5) +
+    # 1. Raw Data: Use faint lines
+    geom_line(alpha = 0.4, linewidth = 0.2) +
     
-    # Add a local smoothing line (LOESS) to highlight trends within each chromosome
-    geom_smooth(method = "loess", se = FALSE, linewidth = 0.5) +
+    # 2. Trend: Add a smoothing line
+    geom_smooth(se = FALSE, method = "loess", span = 0.3, 
+                color = "black", linewidth = 0.8) +
     
-    # Split the plot by Chromosome (seqnames)
-    facet_grid(Variable ~ seqnames, scales = "free_x", 
+    # 3. Faceting
+    facet_grid(Variable ~ seqnames, 
+               scales = "free", 
+               space = "free_x", 
                labeller = labeller(Variable = facet_labels)) +
     
-    # --- Aesthetics ---
-    scale_color_discrete(name = "Chromosome") +
-    labs(
-      title = "Variation in Mutational Pressure Across the Genome",
-      subtitle = paste("Windows filtered to >= 500 BP coverage."),
-      x = "Genomic Position (Window Midpoint)",
-      y = "Value"
+    # 4. Scaling
+    scale_x_continuous(labels = unit_format(unit = "", scale = 1e-6), 
+                       breaks = pretty_breaks(n = 3)) +
+    
+    # 5. Colors & Legend Keys
+    # FIX: Added 'labels' and 'name' to make the legend readable
+    scale_color_manual(
+      values = c("GC_content" = "#1f78b4", "Q_AG_rate" = "#e31a1c"),
+      labels = c("GC_content" = "Intron GC Content", "Q_AG_rate" = "A -> G Transition Rate"),
+      name = "Metric"
     ) +
+    
+    labs(
+      title = "Genomic Landscape of Mutational Pressure",
+      subtitle = "Raw window values (faint lines) and smoothed trends (black lines)",
+      x = "Genomic Position (Mb)",
+      y = "Rate / Frequency"
+    ) +
+    
     theme_bw() +
     theme(
-      legend.position = "none", # Legend is redundant since chromosomes are in facets
-      axis.text.x = element_blank(), # Hide x-axis text for cleanliness
-      axis.ticks.x = element_blank(),
-      panel.spacing.x = unit(0.1, "lines"), # Reduce space between chromosome panels
-      strip.text.x = element_text(angle = 90, size = 8) # Rotate chromosome labels
+      # FIX: Changed from "none" to "bottom" (or "right")
+      legend.position = "bottom", 
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      panel.spacing.x = unit(0.1, "lines"), 
+      strip.background = element_rect(fill = "grey95"),
+      strip.text = element_text(face = "bold")
     )
   
   return(p)
 }
-
 # ******************************************************************************
 # STEP 4: Cluster genomic windows by mutational pressure ----
 # ______________________________________________________________________________
 
-
+make_clusters <- function(data, G = 1:5, 
+                          check_convergence = T,
+                          retrieve_full_model = T)
+{
+  #' Functions to cluster genomic windows as a funciton of mutational spectrum.
+  #' The clustering exercise is based on Gaussian Mixed Models (GMM)
+  #' 
+  #' @param data Data frame with windows id in the first column and features for
+  #' clustering (e. g. PC as summary variables)
+  #' @param G Number of groups or clusters.
+  #' @param check_convergence Whether to check if the GMM converged if the G selected
+  #' is the ceiling defined by the user.
+  #' @param retrieve_full_model Whether to retrive the full model or not
+  #' 
+  #' @return Cluster assignations.
+  #' ___________________________________________________________________________
+  
+  model <- mclust::Mclust(data, G = G)
+  G_empirical <- model$G
+  
+  if (check_convergence) 
+  {
+    # G_selected must be lower than G_empirical (this is my convergence criterium)
+    while(max(G) == G_empirical)
+    {
+      # Create new cealing
+      G = G + 10
+      
+      # Fir the GMM
+      model <- mclust::Mclust(data_ts, G = G)
+      G_empirical <- model$G
+    }
+  }
+  
+  if (!retrieve_full_model)
+  {
+    cluster_res <- model$classification
+  }
+  else
+  {
+    cluster_res <- model
+  }
+  
+  return(cluster_res)
+}
 
 # ******************************************************************************
 # STEP 5: Generate AnaCoDa dM File ----
 # ______________________________________________________________________________
 
-generate_anacoda_dM <- function(pi_A, pi_C, pi_G, pi_T, output_file) {
-  
+generate_anacoda_dM <- function(pi_A, pi_C, pi_G, pi_T, output_file,
+                                splitS = TRUE) 
+{
   message("Generating AnaCoDa dM (Mutation Bias) file...")
   
   # 1. Define Standard Genetic Code
@@ -487,6 +542,14 @@ generate_anacoda_dM <- function(pi_A, pi_C, pi_G, pi_T, output_file) {
   # M and W have only 1 codon, so dM is undefined/irrelevant for them.
   genetic_code <- Biostrings::GENETIC_CODE
   valid_codons <- names(genetic_code)[!genetic_code %in% c("*", "M", "W")]
+  
+  if(splitS)
+  {
+    # Assign Z to the 2-fold codon family of S (AGY)
+    
+    codon_idx <- names(genetic_code) %in% c("AGT", "AGC")
+    genetic_code[codon_idx] <- "Z"
+  }
   
   # 2. Create Data Frame for calculations
   dM_df <- data.frame(

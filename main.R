@@ -26,7 +26,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'viridis', 'cubar', 'kohonen',
                         'AnaCoDa', 'rtracklayer', 'tidyverse',
                         'txdbmaker', 'Rsamtools', 'purrr',
-                        'abind')
+                        'abind', 'scales', 'mclust')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -231,11 +231,11 @@ expected_curve <- data.frame(
 # Create enhanced ENC plot
 p_enc_cdc <- ggplot() +
   # Background: non-significant genes
-  geom_point(data = enc_cdc_data %>% filter(!CDC_significant | is.na(CDC_significant)),
+  geom_point(data = enc_cdc_data |> filter(!CDC_significant | is.na(CDC_significant)),
              aes(x = GC3s, y = ENC), 
              color = "gray70", alpha = 0.3, size = 0.8) +
   # Foreground: CDC-significant genes
-  geom_point(data = enc_cdc_data %>% filter(CDC_significant),
+  geom_point(data = enc_cdc_data |> filter(CDC_significant),
              aes(x = GC3s, y = ENC, color = CDC_category), 
              size = 2, alpha = 0.7) +
   # Expected neutrality curve (Wright 1990)
@@ -273,7 +273,7 @@ cat("Enhanced ENC plot saved: ./results/ENC_plot_CDC_highlighted.pdf\n\n")
 cat("=== Position Analysis: CDC-Significant Genes Relative to Neutrality Curve ===\n")
 
 # Calculate deviation from expected ENC
-enc_cdc_data <- enc_cdc_data %>%
+enc_cdc_data <- enc_cdc_data |>
   mutate(
     ENC_expected = 2 + GC3s + 29 / (GC3s^2 + (1 - GC3s)^2),
     ENC_deviation = ENC - ENC_expected,
@@ -281,9 +281,9 @@ enc_cdc_data <- enc_cdc_data %>%
   )
 
 # Compare CDC-significant vs non-significant genes
-cdc_position_summary <- enc_cdc_data %>%
-  filter(!is.na(CDC_significant)) %>%
-  group_by(CDC_significant) %>%
+cdc_position_summary <- enc_cdc_data |>
+  filter(!is.na(CDC_significant)) |>
+  group_by(CDC_significant) |>
   summarize(
     n = n(),
     mean_ENC = mean(ENC, na.rm = TRUE),
@@ -302,14 +302,14 @@ if (n_sig > 0) {
   # Test if CDC-significant genes have different ENC deviation
   wilcox_enc <- wilcox.test(
     ENC_deviation ~ CDC_significant,
-    data = enc_cdc_data %>% filter(!is.na(CDC_significant))
+    data = enc_cdc_data |> filter(!is.na(CDC_significant))
   )
   cat(sprintf("ENC deviation (CDC-sig vs non-sig): W = %.0f, p = %.2e\n", 
               wilcox_enc$statistic, wilcox_enc$p.value))
   
   # Test if more CDC-significant genes are below the curve
   below_curve_table <- table(
-    enc_cdc_data %>% dplyr::filter(!is.na(CDC_significant)) %>% dplyr::select(CDC_significant, Below_curve)
+    enc_cdc_data |> dplyr::filter(!is.na(CDC_significant)) |> dplyr::select(CDC_significant, Below_curve)
   )
   chi_test <- chisq.test(below_curve_table)
   cat(sprintf("Position relative to curve (chi-squared): X² = %.2f, p = %.2e\n", 
@@ -317,7 +317,7 @@ if (n_sig > 0) {
 }
 
 # Create density plot of ENC deviation
-p_enc_deviation <- ggplot(enc_cdc_data %>% filter(!is.na(CDC_significant)), 
+p_enc_deviation <- ggplot(enc_cdc_data |> filter(!is.na(CDC_significant)), 
                           aes(x = ENC_deviation, fill = CDC_significant)) +
   geom_density(alpha = 0.5) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
@@ -812,32 +812,32 @@ cat("\n=== 7.1: Absolute Codon Frequencies in Top 5% vs Rest ===\n")
 cat("Comparing raw codon usage to motivate enrichment-based correction\n\n")
 
 # Get gene lists
-top5_genes <- integrated_data %>%
-  filter(Expression_Group == "Top 5%") %>%
+top5_genes <- integrated_data |>
+  filter(Expression_Group == "Top 5%") |>
   pull(Gene_name)
 
-rest_genes <- integrated_data %>%
-  filter(Expression_Group %in% c("Middle 90%", "Bottom 5%")) %>%
+rest_genes <- integrated_data |>
+  filter(Expression_Group %in% c("Middle 90%", "Bottom 5%")) |>
   pull(Gene_name)
 
 # Calculate absolute frequencies (sum of codon counts)
 codon_cols <- setdiff(names(codon_usage), "Gene_name")
 
-freq_top5 <- codon_usage %>%
-  dplyr::filter(Gene_name %in% top5_genes) %>%
-  dplyr::select(all_of(codon_cols)) %>%
-  summarise(across(everything(), sum, na.rm = TRUE)) %>%
+freq_top5 <- codon_usage |>
+  dplyr::filter(Gene_name %in% top5_genes) |>
+  dplyr::select(all_of(codon_cols)) |>
+  summarise(across(everything(), sum, na.rm = TRUE)) |>
   pivot_longer(everything(), names_to = "Codon", values_to = "Count_Top5")
 
-freq_rest <- codon_usage %>%
-  dplyr::filter(Gene_name %in% rest_genes) %>%
-  dplyr::select(all_of(codon_cols)) %>%
-  summarise(across(everything(), sum, na.rm = TRUE)) %>%
+freq_rest <- codon_usage |>
+  dplyr::filter(Gene_name %in% rest_genes) |>
+  dplyr::select(all_of(codon_cols)) |>
+  summarise(across(everything(), sum, na.rm = TRUE)) |>
   pivot_longer(everything(), names_to = "Codon", values_to = "Count_Rest")
 
 # Combine and calculate proportions
-freq_comparison <- freq_top5 %>%
-  left_join(freq_rest, by = "Codon") %>%
+freq_comparison <- freq_top5 |>
+  left_join(freq_rest, by = "Codon") |>
   mutate(
     Total_Top5 = sum(Count_Top5),
     Total_Rest = sum(Count_Rest),
@@ -847,16 +847,16 @@ freq_comparison <- freq_top5 %>%
   )
 
 # Add amino acid information
-freq_comparison <- freq_comparison %>%
-  mutate(AA = genetic_code_dna_long[Codon]) %>%
+freq_comparison <- freq_comparison |>
+  mutate(AA = genetic_code_dna_long[Codon]) |>
   filter(!is.na(AA) & AA != "STOP")
 
 # Convert to long format for plotting
-freq_long <- freq_comparison %>%
-  dplyr::select(Codon, AA, Freq_Top5, Freq_Rest) %>%
+freq_long <- freq_comparison |>
+  dplyr::select(Codon, AA, Freq_Top5, Freq_Rest) |>
   pivot_longer(cols = c(Freq_Top5, Freq_Rest), 
                names_to = "Group", 
-               values_to = "Frequency") %>%
+               values_to = "Frequency") |>
   dplyr::mutate(Group = recode(Group, 
                                "Freq_Top5" = "Top 5%",
                                "Freq_Rest" = "Rest"))
@@ -896,9 +896,9 @@ cat(sprintf("Rest genes: %d genes, %d total codons\n",
 
 # Show codons with largest absolute differences
 cat("\nCodons with largest frequency differences (Top 5% - Rest):\n")
-top_diff <- freq_comparison %>%
-  arrange(desc(abs(Freq_Diff))) %>%
-  dplyr::select(Codon, AA, Freq_Top5, Freq_Rest, Freq_Diff) %>%
+top_diff <- freq_comparison |>
+  arrange(desc(abs(Freq_Diff))) |>
+  dplyr::select(Codon, AA, Freq_Top5, Freq_Rest, Freq_Diff) |>
   head(10)
 print(top_diff)
 
@@ -1135,10 +1135,10 @@ write.csv(corrected_classification,
 cat("\n✓ Corrected classification saved: ./results/codon_classification_corrected.csv\n")
 
 # Update the codon_test_results with corrected classification for biplots
-codon_test_results <- codon_test_results %>%
-  left_join(corrected_classification %>% 
+codon_test_results <- codon_test_results |>
+  left_join(corrected_classification |> 
               dplyr::select(Codon, Combined_Classification),
-            by = "Codon") %>%
+            by = "Codon") |>
   dplyr::mutate(
     # Update Classification to be more accurate
     Classification_Original = Classification,
@@ -1928,14 +1928,14 @@ Ala_data <- integrated_data |>
 Ala_data <- Ala_data |>
   left_join(codon_usage[, c("Gene_name", "GCT", "GCC", "GCA", "GCG")])
 
-Ala_data_clean <- Ala_data %>%
+Ala_data_clean <- Ala_data |>
   filter(
     !is.na(GCT) & !is.na(GCC) & !is.na(GCA) & !is.na(GCG) &
       !is.na(High_exp_log2) & !is.na(GC3s) & !is.na(CDS_length_nt)
-  ) %>%
+  ) |>
   mutate(
     total_Ala = GCT + GCC + GCA + GCG
-  ) %>%
+  ) |>
   filter(total_Ala > 0)  # Remove genes with no Ala codons
 
 cat("Original rows:", nrow(Ala_data), "\n")
@@ -1943,7 +1943,7 @@ cat("After cleaning:", nrow(Ala_data_clean), "\n")
 cat("Removed:", nrow(Ala_data) - nrow(Ala_data_clean), "rows\n\n")
 
 # Calculate proportions for each codon
-Ala_data_clean <- Ala_data_clean %>%
+Ala_data_clean <- Ala_data_clean |>
   mutate(
     prop_GCT = GCT / total_Ala,
     prop_GCC = GCC / total_Ala,
@@ -1955,11 +1955,11 @@ Ala_data_clean <- Ala_data_clean %>%
 Ala_data <- Ala_data_clean
 
 # Visualize: How do codon proportions change with expression?
-plot_data <- Ala_data %>%
-  dplyr::select(High_exp_log2, prop_GCT, prop_GCC, prop_GCA, prop_GCG) %>%
+plot_data <- Ala_data |>
+  dplyr::select(High_exp_log2, prop_GCT, prop_GCC, prop_GCA, prop_GCG) |>
   pivot_longer(cols = starts_with("prop_"), 
                names_to = "Codon", 
-               values_to = "Proportion") %>%
+               values_to = "Proportion") |>
   dplyr::mutate(Codon = gsub("prop_", "", Codon))
 
 ggplot(plot_data, aes(x = High_exp_log2, y = Proportion, color = Codon)) +
@@ -2080,11 +2080,11 @@ write.csv(master_gam_table,
 cat("✓ GAM coefficients saved: ./results/section_8.1_GAM_selection_coefficients.csv\n\n")
 
 # Find data-driven preferred codons (highest selection slope per family)
-gam_preferred_codons <- master_gam_table %>%
-  dplyr::group_by(Family) %>%
-  dplyr::filter(Selection_Slope == max(Selection_Slope)) %>%
-  dplyr::slice(1) %>%
-  dplyr::ungroup() %>%
+gam_preferred_codons <- master_gam_table |>
+  dplyr::group_by(Family) |>
+  dplyr::filter(Selection_Slope == max(Selection_Slope)) |>
+  dplyr::slice(1) |>
+  dplyr::ungroup() |>
   dplyr::select(Family, Codon, Selection_Slope, p_value)
 
 cat("=== Data-Driven Preferred Codons (GAM approach) ===\n")
@@ -2142,11 +2142,11 @@ write.csv(master_glm_table,
 cat("✓ GLM coefficients saved: ./results/section_8.1_GLM_BoxCox_selection_coefficients.csv\n\n")
 
 # Find data-driven preferred codons (GLM approach)
-glm_preferred_codons <- master_glm_table %>%
-  dplyr::group_by(Family) %>%
-  dplyr::filter(Selection_Slope == max(Selection_Slope)) %>%
-  dplyr::slice(1) %>%
-  dplyr::ungroup() %>%
+glm_preferred_codons <- master_glm_table |>
+  dplyr::group_by(Family) |>
+  dplyr::filter(Selection_Slope == max(Selection_Slope)) |>
+  dplyr::slice(1) |>
+  dplyr::ungroup() |>
   dplyr::select(Family, Codon, Selection_Slope, p_value)
 
 cat("=== Data-Driven Preferred Codons (GLM Box-Cox approach) ===\n")
@@ -2194,8 +2194,8 @@ cat("✓ Updated preferred codons table saved: ./results/section_8.1_GLM_preferr
 
 # Show summary
 cat("Summary of preference patterns:\n")
-summary_table <- preferences_updated_glm %>%
-  dplyr::group_by(Preference_Pattern) %>%
+summary_table <- preferences_updated_glm |>
+  dplyr::group_by(Preference_Pattern) |>
   dplyr::summarise(Count = n(), .groups = "drop")
 print(summary_table)
 cat("\n")
@@ -2263,23 +2263,23 @@ cat("\n")
 cat("\n=== 8.1.5: Statistical Summary ===\n\n")
 
 # How many codons show significant selection (using FDR-corrected p-values)?
-gam_significant <- master_gam_table %>%
+gam_significant <- master_gam_table |>
   dplyr::filter(Codon != Baseline, 
                 !is.na(p_adj),
                 p_adj < 0.05)
 
-glm_significant <- master_glm_table %>%
+glm_significant <- master_glm_table |>
   dplyr::filter(Codon != Baseline, 
                 !is.na(p_adj),
                 p_adj < 0.05)
 
 cat(sprintf("GAM approach: %d / %d codons show significant selection (p < 0.05)\n",
             nrow(gam_significant), 
-            nrow(master_gam_table %>% dplyr::filter(Codon != Baseline))))
+            nrow(master_gam_table |> dplyr::filter(Codon != Baseline))))
 
 cat(sprintf("GLM approach: %d / %d codons show significant selection (p < 0.05)\n\n",
             nrow(glm_significant),
-            nrow(master_glm_table %>% dplyr::filter(Codon != Baseline))))
+            nrow(master_glm_table |> dplyr::filter(Codon != Baseline))))
 
 # Direction of selection (positive = increases with expression)
 cat("Direction of selection:\n")
@@ -2292,14 +2292,14 @@ cat(sprintf("  GLM: %d positive, %d negative\n\n",
 
 # Families with strongest selection signal
 cat("Families with strongest selection signal (GAM approach):\n")
-family_summary_gam <- master_gam_table %>%
-  dplyr::filter(Codon != Baseline) %>%
-  dplyr::group_by(Family) %>%
+family_summary_gam <- master_gam_table |>
+  dplyr::filter(Codon != Baseline) |>
+  dplyr::group_by(Family) |>
   dplyr::summarise(
     Max_Slope = max(Selection_Slope),
     Min_p = min(p_value),
     N_Significant = sum(p_value < 0.05)
-  ) %>%
+  ) |>
   dplyr::arrange(dplyr::desc(N_Significant), Min_p)
 
 print(family_summary_gam, n = 10)
@@ -2309,12 +2309,12 @@ cat("\n")
 cat("=== Comparing with CAI-Based Preferred Codons ===\n\n")
 
 # Merge GAM preferred with CAI preferred
-cai_vs_gam <- preferred_codons_corrected %>%
-  dplyr::select(Family = AA, CAI_Preferred = Codon) %>%
+cai_vs_gam <- preferred_codons_corrected |>
+  dplyr::select(Family = AA, CAI_Preferred = Codon) |>
   dplyr::left_join(
-    gam_preferred_codons %>% dplyr::select(Family, GAM_Preferred = Codon),
+    gam_preferred_codons |> dplyr::select(Family, GAM_Preferred = Codon),
     by = "Family"
-  ) %>%
+  ) |>
   dplyr::mutate(Agreement = (CAI_Preferred == GAM_Preferred))
 
 cat(sprintf("Agreement between CAI and GAM preferred codons: %d / %d (%.1f%%)\n\n",
@@ -2323,7 +2323,7 @@ cat(sprintf("Agreement between CAI and GAM preferred codons: %d / %d (%.1f%%)\n\
             100 * mean(cai_vs_gam$Agreement, na.rm = TRUE)))
 
 # Show disagreements
-disagreements <- cai_vs_gam %>% dplyr::filter(!Agreement)
+disagreements <- cai_vs_gam |> dplyr::filter(!Agreement)
 if (nrow(disagreements) > 0) {
   cat("Families where CAI and GAM disagree:\n")
   print(disagreements)
@@ -3011,14 +3011,14 @@ ca_codon_loadings <- ca_codon_loadings[ca_codon_loadings$Amino_Acid != "STOP", ]
 
 # Create full codon status table (all codons, not just top ones)
 # Rank all codons by Dim 1 within each amino acid family
-ca_codon_status <- ca_codon_loadings %>%
-  group_by(Amino_Acid) %>%
+ca_codon_status <- ca_codon_loadings |>
+  group_by(Amino_Acid) |>
   mutate(
     Rank = rank(-`Dim 1`, ties.method = "first"),
     Status = ifelse(Rank == 1, "Preferred", "Non-Preferred")
-  ) %>%
-  ungroup() %>%
-  select(Codon, Amino_Acid, Status, `Dim 1`, Rank) %>%
+  ) |>
+  ungroup() |>
+  select(Codon, Amino_Acid, Status, `Dim 1`, Rank) |>
   as.data.frame()
 
 # Convert codons to RNA format (T -> U) for compatibility with pairing function
@@ -3293,8 +3293,8 @@ ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
   )
 
 # We'll create 5 quantile groups (quintiles) for GC3s
-integrated_data <- integrated_data %>%
-  mutate(gc3s_bin = ntile(GC3s, 5)) %>%
+integrated_data <- integrated_data |>
+  mutate(gc3s_bin = ntile(GC3s, 5)) |>
   
   # Optional: Make the labels nicer for the plot
   mutate(gc3s_label = factor(gc3s_bin, 
@@ -3334,8 +3334,8 @@ csf_data <- csf_data |>
 
 # 12.5.1) F_preferred vs Expression ----
 
-all_codon_data <- integrated_data %>%
-  left_join(csf_data, by = "Gene_name") %>%
+all_codon_data <- integrated_data |>
+  left_join(csf_data, by = "Gene_name") |>
   na.omit()
 
 # Standardizing the gene position from 0 to 1 per gene
@@ -3513,12 +3513,53 @@ nuc_composition <- get_base_composition_per_windows(genome_seqinfo = introns_lis
 
 windows_thinned <- refine_windows_for_genes(nuc_composition, 1000)
 
-nuc_composition_filtered <- nuc_composition %>%
-  filter(total_bp >= 1000)
+nuc_composition_filtered <- nuc_composition |>
+  filter(total_bp >= 1000) |>
+  dplyr::mutate(mid_point = (start + end ) / 2)
 
 # Calculate Q matrix
 
 Q_matrices <- apply_q_matrix_to_windows(nuc_composition_filtered)
+
+# Plot frequency sprectrum across windows
+
+freq_pi_nuc_long <- nuc_composition_filtered |>
+  pivot_longer(cols = contains("pi"),
+               names_to = "Pi_nuc",
+               values_to = "Freq")
+
+ggplot(data = freq_pi_nuc_long, 
+       mapping = aes(x = mid_point, 
+                     y = Freq, 
+                     color = Pi_nuc)) +
+  
+  # 1. Light lines for raw data (shows the noise/variance)
+  geom_line(alpha = 0.2, linewidth = 0.3) + 
+  
+  # 2. Smooth trend lines (shows the mutational pressure signal)
+  geom_smooth(se = FALSE, span = 0.2, linewidth = 1) +
+  
+  # 3. Facet by Chromosome to separate genomic contexts
+  # scales = "free_x" ensures chromosomes with different lengths fit well
+  # space = "free_x" keeps the physical scale consistent across panels
+  facet_grid(. ~ seqnames, scales = "free_x", space = "free_x") +
+  
+  # 4. Formatting
+  scale_x_continuous(labels = unit_format(unit = "Mb", scale = 1e-6), 
+                     breaks = pretty_breaks(n = 3)) +
+  labs(
+    x = "Genomic Position (Mb)",
+    y = "Nucleotide Frequency (Pi)",
+    title = "Mutational Spectrum Across the Genome"
+  ) +
+  theme_custom() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Rotate labels if crowded
+    panel.spacing = unit(0.1, "lines") # Tighten the gap between chromosomes
+  )
+
+ggsave(filename = "results/pi_spectrum_across_windows.pdf", width = 16,
+       height = 8)
 
 # Extract the list of matrices from the data frame
 q_list <- Q_matrices$Q_matrix
@@ -3540,10 +3581,10 @@ message(paste("Created Q_array with dimensions:",
 
 # Searching for evidence of variation in M
 
-df_analysis <- Q_matrices %>%
+df_analysis <- Q_matrices |>
   # Add the extracted rate as a new column
-  dplyr::mutate(Q_AG_rate = Q_array["A", "G", ]) %>%
-  dplyr::mutate(Q_AT_rate = Q_array["A", "T", ]) %>%
+  dplyr::mutate(Q_AG_rate = Q_array["A", "G", ]) |>
+  dplyr::mutate(Q_AT_rate = Q_array["A", "T", ]) |>
   # Ensure chromosome names are a factor for ANOVA
   dplyr::mutate(seqnames = as.factor(seqnames))
 
@@ -3551,11 +3592,34 @@ df_analysis <- Q_matrices %>%
 rate_anova <- aov(Q_AT_rate ~ seqnames, data = df_analysis)
 summary(rate_anova)
 
-df_analysis <- df_analysis %>%
+df_analysis <- df_analysis |>
   dplyr::mutate(GC_content = pi_G + pi_C)
 
 GC_content <- aov(GC_content ~ seqnames, data = df_analysis)
 summary(GC_content)
+
+df_plot <- df_analysis |>
+  dplyr::mutate(GC_content = pi_G + pi_C) |>
+  
+  # B. Define the X-axis position (midpoint of the window)
+  dplyr::mutate(midpoint = (start + end) / 2) |>
+  
+  # C. Select only the columns needed for the plot
+  #    (Chromosome, Position, and the two metrics)
+  dplyr::select(seqnames, midpoint, GC_content, Q_AG_rate) |>
+  
+  # D. Reshape to "Long" format for ggplot
+  #    This stacks 'GC_content' and 'Q_AG_rate' into a single column
+  pivot_longer(
+    cols = c(GC_content, Q_AG_rate),
+    names_to = "Variable",
+    values_to = "Rate_Value"
+  )
+
+plot_genomic_rate_variation(df_plot)
+
+ggsave(filename = "results/genomic_rate_variation.pdf", width = 16,
+       height = 8)
 
 # These analysis suggest that the mutational pressure is not shared across all
 # genes. Let's cluster windows as a function of these matrices and exmploy Gaussian
@@ -3586,10 +3650,24 @@ trans_rates <- base::do.call("rbind", base::lapply(X = q_list, FUN = function(x)
 
 window_data <- window_data |> cbind(trans_rates)
 
+# Getting summary variables
+
+widow_data <- window_data |>
+  dplyr::select(window_idx) |>
+  cbind(prcomp(x = as.matrix(window_data[, -1]), center = T,
+               scale = T)$x[, paste0("PC", 1:4)])
+
+# Getting the clusters
+
+clusters_localM <- make_clusters(data = window_data[, -1], G = 1:10)
+
+# NOTE: GMM does not find evidence for multiple clusters, and the model with greater
+# BIC was EEE with one component.
+
 # Calcultate dM
 
 # 1. Calculate Global Average Nucleotide Frequencies (weighted by total_bp)
-global_stats <- nuc_composition_filtered %>%
+global_stats <- nuc_composition_filtered |>
   summarize(
     total_genome_bp = sum(total_bp),
     avg_pi_A = sum(pi_A * total_bp) / total_genome_bp,
