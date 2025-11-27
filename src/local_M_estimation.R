@@ -587,8 +587,8 @@ generate_anacoda_dM <- function(pi_A, pi_C, pi_G, pi_T, output_file,
     ref_freq <- ref_codon_row$Expected_Freq
     
     # Calculate Log Ratio
-    # dM = log( frequency_current / frequency_ref )
-    dM_df$dM[aa_indices] <- log(dM_df$Expected_Freq[aa_indices] / ref_freq)
+    # dM = log( frequency_ref / frequency_current )
+    dM_df$dM[aa_indices] <- log(ref_freq / dM_df$Expected_Freq[aa_indices])
   }
   
   # 5. Write to CSV

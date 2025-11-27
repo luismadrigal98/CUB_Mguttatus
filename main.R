@@ -26,7 +26,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'viridis', 'cubar', 'kohonen',
                         'AnaCoDa', 'rtracklayer', 'tidyverse',
                         'txdbmaker', 'Rsamtools', 'purrr',
-                        'abind', 'scales', 'mclust')
+                        'abind', 'scales', 'mclust', 'coda',
+                        'admisc')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T, n_cores = 10)
@@ -3689,51 +3690,76 @@ dM_data <- generate_anacoda_dM(
 ## 14) AnaCoDa-based analysis ----
 ## _____________________________________________________________________________
 
-# 14.1) Fitting the initial modeling assuming ConstMut model ----
+## Results from AnaCoDa framework can be obtained by running:
 
-# Read in genome
-genome <- initializeGenomeObject(file = "data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa")
+# Rscript R_scripts_remotes/AnaCoDa_pipeline.R \
+# -i ./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnlyClean.fa \
+# -o ./MCMC_results/results_dM_fixed \
+# -s 10000 \
+# --est_csp \
+# --est_phi \
+# --est_hyp \
+# -n 10 \
+# -d 4000 \
+# -a 25 \
+# --max_num_runs 3 \
+# --fix_dM \
+# --dM ./data/Mguttatus_intron_derived_dM.csv
+# 
+# echo "Job finished on $(date)"
 
-# Define the parameters for the MCMC
-parameter <- initializeParameterObject(genome = genome, 
-                                       sphi = 1, 
-                                       num.mixtures = 1, 
-                                       gene.assignment = rep(1, length(genome)))
+# 14.1) Retrieving AnaCoDa results to analyze congruence between runs (dM fixed) ----
 
-# Initialize the model
-model_ConstMut <- initializeModelObject(parameter = parameter, model = "ROC")
+# Setup paths for your 3 runs
+run_dirs <- c(
+  "./MCMC_results_backup/results_dM_fixed/run_1",
+  "./MCMC_results_backup/results_dM_fixed/run_2",
+  "./MCMC_results_backup/results_dM_fixed/run_3"
+)
 
-# Initialize the MCMC object
-mcmc_ConstMut <- initializeMCMCObject(samples = 5000, 
-                                      thinning = 10, 
-                                      adaptive.width=50)
+# Function to extract the Selection Trace for a specific Codon (e.g., Alanine GCC)
+get_selection_trace <- function(dir, codon_index = 1) {
+  # Load parameters
+  param <- loadParameterObject(paste(dir, "R_objects/parameter.Rda", sep="/"))
+  trace <- param$getTraceObject()
+  
+  # Get Selection Trace (Mixture 1)
+  # This returns a matrix: Rows = Samples, Cols = Codons
+  sel_trace <- trace$getCodonSpecificParameterTrace(1) 
+  
+  # Return the trace for the first non-reference codon (usually an index like 1 or 2)
+  # You might need to check which index corresponds to a GC-rich codon.
+  return(sel_trace[, codon_index])
+}
 
-# Run the MCMC
-runMCMC(mcmc = mcmc_ConstMut, 
-        genome = genome, 
-        model = model_ConstMut)
+# 1. Load Traces from all 3 runs
+# Let's check a few arbitrary indices to be sure. 
+# (AnaCoDa usually stores 40 estimated parameters for the 59-61 codons)
+chain1 <- get_selection_trace(run_dirs[1])
+chain2 <- get_selection_trace(run_dirs[2])
+chain3 <- get_selection_trace(run_dirs[3])
 
-# Saving results
-writeParameterObject(parameter = parameter, file = "results/parameter_ConstMut_out.Rda")
-writeMCMCObject(mcmc = mcmc_ConstMut, file = "results/mcmc_ConstMut_out.Rda")
+# 2. Visual Check: Did they find the same mean?
+means <- c(mean(chain1), mean(chain2), mean(chain3))
+print("Means of the 3 runs for a sample codon:")
+print(means)
 
-# Reading in into R
-parameter_ConstMut <- AnaCoDa::loadParameterObject(files = "results/parameter_ConstMut_out.Rda")
-mcmc <- loadMCMCObject(file = "results/mcmc_ConstMut_out.Rda")
+# CHECK: Are all three signs the same? (e.g., all positive?)
+if(all(sign(means) == sign(means[1]))) {
+  message("SUCCESS: All chains found the same direction (Likely all GC-favored).")
+} else {
+  warning("FAILURE: Chains are split! Some favor AT, some favor GC.")
+}
 
-# 14.2) Clustering genes first ----
+# 3. Calculate Gelman-Rubin Statistic
+# Convert to mcmc.list for 'coda' package
+mcmc_list <- mcmc.list(as.mcmc(chain1), as.mcmc(chain2), as.mcmc(chain3))
 
-# 14.2.1) CLARA with k = 2 ----
+gelman_result <- gelman.diag(mcmc_list)
+print(gelman_result)
 
-# 14.2.2) SOM ----
-
-som_grid <- somgrid(xdim = 10, ydim = 10, topo = "hexagonal")
-
-som_model <- som(as.matrix(codon_usage_CA_coord[, c("Dim.1", "Dim.2", 
-                                                    "Dim.3", "Dim.4",
-                                                    "Dim.5")]), 
-                 grid = som_grid, 
-                 rlen = 1000, alpha = c(0.05, 0.01))
-
-# Step 4: Visualize node counts (number of data points per node)
-plot(som_model, type = "count", main = "Node Counts") 
+if(gelman_result$psrf[1] < 1.1) {
+  message("CONVERGENCE CONFIRMED: Gelman-Rubin < 1.1. You do not need to run more iterations.")
+} else {
+  message("Not yet converged (R > 1.1). Combining chains is not safe yet.")
+}
