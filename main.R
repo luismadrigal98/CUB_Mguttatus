@@ -3758,3 +3758,29 @@ cor.test(phi$Mean.log10.Phi, phi$High_exp_log10)
 
 # There is no good correspondence with empirical data
 # Next step is to pass expression data to the AnaCoDa
+
+# 14.3) Preparing the expression data ----
+
+# 1. Filter for complete cases (Intersection of Leaf and Bud)
+# We strictly remove genes with 0 counts in either tissue
+multi_tissue_phi <- exp_complete |>
+  dplyr::select(Gene, Exp_leaf, Exp_bud) |>
+  dplyr::filter(Exp_leaf > 0 & Exp_bud > 0) |>
+  dplyr::rename(GeneID = Gene) # AnaCoDa expects "GeneID" as first col
+
+# 2. Calculate sphi (Global Prior)
+# We estimate the "True Phi" shape by taking the mean of the log-expressions
+# This gives the model the "width" of the overall distribution.
+log_means <- rowMeans(log(multi_tissue_phi[, c("Exp_leaf", "Exp_bud")]))
+sphi_init <- sd(log_means)
+
+# 3. Calculate sepsilon (Noise per tissue)
+# AnaCoDa needs a vector: c(noise_leaf, noise_bud)
+# A good heuristic for initialization is the SD of the log-expression for that tissue.
+# (The model will refine this during MCMC, but this puts it in the right ballpark)
+
+sepsilon_leaf <- sd(log(multi_tissue_phi$Exp_leaf))
+sepsilon_bud  <- sd(log(multi_tissue_phi$Exp_bud))
+
+sepsilon_init <- c(sepsilon_leaf, sepsilon_bud)
+

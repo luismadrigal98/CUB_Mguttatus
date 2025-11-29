@@ -72,10 +72,10 @@ parser$add_argument("--sphi_initial_values",
 parser$add_argument("--phi",
                     help = "Initial Phi values (expression). Assumes csv format with Gene IDs in first column and Phi values in second column.", 
                     type = "character")
-parser$add_argument("--est_csp",
+parser$add_argument("--est_phi",
                     help = "Use this flag to indicate estimation of Phi. Otherwise, Phi will not be estimated.",
                     action = "store_true")
-parser$add_argument("--est_phi",
+parser$add_argument("--est_csp",
                     help = "Use this flag to indicate estimation of CSP. Otherwise, CSP will not be estimated.",
                     action = "store_true")
 parser$add_argument("--est_hyp",
