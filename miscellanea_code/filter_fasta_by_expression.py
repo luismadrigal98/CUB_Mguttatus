@@ -5,6 +5,7 @@ def load_gene_ids(csv_file):
     gene_ids = set()
     with open(csv_file, 'r') as f:
         reader = csv.reader(f)
+        _ = next(reader, None)  # Skip header row
         for row in reader:
             if row:
                 gene_ids.add(row[0].strip())
