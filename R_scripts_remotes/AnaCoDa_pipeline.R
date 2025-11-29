@@ -57,16 +57,13 @@ parser$add_argument("-n",
                     help = "Number of threads to use for MCMC",
                     type = "integer",
                     default = 1)
-parser$add_argument("--obs_phi",
-                    type = "character",
-                    default = NULL)
 parser$add_argument("--dEta",
                     help = "Initial dEta values. Assumes csv format with columns AA,Codon,DEta. First line should be a header.",
                     type = "character")
 parser$add_argument("--dM",
                     help = "Initial dM values. Assumes csv format with columns AA,Codon,DM. First line should be a header.",
                     type = "character")
-parser$add_argument("--sphi_initial_values",
+parser$add_argument("--sphi_init",
                     help = "Initial values for the parameter sphi. Notice that if input vector is shorter than number of mixtures the vector is going to be recycled.",
                     default = 1)
 parser$add_argument("--sepsilon_init",
@@ -147,7 +144,7 @@ percentage.to.keep <- args$percentage_to_keep
 num.threads <- args$threads
 dEta.file <- args$dEta
 dM.file <- args$dM
-sphi.init <- args$sphi_initial_values
+sphi.init <- args$sphi_init
 sepsilon.init <- args$sepsilon_init
 phi.file <- args$phi
 est.csp <- args$est_csp
@@ -162,7 +159,6 @@ mix.def <- args$mix_def
 mix.assign <- args$mixture_assignment
 restart.file <- args$restart_file
 codon.table <- args$codon_table
-init.sphi <- args$init_sphi
 
 # Expression
 obs.phi <- args$phi 
@@ -363,9 +359,9 @@ while((!done) && (run_number <= max.num.runs))
     run_number <- as.numeric(stringr::str_extract(pattern="[0-9]+",string=previous)) + 1
     parameter<-initializeParameterObject(init.with.restart.file = restart.file,model="ROC")
   }
-  if (!is.null(init.sphi))
+  if (!is.null(sphi.init))
   {
-    tmp <- as.numeric(unlist(strsplit(as.character(init.sphi), ",")))
+    tmp <- as.numeric(unlist(strsplit(as.character(sphi.init), ",")))
     parameter$setStdDevSynthesisRate(tmp,0)
   }
   steps.to.adapt <- (samples*thinning)*(1-percent.to.keep)
