@@ -69,6 +69,9 @@ parser$add_argument("--dM",
 parser$add_argument("--sphi_initial_values",
                     help = "Initial values for the parameter sphi. Notice that if input vector is shorter than number of mixtures the vector is going to be recycled.",
                     default = 1)
+parser$add_argument("--sepsilon_init",
+                    help = "Initial values for the sepsilon hyperparameter. Notice that AnaCoDa expects one value per data source in the phi csv. Example: '0.5, 0.1', always as a string",
+                    default = NULL)
 parser$add_argument("--phi",
                     help = "Initial Phi values (expression). Assumes csv format with Gene IDs in first column and Phi values in second column.", 
                     type = "character")
@@ -144,7 +147,8 @@ num.threads <- args$threads
 dEta.file <- args$dEta
 dM.file <- args$dM
 sphi.init <- args$sphi_initial_values
-phi.files <- args$phi
+sepsilon.init <- args$sepsilon_init
+phi.file <- args$phi
 est.csp <- args$est_csp
 est.phi <- args$est_phi
 est.hyp <- args$est_hyp
@@ -250,17 +254,14 @@ if (!is.null(mix.assign))
 init_phi <- NULL
 sphi_init <- rep(sphi.init, numMixtures)
 
-if (!is.null(phi.files))
+if (!is.null(phi.file))
 {
-  segment_exp <- read.table(file = phi.files,
+  segment_exp <- read.table(file = phi.file,
                             sep = ",",
                             header = TRUE)
   
   init_phi <- c(init_phi,
-                segment_exp[,"Mean"])
-  
-  sphi_init <- rep(sd(log(init_phi)),
-                   numMixtures)
+                segment_exp[,1])
   
   if(length(genome) !=  length(init_phi))
   {
@@ -273,12 +274,13 @@ if (!is.null(phi.files))
 if (!is.null(obs.phi))
 {
   obs.phi <- read.csv(obs.phi,
-                      header=T,
-                      row.names=1)
-  n.obs.phi <- ncol(obs.phi)
-  
-  s_eps <- rep(0.1,
-               n.obs.phi)
+                      header=T)
+  n.obs.phi <- ncol(obs.phi) - 1
+} 
+
+if (!is.null(sepsilon.init)) {
+  # Split string by comma if you input multiple values like "0.1,0.5"
+  s_eps <- as.numeric(unlist(strsplit(as.character(sepsilon.init), ",")))
 } else {
   s_eps <- 0.1
 }
@@ -326,7 +328,14 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
-    parameter <- initializeParameterObject(genome,sphi_init,numMixtures, geneAssignment,init.sepsilon = s_eps,split.serine = TRUE, mixture.definition = mix.def, initial.expression.values = init_phi,init.w.obs.phi=with.phi,mutation.prior.mean=mutation.prior.mean)
+    parameter <- initializeParameterObject(genome,sphi_init,
+                                           numMixtures, geneAssignment,
+                                           init.sepsilon = s_eps,
+                                           split.serine = TRUE, 
+                                           mixture.definition = mix.def, 
+                                           initial.expression.values = init_phi,
+                                           init.w.obs.phi=with.phi,
+                                           mutation.prior.mean=mutation.prior.mean)
     if (length(dM.file) > 0)
     {
       if (!file.exists(dM.file)) {
