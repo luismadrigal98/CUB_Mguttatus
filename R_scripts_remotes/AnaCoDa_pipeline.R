@@ -114,6 +114,7 @@ parser$add_argument("--restart_file",
                     default = NULL)
 parser$add_argument("--init_sphi",
                     type = "character",
+                    help = "sphi value per mixture as a string. If multiple values, separate them using `,`",
                     default = NULL)
 
 args <- parser$parse_args()
@@ -171,10 +172,6 @@ with.phi <- !is.null(obs.phi)
 # 2) Auxiliary functions ----
 # ______________________________________________________________________________
 
-calcDeltaMFromIntronsLocal <- function(...) {
-  return(0)
-}
-
 ## Outputs CSP estimates
 createParameterOutput <- function(parameter, dir_name, numMixtures, 
                                   samples, mixture.labels, 
@@ -216,73 +213,83 @@ createTracePlots <- function(trace,
 # 3) Setting up the MCMC ----
 # ______________________________________________________________________________
 
-if (with.phi && !is.null(obs.phi))
-{
+# --- 3.1 Genome Initialization ---
+# CRITICAL FIX: Do NOT read obs.phi into a dataframe yet if it's meant to be a filename.
+# Initialize genome with the filename string directly.
+
+if (with.phi && !is.null(obs.phi)) {
+  # obs.phi is passed as a string filename to the C++ initializer
   genome <- initializeGenomeObject(file = input,
                                    match.expression.by.id = TRUE,
                                    observed.expression.file = obs.phi)
-} else
-  {
+} else {
   genome <- initializeGenomeObject(file = input)
-  }
+}
 
 size <- length(genome)
 index <- c(1:size)
 
-# 3.1) Mixture ----
+# --- 3.2 Mixture Setup ---
 
-if (!is.null(mix.assign))
-{
-  tmp <- read.csv(mix.assign,sep="\t",header=T,stringsAsFactors=F)
+if (!is.null(mix.assign)) {
+  tmp <- read.csv(mix.assign, sep="\t", header=T, stringsAsFactors=F)
   geneAssignment <- tmp[,2]
   numMixtures <- length(unique(tmp[,2]))
   mixture.labels <- as.character(sort(unique(tmp[,2])))
-} else if (is.null(mix.assign) && number.of.mixtures > 1)
-{
-  warning("Number of mixtures greater than 1 but no assignment was provided. \n
-  Gene assignments are going to be estimated")
-  est.mix = TRUE # Notice that this overrides the user input.
-} else
-{
-  geneAssignment <- rep(1,size)
+} else if (is.null(mix.assign) && number.of.mixtures > 1) {
+  warning("Number of mixtures > 1 but no assignment provided. Estimating assignment.")
+  est.mix = TRUE 
+} else {
+  geneAssignment <- rep(1, size)
   mixture.labels <- paste0("Cluster_", geneAssignment)
   numMixtures <- 1
 }
 
-# 3.2) Phi and sphi ----
+# --- 3.3 Phi (Initial Values) Setup ---
 
 init_phi <- NULL
-sphi_init <- rep(sphi.init, numMixtures)
 
-if (!is.null(phi.file))
-{
-  segment_exp <- read.table(file = phi.file,
-                            sep = ",",
-                            header = TRUE)
+# Handle Legacy/Direct Phi Injection
+if (!is.null(phi.file)) {
+  segment_exp <- read.table(file = phi.file, sep = ",", header = TRUE)
+  init_phi <- c(init_phi, segment_exp[,1])
   
-  init_phi <- c(init_phi,
-                segment_exp[,1])
-  
-  if(length(genome) !=  length(init_phi))
-  {
-    stop("length(genomeObj) !=  length(init_phi), but it should.")
-  } else{
-    message("Initial Phi values successfully files loaded.");
+  if(length(genome) != length(init_phi)) {
+    stop("length(genomeObj) != length(init_phi)")
+  } else {
+    message("Initial Phi values successfully loaded.")
   }
 }
 
-if (!is.null(obs.phi))
-{
-  obs.phi <- read.csv(obs.phi,
-                      header=T)
-  n.obs.phi <- ncol(obs.phi) - 1
-} 
+# --- 3.4 Hyperparameters (sphi & sepsilon) ---
 
-if (!is.null(sepsilon.init)) {
-  # Split string by comma if you input multiple values like "0.1,0.5"
-  s_eps <- as.numeric(unlist(strsplit(as.character(sepsilon.init), ",")))
+# SPHI Handling
+# Parse the comma-separated string from arguments
+if (!is.null(sphi.init)) {
+  sphi_vals <- as.numeric(unlist(strsplit(as.character(sphi.init), ",")))
+  
+  # If 1 mixture, ensure scalar. If multiple, ensure vector length matches.
+  if (numMixtures == 1) {
+    sphi_input <- sphi_vals[1] 
+  } else {
+    sphi_input <- rep(sphi_vals, length.out = numMixtures)
+  }
 } else {
-  s_eps <- 0.1
+  sphi_input <- rep(1, numMixtures) # Default fallback
+}
+
+# SEPSILON Handling
+if (!is.null(sepsilon.init)) {
+  # Use user input vector
+  s_eps <- as.numeric(unlist(strsplit(as.character(sepsilon.init), ",")))
+} else if (!is.null(obs.phi)) {
+  # Auto-detect number of columns if no sepsilon provided
+  # Read just the header to count columns efficiently
+  temp_df <- read.csv(obs.phi, nrows = 1, header = TRUE)
+  n_sources <- ncol(temp_df) - 1 # Minus GeneID column
+  s_eps <- rep(0.1, n_sources)
+} else {
+  s_eps <- 0.1 # Fallback
 }
 
 mutation.prior.mean <- 0
@@ -328,7 +335,7 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
-    parameter <- initializeParameterObject(genome,sphi_init,
+    parameter <- initializeParameterObject(genome,sphi_input,
                                            numMixtures, geneAssignment,
                                            init.sepsilon = s_eps,
                                            split.serine = TRUE, 
@@ -358,7 +365,7 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (!is.null(init.sphi))
   {
-    tmp <- as.numeric(readLines(init.sphi))
+    tmp <- as.numeric(unlist(strsplit(as.character(init.sphi), ",")))
     parameter$setStdDevSynthesisRate(tmp,0)
   }
   steps.to.adapt <- (samples*thinning)*(1-percent.to.keep)
