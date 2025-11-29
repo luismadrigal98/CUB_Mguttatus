@@ -133,7 +133,8 @@ exp_complete <- exp_complete |>
     High_exp = if_else(is.infinite(High_exp), NA_real_, High_exp)
   ) |>
   dplyr::ungroup() |>
-  dplyr::mutate(Source_High_exp = as.factor(Source_High_exp))
+  dplyr::mutate(Source_High_exp = as.factor(Source_High_exp)) |>
+  na.exclude()
 
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
@@ -148,7 +149,7 @@ cub_results <- cub_summary(codon_usage, genetic_code_dna_long,
 
 # Creation of integrated data ----
 
-integrated_data <- dplyr::left_join(exp_complete, enc_values_clean, 
+integrated_data <- dplyr::left_join(exp_complete, cub_results$enc_results, 
                                     by = dplyr::join_by(Gene == Gene_name)) |>
   dplyr::rename(Gene_name = Gene) |>
   na.omit() |>
@@ -173,7 +174,7 @@ integrated_data <- integrated_data |>
 # Adding GC content variables
 
 integrated_data <- integrated_data |>
-  left_join(gc_content_clean, by = "Gene_name")
+  left_join(cub_results$gc_results, by = "Gene_name")
 
 ## *****************************************************************************
 ## 5) CDC-based analysis ----
@@ -196,8 +197,9 @@ cdc_for_merge <- cdc_results |>
 cat(sprintf("Valid CDC results: %d genes\n", nrow(cdc_for_merge)))
 
 # Merge ENC, GC3s, and CDC results
-enc_cdc_data <- enc_values_clean |>
-  dplyr::left_join(gc_content_clean |> dplyr::select(Gene_name, GC3s), by = "Gene_name") |>
+enc_cdc_data <- cub_results$enc_results |>
+  dplyr::left_join(cub_results$gc_results |> dplyr::select(Gene_name, GC3s), 
+                   by = "Gene_name") |>
   dplyr::left_join(cdc_for_merge, by = "Gene_name") |>
   dplyr::filter(is.finite(ENC) & is.finite(GC3s) & ENC > 0 & ENC <= 61) |>
   dplyr::mutate(
@@ -356,10 +358,14 @@ ggsave("./results/ENC_deviation_by_CDC.pdf", p_enc_deviation, width = 9, height 
 #                                       as.data.frame(integrated_data[, "High_exp"]))[[1]])
 
 integrated_data <- integrated_data |>
-  dplyr::mutate(High_exp_log2 = log2(High_exp + 1))  # Adding 1 to avoid log2(0)
+  dplyr::mutate(High_exp_log2 = log2(High_exp + 1), # Adding 1 to avoid log2(0)
+                High_exp_log10 = log10(High_exp + 1))  
 
 # Linear models ----
 
+integrated_data <- integrated_data |> 
+  left_join(enc_cdc_data |> dplyr::select(Gene_name, CDC), by = "Gene_name")
+  
 CDC_vs_exp <- lm(CDC ~ High_exp_log2 + CDS_length_nt, 
                  data = integrated_data)
 summary(CDC_vs_exp)
@@ -839,7 +845,7 @@ freq_rest <- codon_usage |>
 # Combine and calculate proportions
 freq_comparison <- freq_top5 |>
   left_join(freq_rest, by = "Codon") |>
-  mutate(
+  dplyr::mutate(
     Total_Top5 = sum(Count_Top5),
     Total_Rest = sum(Count_Rest),
     Freq_Top5 = Count_Top5 / Total_Top5,
@@ -858,7 +864,7 @@ freq_long <- freq_comparison |>
   pivot_longer(cols = c(Freq_Top5, Freq_Rest), 
                names_to = "Group", 
                values_to = "Frequency") |>
-  dplyr::mutate(Group = recode(Group, 
+  dplyr::mutate(Group = dplyr::recode(Group, 
                                "Freq_Top5" = "Top 5%",
                                "Freq_Rest" = "Rest"))
 
@@ -3708,58 +3714,47 @@ dM_data <- generate_anacoda_dM(
 # 
 # echo "Job finished on $(date)"
 
-# 14.1) Retrieving AnaCoDa results to analyze congruence between runs (dM fixed) ----
+# 14.1) Retrieving AnaCoDa results to analyze congruence between runs ----
 
-# Setup paths for your 3 runs
+# 14.1.1) Naive model ----
+
+# Setup paths for the 3 runs
 run_dirs <- c(
-  "./MCMC_results_backup/results_dM_fixed/run_1",
-  "./MCMC_results_backup/results_dM_fixed/run_2",
-  "./MCMC_results_backup/results_dM_fixed/run_3"
+  "./MCMC_results/results_naive_2/run_1",
+  "./MCMC_results/results_naive_2/run_2",
+  "./MCMC_results/results_naive_2/run_3"
 )
 
-# Function to extract the Selection Trace for a specific Codon (e.g., Alanine GCC)
-get_selection_trace <- function(dir, codon_index = 1) {
-  # Load parameters
-  param <- loadParameterObject(paste(dir, "R_objects/parameter.Rda", sep="/"))
-  trace <- param$getTraceObject()
-  
-  # Get Selection Trace (Mixture 1)
-  # This returns a matrix: Rows = Samples, Cols = Codons
-  sel_trace <- trace$getCodonSpecificParameterTrace(1) 
-  
-  # Return the trace for the first non-reference codon (usually an index like 1 or 2)
-  # You might need to check which index corresponds to a GC-rich codon.
-  return(sel_trace[, codon_index])
-}
+Naive_conv <- GR_convergence(run_dirs)
 
-# 1. Load Traces from all 3 runs
-# Let's check a few arbitrary indices to be sure. 
-# (AnaCoDa usually stores 40 estimated parameters for the 59-61 codons)
-chain1 <- get_selection_trace(run_dirs[1])
-chain2 <- get_selection_trace(run_dirs[2])
-chain3 <- get_selection_trace(run_dirs[3])
+# 14.1.2) dM-fixed model ----
 
-# 2. Visual Check: Did they find the same mean?
-means <- c(mean(chain1), mean(chain2), mean(chain3))
-print("Means of the 3 runs for a sample codon:")
-print(means)
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./MCMC_results/results_dM_fixed/run_1",
+  "./MCMC_results/results_dM_fixed/run_2",
+  "./MCMC_results/results_dM_fixed/run_3"
+)
 
-# CHECK: Are all three signs the same? (e.g., all positive?)
-if(all(sign(means) == sign(means[1]))) {
-  message("SUCCESS: All chains found the same direction (Likely all GC-favored).")
-} else {
-  warning("FAILURE: Chains are split! Some favor AT, some favor GC.")
-}
+dM_fixed_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed
 
-# 3. Calculate Gelman-Rubin Statistic
-# Convert to mcmc.list for 'coda' package
-mcmc_list <- mcmc.list(as.mcmc(chain1), as.mcmc(chain2), as.mcmc(chain3))
+# Convergence was achieved for dM_fixed
 
-gelman_result <- gelman.diag(mcmc_list)
-print(gelman_result)
+# 14.2) Checking the correlation between estimates of phi and the expression data ----
 
-if(gelman_result$psrf[1] < 1.1) {
-  message("CONVERGENCE CONFIRMED: Gelman-Rubin < 1.1. You do not need to run more iterations.")
-} else {
-  message("Not yet converged (R > 1.1). Combining chains is not safe yet.")
-}
+# From now on, we will work with chain 1, given that all chains are statistically
+# equal.
+
+phi_hat <- read.csv(file = "results/MCMC_results/results_dM_fixed/run_1/Parameter_est/gene_expression.txt") |>
+  dplyr::select(GeneID, Mean, Mean.log10) |>
+  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
+
+phi <- exp_complete |>
+  left_join(phi_hat, by = join_by("Gene" == "GeneID")) |>
+  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
+  na.exclude()
+
+cor.test(phi$Mean.log10.Phi, phi$High_exp_log10)
+
+# There is no good correspondence with empirical data
+# Next step is to pass expression data to the AnaCoDa

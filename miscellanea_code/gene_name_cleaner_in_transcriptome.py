@@ -6,8 +6,9 @@ def clean_fasta_headers(input_fasta, output_fasta):
             if line.startswith('>'):
                 # Keep only the first field (gene name)
                 header = line.strip().split()[0]
-                # Remove the .1 from the gene name if present (only use to denotate transcript variants)
-                header = header.replace(".1", "")
+                # Remove .1 only if it is at the end of the header
+                if header.endswith('.1'):
+                    header = header[:-2]
                 outfile.write(header + '\n')
             else:
                 outfile.write(line)
