@@ -5,9 +5,8 @@ def load_gene_ids(csv_file):
     gene_ids = set()
     with open(csv_file, 'r') as f:
         reader = csv.reader(f)
-        _ = next(reader, None)  # Skip header row
-        for row in reader:
-            if row:
+        for idx,row in enumerate(reader):
+            if row and idx > 0:  # Skip header
                 gene_ids.add(row[0].strip())
     return gene_ids
 
@@ -17,7 +16,7 @@ def filter_fasta_by_genes(input_fasta, output_fasta, gene_ids):
         for line in infile:
             if line.startswith('>'):
                 # Extract gene id (remove '>')
-                gene_id = line[1:].strip().split()[0]
+                gene_id = line[1:].strip().split(" ")[0]
                 if gene_id in gene_ids:
                     write_seq = True
                     outfile.write(line)

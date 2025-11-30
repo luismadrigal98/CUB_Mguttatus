@@ -3766,8 +3766,9 @@ cor.test(phi$Mean.log10.Phi, phi$High_exp_log10)
 multi_tissue_phi <- exp_complete |>
   dplyr::select(Gene, Exp_leaf, Exp_bud) |>
   dplyr::filter(Exp_leaf > 0 & Exp_bud > 0) |>
-  dplyr::rename(GeneID = Gene) # AnaCoDa expects "GeneID" as first col
-
+  dplyr::rename(GeneID = Gene) |> # AnaCoDa expects "GeneID" as first col
+  dplyr::filter(GeneID %in% names(trans)) # Ensures correspondence with transcriptome file
+  
 # 2. Calculate sphi (Global Prior)
 # We estimate the "True Phi" shape by taking the mean of the log-expressions
 # This gives the model the "width" of the overall distribution.

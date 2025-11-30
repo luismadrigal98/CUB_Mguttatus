@@ -533,28 +533,6 @@ make_clusters <- function(data, G = 1:5,
   return(cluster_res)
 }
 
-get_global_pi_from_windows <- function(window_df) {
-  #' @title Calculate Global Weighted Nucleotide Frequencies
-  #' @description Calculates genome-wide Pi_A, Pi_C, Pi_G, Pi_T by weighting 
-  #' window frequencies by their valid read depth (total_bp). This correctly 
-  #' handles hard-masked genomes by down-weighting masked regions.
-  
-  # Calculate the sum of specific bases across all windows
-  # Formula: Sum(Frequency_Window * Valid_BP_Window) / Sum(Total_Valid_BP)
-  
-  global_bp <- sum(window_df$total_bp)
-  
-  pi_A_global <- sum(window_df$pi_A * window_df$total_bp) / global_bp
-  pi_C_global <- sum(window_df$pi_C * window_df$total_bp) / global_bp
-  pi_G_global <- sum(window_df$pi_G * window_df$total_bp) / global_bp
-  pi_T_global <- sum(window_df$pi_T * window_df$total_bp) / global_bp
-  
-  return(c(pi_A = pi_A_global, 
-           pi_C = pi_C_global, 
-           pi_G = pi_G_global, 
-           pi_T = pi_T_global))
-}
-
 # ******************************************************************************
 # STEP 5: Generate AnaCoDa dM File ----
 # ______________________________________________________________________________
