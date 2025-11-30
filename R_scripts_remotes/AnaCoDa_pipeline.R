@@ -331,12 +331,18 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
+    if (with.phi) {
+      phi_start_vector <- NULL
+    } else {
+      phi_start_vector <- init_phi
+    }
+    
     parameter <- initializeParameterObject(genome,sphi_input,
                                            numMixtures, geneAssignment,
                                            init.sepsilon = s_eps,
                                            split.serine = TRUE, 
                                            mixture.definition = mix.def, 
-                                           initial.expression.values = init_phi,
+                                           initial.expression.values = phi_start_vector,
                                            init.w.obs.phi=with.phi,
                                            mutation.prior.mean=mutation.prior.mean)
     if (length(dM.file) > 0)
