@@ -359,11 +359,6 @@ while((!done) && (run_number <= max.num.runs))
     run_number <- as.numeric(stringr::str_extract(pattern="[0-9]+",string=previous)) + 1
     parameter<-initializeParameterObject(init.with.restart.file = restart.file,model="ROC")
   }
-  if (!is.null(sphi.init))
-  {
-    tmp <- as.numeric(unlist(strsplit(as.character(sphi.init), ",")))
-    parameter$setStdDevSynthesisRate(tmp,0)
-  }
   steps.to.adapt <- (samples*thinning)*(1-percent.to.keep)
   dir_name <- paste0(directory,"/run_",run_number)
     safe_dir_create(dir_name)
