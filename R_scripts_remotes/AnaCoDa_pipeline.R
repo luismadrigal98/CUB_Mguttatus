@@ -245,18 +245,6 @@ if (!is.null(mix.assign)) {
 
 init_phi <- NULL
 
-# Handle Legacy/Direct Phi Injection
-if (!is.null(phi.file)) {
-  segment_exp <- read.table(file = phi.file, sep = ",", header = TRUE)
-  init_phi <- c(init_phi, segment_exp[,1])
-  
-  if(length(genome) != length(init_phi)) {
-    stop("length(genomeObj) != length(init_phi)")
-  } else {
-    message("Initial Phi values successfully loaded.")
-  }
-}
-
 # --- 3.4 Hyperparameters (sphi & sepsilon) ---
 
 # SPHI Handling
@@ -331,18 +319,12 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
-    if (with.phi) {
-      phi_start_vector <- NULL
-    } else {
-      phi_start_vector <- init_phi
-    }
-    
     parameter <- initializeParameterObject(genome,sphi_input,
                                            numMixtures, geneAssignment,
                                            init.sepsilon = s_eps,
                                            split.serine = TRUE, 
                                            mixture.definition = mix.def, 
-                                           initial.expression.values = phi_start_vector,
+                                           initial.expression.values = NULL,
                                            init.w.obs.phi=with.phi,
                                            mutation.prior.mean=mutation.prior.mean)
     if (length(dM.file) > 0)
