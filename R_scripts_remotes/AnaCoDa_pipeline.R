@@ -234,7 +234,7 @@ if (!is.null(mix.assign)) {
   mixture.labels <- as.character(sort(unique(tmp[,2])))
 } else if (is.null(mix.assign) && number.of.mixtures > 1) {
   warning("Number of mixtures > 1 but no assignment provided. Estimating assignment.")
-  est.mix = TRUE 
+  est.mix <- TRUE 
 } else {
   geneAssignment <- rep(1, size)
   mixture.labels <- paste0("Cluster_", geneAssignment)

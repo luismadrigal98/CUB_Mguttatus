@@ -3784,3 +3784,11 @@ sepsilon_bud  <- sd(log(multi_tissue_phi$Exp_bud))
 
 sepsilon_init <- c(sepsilon_leaf, sepsilon_bud)
 
+# 4. Write empirical expression data
+write.table(
+  multi_tissue_phi, 
+  file = "./data/observed_expression_multitissue.csv", 
+  sep = ",", 
+  row.names = FALSE, 
+  quote = FALSE 
+)

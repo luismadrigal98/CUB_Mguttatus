@@ -194,16 +194,21 @@ calculate_window_metrics <- function(window_idx,
   local_seqs <- all_seqs[intron_indices]
   
   # Count bases (A, C, G, T)
+  # baseOnly = TRUE returns 5 columns: A, C, G, T, and "other" (which includes N)
   counts <- Biostrings::alphabetFrequency(local_seqs, baseOnly = TRUE, as.prob = FALSE)
+  
+  # Sum counts across all introns in this window
   total_counts <- colSums(counts)
   
-  # Calculate Frequencies (Pi vector)
-  # Only consider A, C, G, T (first four columns)
+  # Calculate Total Valid Base Pairs (Strictly A + C + G + T)
+  # This effectively ignores 'N's from the hard masking
   total_bp <- sum(total_counts[1:4])
   
-  # Critical Check: Return NULL if no countable base pairs (to handle N-only sequences, though unlikely here)
+  # CRITICAL CHECK: If the window was mostly 'N's, total_bp might be tiny or zero.
+  # We return NULL if there are no valid bases to avoid division by zero or garbage data.
   if(total_bp == 0) return(NULL)
   
+  # Calculate Frequencies (Pi vector) based on VALID bases only
   freqs <- total_counts[1:4] / total_bp
   names(freqs) <- c("pi_A", "pi_C", "pi_G", "pi_T")
   
@@ -216,7 +221,7 @@ calculate_window_metrics <- function(window_idx,
     window_idx = window_idx
   )
   
-  # FIX: Include the total base pair count for filtering later
+  # Return data including the valid base pair count
   return(c(window_data, total_bp = total_bp, freqs))
 }
 
@@ -526,6 +531,28 @@ make_clusters <- function(data, G = 1:5,
   }
   
   return(cluster_res)
+}
+
+get_global_pi_from_windows <- function(window_df) {
+  #' @title Calculate Global Weighted Nucleotide Frequencies
+  #' @description Calculates genome-wide Pi_A, Pi_C, Pi_G, Pi_T by weighting 
+  #' window frequencies by their valid read depth (total_bp). This correctly 
+  #' handles hard-masked genomes by down-weighting masked regions.
+  
+  # Calculate the sum of specific bases across all windows
+  # Formula: Sum(Frequency_Window * Valid_BP_Window) / Sum(Total_Valid_BP)
+  
+  global_bp <- sum(window_df$total_bp)
+  
+  pi_A_global <- sum(window_df$pi_A * window_df$total_bp) / global_bp
+  pi_C_global <- sum(window_df$pi_C * window_df$total_bp) / global_bp
+  pi_G_global <- sum(window_df$pi_G * window_df$total_bp) / global_bp
+  pi_T_global <- sum(window_df$pi_T * window_df$total_bp) / global_bp
+  
+  return(c(pi_A = pi_A_global, 
+           pi_C = pi_C_global, 
+           pi_G = pi_G_global, 
+           pi_T = pi_T_global))
 }
 
 # ******************************************************************************
