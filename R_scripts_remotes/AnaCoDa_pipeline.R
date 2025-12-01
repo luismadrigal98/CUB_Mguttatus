@@ -6,6 +6,24 @@
 # @author Luis Javier Madrigal-Roca
 # 
 # @date 11/20/2025
+#
+# IMPORTANT NOTE ON ANACODA BUG WORKAROUND:
+# There is a known bug in AnaCoDa where using with.phi=TRUE in the model
+# (i.e., including observed expression in the likelihood) causes a segmentation
+# fault during MCMC execution. This occurs regardless of whether dM is fixed.
+#
+# WORKAROUND IMPLEMENTED:
+# When expression data is provided (--phi) AND mutation parameters are fixed
+# (--fix_dM), this script:
+#   1. Initializes phi values FROM observed expression (init.w.obs.phi = TRUE)
+#   2. Does NOT estimate phi (est.expression = FALSE) - phi stays at empirical values
+#   3. Sets with.phi = FALSE in the model to avoid the segfault
+#
+# This means phi is FIXED at empirical expression values, and only selection
+# coefficients (dEta) are estimated conditional on those fixed phi values.
+# This is a valid analysis approach when you trust your expression measurements.
+#
+# See GitHub issue: https://github.com/clandere/AnaCoDa/issues/XXX
 # ______________________________________________________________________________
 
 library(argparse)
@@ -165,6 +183,31 @@ obs.phi <- args$phi
 with.phi <- !is.null(obs.phi)
 
 # ******************************************************************************
+# WORKAROUND FOR ANACODA BUG (segfault with with.phi=TRUE)
+# When using fixed dM with expression data, we:
+#   - Initialize phi FROM observed expression
+#   - Do NOT estimate phi (keep it fixed at empirical values)
+#   - Set with.phi=FALSE in model to avoid the segfault
+# This effectively treats empirical expression as the "true" phi values.
+# ******************************************************************************
+use.fixed.phi.workaround <- with.phi && fix.dM
+
+if (use.fixed.phi.workaround) {
+  message("")
+  message("============================================================")
+  message("  WORKAROUND MODE: Fixed dM with expression data detected   ")
+  message("============================================================")
+  message("Due to an AnaCoDa bug, phi will be FIXED at empirical values")
+  message("(not estimated). Selection coefficients will be estimated")
+  message("conditional on these fixed phi values.")
+  message("============================================================")
+  message("")
+  
+  # Override est.phi to FALSE - phi will not be estimated
+  est.phi <- FALSE
+}
+
+# ******************************************************************************
 # 2) Auxiliary functions ----
 # ______________________________________________________________________________
 
@@ -260,7 +303,7 @@ if (!is.null(mix.assign)) {
   est.mix <- TRUE 
 } else {
   geneAssignment <- rep(1, size)
-  mixture.labels <- c("Cluster_1")  # Single label, not vector of length=size
+  mixture.labels <- c("Cluster_1")
   numMixtures <- 1
 }
 
@@ -338,10 +381,11 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
-    # Note: init.w.obs.phi should be FALSE here - the genome object already 
-    # has expression data loaded. Setting TRUE can cause issues when combined
-    # with fixed mutation parameters. The model object's with.phi flag handles
-    # the likelihood computation with observed expression.
+    # WORKAROUND: When using fixed dM with expression data, initialize phi
+    # FROM observed expression values. Since est.phi is set to FALSE above,
+    # these values will remain fixed throughout the MCMC.
+    use.obs.phi.for.init <- use.fixed.phi.workaround
+    
     parameter <- initializeParameterObject(genome = genome, 
                                            sphi = sphi_input,
                                            num.mixtures = numMixtures, 
@@ -350,7 +394,7 @@ while((!done) && (run_number <= max.num.runs))
                                            split.serine = TRUE, 
                                            mixture.definition = mix.def, 
                                            initial.expression.values = NULL,
-                                           init.w.obs.phi = FALSE,
+                                           init.w.obs.phi = use.obs.phi.for.init,
                                            mutation.prior.mean = mutation.prior.mean)
     
     # Initialize dM (mutation) categories if file provided
@@ -395,9 +439,17 @@ while((!done) && (run_number <= max.num.runs))
   
   mcmc$setStepsToAdapt(steps.to.adapt)
   
+  # WORKAROUND: Set with.phi=FALSE in model when using the fixed phi workaround
+  # to avoid AnaCoDa segfault. In this mode:
+  #   - Phi is initialized from and fixed at empirical expression values
+  #   - Phi is NOT estimated (est.expression = FALSE)
+  #   - The likelihood does not include observation error model
+  #   - Only selection coefficients (dEta) are estimated
+  use.phi.in.model <- with.phi && !use.fixed.phi.workaround
+  
   model <- initializeModelObject(parameter, 
                                  "ROC", 
-                                 with.phi,
+                                 use.phi.in.model,
                                  fix.observation.noise=F)
   setRestartSettings(mcmc, 
                      paste(dir_name,"Restart_files/rstartFile.rst",sep="/"), 
@@ -442,7 +494,9 @@ while((!done) && (run_number <= max.num.runs))
   {
     plot(trace,what="Sphi")
   }
-  if (with.phi)
+  # Only plot Sepsilon trace if we're actually using phi in the model
+  # (not when using the fixed phi workaround)
+  if (with.phi && !use.fixed.phi.workaround)
   {
     plot(trace,what="Sepsilon")
   }
