@@ -3508,7 +3508,7 @@ cat("  Results saved to ./results/selection_coefficients.csv\n")
 ## _____________________________________________________________________________
 
 # Extract intronic sequences
-introns_list <- get_intron_sequences(fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.fa",
+introns_list <- get_intron_sequences(fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.hardmasked.fa",
                                      ann_file = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
                                      organism = "Mimulus guttatus")
 

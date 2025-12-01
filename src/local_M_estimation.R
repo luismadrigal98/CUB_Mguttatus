@@ -170,7 +170,8 @@ get_intron_sequences <- function(fasta_file, ann_file,
 calculate_window_metrics <- function(window_idx, 
                                      all_windows, 
                                      all_seqs, 
-                                     hit_list) 
+                                     hit_list,
+                                     return_Ns = FALSE) 
 {
   #' @title Calculate Base Composition for a Single Genomic Window
   #' @description Internal function to extract intron sequences within a window 
@@ -179,6 +180,8 @@ calculate_window_metrics <- function(window_idx,
   #' @param all_windows GRanges object defining all genomic windows.
   #' @param all_seqs DNAStringSet containing all trimmed intron sequences.
   #' @param hit_list Hits object from findOverlaps mapping windows to introns.
+  #' @param return_Ns Whether to return also the count of Ns if working with a 
+  #' masked fasta file
   #' @return A named vector of window metadata, total base pairs, and base frequencies, 
   #' or NULL if empty.
   #' ___________________________________________________________________________
@@ -221,8 +224,11 @@ calculate_window_metrics <- function(window_idx,
     window_idx = window_idx
   )
   
+  # Optionally return N count
+  N_count <- if(return_Ns) total_counts["other"] else NULL
+  
   # Return data including the valid base pair count
-  return(c(window_data, total_bp = total_bp, freqs))
+  return(c(window_data, total_bp = total_bp, freqs, N_count))
 }
 
 get_base_composition_per_windows <- function(genome_seqinfo, 
@@ -269,7 +275,7 @@ get_base_composition_per_windows <- function(genome_seqinfo,
   # Ensure numeric columns are cast correctly (do.call(rbind) converts to matrix, 
   # making them character/factor)
   numeric_cols <- c("start", "end", "window_idx", "pi_A", "pi_C", "pi_G", "pi_T",
-                    "total_bp")
+                    "total_bp", "N_count")
   for(col in numeric_cols) {
     df_results[[col]] <- as.numeric(df_results[[col]])
   }

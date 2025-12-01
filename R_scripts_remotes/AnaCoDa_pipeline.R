@@ -210,11 +210,25 @@ createTracePlots <- function(trace,
 # ______________________________________________________________________________
 
 # --- 3.1 Genome Initialization ---
-# CRITICAL FIX: Do NOT read obs.phi into a dataframe yet if it's meant to be a filename.
-# Initialize genome with the filename string directly.
+# CRITICAL: Validate input files before passing to C++ initializer
+
+if (!file.exists(input)) {
+  stop(paste("Input FASTA file not found:", input))
+}
 
 if (with.phi && !is.null(obs.phi)) {
-  # obs.phi is passed as a string filename to the C++ initializer
+  if (!file.exists(obs.phi)) {
+    stop(paste("Expression file not found:", obs.phi))
+  }
+  
+  # Validate that expression file has correct format
+  exp_check <- read.csv(obs.phi, nrows = 5, header = TRUE)
+  if (ncol(exp_check) < 2) {
+    stop("Expression file must have at least 2 columns (GeneID + expression values)")
+  }
+  message(paste("Expression file has", ncol(exp_check) - 1, "expression column(s)"))
+  
+  # Initialize genome with expression data
   genome <- initializeGenomeObject(file = input,
                                    match.expression.by.id = TRUE,
                                    observed.expression.file = obs.phi)
@@ -223,6 +237,12 @@ if (with.phi && !is.null(obs.phi)) {
 }
 
 size <- length(genome)
+message(paste("Genome loaded with", size, "genes"))
+
+if (size == 0) {
+  stop("No genes loaded from FASTA file. Check file format.")
+}
+
 index <- c(1:size)
 
 # --- 3.2 Mixture Setup ---
@@ -234,12 +254,18 @@ if (!is.null(mix.assign)) {
   mixture.labels <- as.character(sort(unique(tmp[,2])))
 } else if (is.null(mix.assign) && number.of.mixtures > 1) {
   warning("Number of mixtures > 1 but no assignment provided. Estimating assignment.")
+  geneAssignment <- rep(1, size)
+  numMixtures <- number.of.mixtures
+  mixture.labels <- paste0("Cluster_", 1:numMixtures)
   est.mix <- TRUE 
 } else {
   geneAssignment <- rep(1, size)
-  mixture.labels <- paste0("Cluster_", geneAssignment)
+  mixture.labels <- c("Cluster_1")  # Single label, not vector of length=size
   numMixtures <- 1
 }
+
+message(paste("Number of mixtures:", numMixtures))
+message(paste("Mixture labels:", paste(mixture.labels, collapse=", ")))
 
 # --- 3.3 Phi (Initial Values) Setup ---
 
@@ -282,13 +308,6 @@ mutation.prior.mean <- 0
 # 4) Layout for running the MCMC iteratively ----
 # ______________________________________________________________________________
 
-if (!dir.exists(directory)) dir.create(directory)
-
-# Check if input FASTA file exists
-if (!file.exists(input)) {
-  stop(paste("Input FASTA file not found:", input))
-}
-
 # Helper function for safe directory creation
 safe_dir_create <- function(path) {
   if (!dir.exists(path)) {
@@ -319,27 +338,35 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
-    parameter <- initializeParameterObject(genome,sphi_input,
-                                           numMixtures, geneAssignment,
+    parameter <- initializeParameterObject(genome = genome,
+                                           sphi = sphi_input,
+                                           num.mixtures = numMixtures, 
+                                           geneAssignment = geneAssignment,
                                            init.sepsilon = s_eps,
                                            split.serine = TRUE, 
                                            mixture.definition = mix.def, 
                                            initial.expression.values = NULL,
-                                           init.w.obs.phi=with.phi,
-                                           mutation.prior.mean=mutation.prior.mean)
-    if (length(dM.file) > 0)
+                                           init.w.obs.phi = with.phi,
+                                           mutation.prior.mean = mutation.prior.mean)
+    
+    # Initialize dM (mutation) categories if file provided
+    if (!is.null(dM.file) && nchar(dM.file) > 0)
     {
       if (!file.exists(dM.file)) {
         stop(paste("dM file not found:", dM.file))
       }
-      parameter$initMutationCategories(dM.file,1,fix.dM)
+      message(paste("Initializing mutation categories from:", dM.file))
+      parameter$initMutationCategories(c(dM.file), 1, fix.dM)
     } 
-    if (length(dEta.file) > 0)
+    
+    # Initialize dEta (selection) categories if file provided
+    if (!is.null(dEta.file) && nchar(dEta.file) > 0)
     {
       if (!file.exists(dEta.file)) {
         stop(paste("dEta file not found:", dEta.file))
       }
-      parameter$initSelectionCategories(dEta.file,1,fix.dEta)
+      message(paste("Initializing selection categories from:", dEta.file))
+      parameter$initSelectionCategories(c(dEta.file), 1, fix.dEta)
     }
     
   } else {
