@@ -225,11 +225,10 @@ calculate_window_metrics <- function(window_idx,
   )
   
   # Optionally return N count
-  if (return_Ns) N_count <- total_counts["other"]
-  else N_count <- NA
+  if (return_Ns) N_count <- total_counts["other"] else N_count <- NA
   
   # Return data including the valid base pair count
-  return(c(window_data, total_bp = total_bp, freqs, N_count))
+  return(c(window_data, total_bp = total_bp, freqs, N_count = N_count))
 }
 
 get_base_composition_per_windows <- function(genome_seqinfo, 

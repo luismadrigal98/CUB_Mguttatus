@@ -3521,8 +3521,18 @@ nuc_composition <- get_base_composition_per_windows(genome_seqinfo = introns_lis
 windows_thinned <- refine_windows_for_genes(nuc_composition, 1000)
 
 nuc_composition_filtered <- nuc_composition |>
-  filter(total_bp >= 1000) |>
+  dplyr::filter(total_bp >= 1000) |>
   dplyr::mutate(mid_point = (start + end ) / 2)
+
+# How frequent is N?
+
+nuc_composition_filtered <- nuc_composition_filtered |> 
+  dplyr::mutate(N_freq = N_count / (total_bp + N_count)) 
+
+cor.test(nuc_composition_filtered$total_bp, nuc_composition_filtered$N_freq)
+
+nuc_composition_filtered <- nuc_composition_filtered |>
+  dplyr::filter(N_freq < 0.25)
 
 # Calculate Q matrix
 
