@@ -225,7 +225,8 @@ calculate_window_metrics <- function(window_idx,
   )
   
   # Optionally return N count
-  N_count <- if(return_Ns) total_counts["other"] else NULL
+  if (return_Ns) N_count <- total_counts["other"]
+  else N_count <- NA
   
   # Return data including the valid base pair count
   return(c(window_data, total_bp = total_bp, freqs, N_count))

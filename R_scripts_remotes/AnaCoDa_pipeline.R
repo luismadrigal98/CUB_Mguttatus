@@ -338,6 +338,10 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
+    # Note: init.w.obs.phi should be FALSE here - the genome object already 
+    # has expression data loaded. Setting TRUE can cause issues when combined
+    # with fixed mutation parameters. The model object's with.phi flag handles
+    # the likelihood computation with observed expression.
     parameter <- initializeParameterObject(genome = genome, 
                                            sphi = sphi_input,
                                            num.mixtures = numMixtures, 
@@ -346,7 +350,7 @@ while((!done) && (run_number <= max.num.runs))
                                            split.serine = TRUE, 
                                            mixture.definition = mix.def, 
                                            initial.expression.values = NULL,
-                                           init.w.obs.phi = with.phi,
+                                           init.w.obs.phi = FALSE,
                                            mutation.prior.mean = mutation.prior.mean)
     
     # Initialize dM (mutation) categories if file provided
