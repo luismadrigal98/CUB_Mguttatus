@@ -3730,9 +3730,9 @@ dM_data <- generate_anacoda_dM(
 
 # Setup paths for the 3 runs
 run_dirs <- c(
-  "./MCMC_results/results_naive_2/run_1",
-  "./MCMC_results/results_naive_2/run_2",
-  "./MCMC_results/results_naive_2/run_3"
+  "./results/MCMC_results/results_naive_2/run_1",
+  "./results/MCMC_results/results_naive_2/run_2",
+  "./results/MCMC_results/results_naive_2/run_3"
 )
 
 Naive_conv <- GR_convergence(run_dirs)
@@ -3741,9 +3741,9 @@ Naive_conv <- GR_convergence(run_dirs)
 
 # Setup paths for the 3 runs
 run_dirs <- c(
-  "./MCMC_results/results_dM_fixed/run_1",
-  "./MCMC_results/results_dM_fixed/run_2",
-  "./MCMC_results/results_dM_fixed/run_3"
+  "./results/MCMC_results/results_dM_fixed/run_1",
+  "./results/MCMC_results/results_dM_fixed/run_2",
+  "./results/MCMC_results/results_dM_fixed/run_3"
 )
 
 dM_fixed_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed
