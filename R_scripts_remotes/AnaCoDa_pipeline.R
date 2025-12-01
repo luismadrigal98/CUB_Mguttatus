@@ -338,10 +338,10 @@ while((!done) && (run_number <= max.num.runs))
   }
   if (is.null(restart.file))
   {
-    parameter <- initializeParameterObject(genome = genome,
+    parameter <- initializeParameterObject(genome = genome, 
                                            sphi = sphi_input,
                                            num.mixtures = numMixtures, 
-                                           geneAssignment = geneAssignment,
+                                           gene.assignment = geneAssignment,
                                            init.sepsilon = s_eps,
                                            split.serine = TRUE, 
                                            mixture.definition = mix.def, 

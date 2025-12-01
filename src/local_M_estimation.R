@@ -171,7 +171,7 @@ calculate_window_metrics <- function(window_idx,
                                      all_windows, 
                                      all_seqs, 
                                      hit_list,
-                                     return_Ns = FALSE) 
+                                     return_Ns = TRUE) 
 {
   #' @title Calculate Base Composition for a Single Genomic Window
   #' @description Internal function to extract intron sequences within a window 
