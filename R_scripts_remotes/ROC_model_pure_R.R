@@ -24,6 +24,13 @@
 # P(codon_i | phi, dM, dEta) = exp(-dM_i - dEta_i * phi) / Z
 # where Z is the partition function (sum over all codons for that amino acid)
 #
+# MULTI-TISSUE SUPPORT:
+# When multiple expression measurements are available (e.g., different tissues),
+# the model estimates a single latent phi per gene that best explains all 
+# observations. Each tissue has its own observation noise parameter (sepsilon).
+# 
+# log(obs_phi_tissue_k) ~ Normal(log(true_phi), sepsilon_k)
+#
 # PARALLELIZATION:
 # Uses the 'parallel' package with mclapply for gene-level likelihood 
 # calculations. Set the number of cores via --cores argument or n_cores parameter.
@@ -318,7 +325,37 @@ log_prior_csp <- function(params, prior_mean = 0, prior_sd = 0.35) {
 #' @return Log prior probability
 log_prior_obs_phi <- function(obs_phi, true_phi, sepsilon) {
   # log(obs_phi) ~ Normal(log(true_phi), sepsilon)
-  sum(dnorm(log(obs_phi), mean = log(true_phi), sd = sepsilon, log = TRUE))
+  # Handle NA values (missing observations)
+  valid <- !is.na(obs_phi) & obs_phi > 0 & true_phi > 0
+  if (sum(valid) == 0) return(0)
+  sum(dnorm(log(obs_phi[valid]), mean = log(true_phi[valid]), sd = sepsilon, log = TRUE))
+}
+
+#' Log likelihood for multi-tissue observed phi
+#' @param obs_phi_matrix Matrix of observed phi (genes x tissues), can have NAs
+#' @param true_phi Vector of latent phi values
+#' @param sepsilon Vector of noise SDs (one per tissue)
+#' @return Total log likelihood for observed phi
+log_lik_obs_phi_multitissue <- function(obs_phi_matrix, true_phi, sepsilon) {
+  n_tissues <- ncol(obs_phi_matrix)
+  log_lik <- 0
+  
+  for (k in seq_len(n_tissues)) {
+    obs_k <- obs_phi_matrix[, k]
+    log_lik <- log_lik + log_prior_obs_phi(obs_k, true_phi, sepsilon[k])
+  }
+  
+  return(log_lik)
+}
+
+#' Geometric mean (for combining multiple phi sources)
+#' @param x Numeric vector
+#' @param na.rm Remove NAs
+#' @return Geometric mean
+geom_mean <- function(x, na.rm = TRUE) {
+  if (na.rm) x <- x[!is.na(x) & x > 0]
+  if (length(x) == 0) return(NA)
+  exp(mean(log(x)))
 }
 
 # ==============================================================================
@@ -349,15 +386,25 @@ propose_csp <- function(current_val, proposal_sd = 0.1) {
 #' Initialize parameters
 #' @param n_genes Number of genes
 #' @param aa_to_codons Genetic code
-#' @param obs_phi Optional observed phi values for initialization
+#' @param obs_phi_matrix Optional matrix of observed phi values (genes x tissues)
+#' @param n_tissues Number of tissue/expression sources
 #' @return List of initial parameter values
-initialize_parameters <- function(n_genes, aa_to_codons, obs_phi = NULL) {
+initialize_parameters <- function(n_genes, aa_to_codons, obs_phi_matrix = NULL, n_tissues = 0) {
   syn_aas <- get_synonymous_aas()
   
-  # Initialize phi
-  if (!is.null(obs_phi)) {
-    phi <- obs_phi
-    phi[phi <= 0] <- 0.01  # Ensure positive
+
+  # Initialize phi from geometric mean of observed values if available
+  if (!is.null(obs_phi_matrix) && is.matrix(obs_phi_matrix)) {
+    # Geometric mean across tissues for each gene
+    phi <- apply(obs_phi_matrix, 1, geom_mean)
+    phi[is.na(phi) | phi <= 0] <- 1  # Default for missing
+    # Normalize to mean = 1
+    phi <- phi / mean(phi, na.rm = TRUE)
+  } else if (!is.null(obs_phi_matrix) && is.vector(obs_phi_matrix)) {
+    # Single tissue case
+    phi <- obs_phi_matrix
+    phi[is.na(phi) | phi <= 0] <- 1
+    phi <- phi / mean(phi, na.rm = TRUE)
   } else {
     phi <- rep(1, n_genes)
   }
@@ -375,7 +422,13 @@ initialize_parameters <- function(n_genes, aa_to_codons, obs_phi = NULL) {
   
   # Hyperparameters
   sphi <- 1.0
-  sepsilon <- 0.5  # If using observed phi
+  
+  # Observation noise - one per tissue
+  if (n_tissues > 0) {
+    sepsilon <- rep(0.5, n_tissues)
+  } else {
+    sepsilon <- 0.5
+  }
   
   return(list(
     phi = phi,
@@ -390,7 +443,8 @@ initialize_parameters <- function(n_genes, aa_to_codons, obs_phi = NULL) {
 #' @param codon_counts Matrix of codon counts
 #' @param n_samples Number of MCMC samples
 #' @param thin Thinning interval
-#' @param obs_phi Optional observed phi values
+#' @param obs_phi_matrix Matrix of observed phi (genes x tissues), or vector for single tissue
+#' @param with_phi If TRUE, include observed phi in likelihood
 #' @param fix_phi If TRUE, don't update phi
 #' @param fix_dM If TRUE, don't update dM
 #' @param fix_dEta If TRUE, don't update dEta
@@ -404,7 +458,8 @@ run_roc_mcmc <- function(codon_counts,
                          n_samples = 1000,
                          thin = 10,
                          burnin_frac = 0.5,
-                         obs_phi = NULL,
+                         obs_phi_matrix = NULL,
+                         with_phi = FALSE,
                          fix_phi = FALSE,
                          fix_dM = FALSE,
                          fix_dEta = FALSE,
@@ -420,6 +475,21 @@ run_roc_mcmc <- function(codon_counts,
   n_genes <- nrow(codon_counts)
   n_iter <- n_samples * thin
   
+  # Handle obs_phi_matrix format
+  if (!is.null(obs_phi_matrix)) {
+    if (is.vector(obs_phi_matrix)) {
+      obs_phi_matrix <- matrix(obs_phi_matrix, ncol = 1)
+    }
+    n_tissues <- ncol(obs_phi_matrix)
+    tissue_names <- colnames(obs_phi_matrix)
+    if (is.null(tissue_names)) {
+      tissue_names <- paste0("Tissue_", seq_len(n_tissues))
+    }
+  } else {
+    n_tissues <- 0
+    tissue_names <- NULL
+  }
+  
   # Configure parallelization
   if (n_cores <= 0) {
     n_cores <- detect_cores()
@@ -433,12 +503,16 @@ run_roc_mcmc <- function(codon_counts,
     message(sprintf("Genes: %d", n_genes))
     message(sprintf("Samples: %d (thin=%d, total iter=%d)", n_samples, thin, n_iter))
     message(sprintf("Fix phi: %s, Fix dM: %s, Fix dEta: %s", fix_phi, fix_dM, fix_dEta))
+    if (n_tissues > 0) {
+      message(sprintf("Expression sources: %d (%s)", n_tissues, paste(tissue_names, collapse = ", ")))
+      message(sprintf("With phi likelihood: %s", with_phi))
+    }
     message(sprintf("Parallel cores: %d", n_cores))
     message("============================================")
   }
   
   # Initialize
-  params <- initialize_parameters(n_genes, aa_to_codons, obs_phi)
+  params <- initialize_parameters(n_genes, aa_to_codons, obs_phi_matrix, n_tissues)
   
   # Override with provided initial values
   if (!is.null(init_dM)) {
@@ -448,9 +522,16 @@ run_roc_mcmc <- function(codon_counts,
     params$dEta <- init_dEta
   }
   
-  # If phi is fixed, use observed values
-  if (fix_phi && !is.null(obs_phi)) {
-    params$phi <- obs_phi
+  # If phi is fixed, use geometric mean of observed values
+  if (fix_phi && !is.null(obs_phi_matrix)) {
+    if (n_tissues > 1) {
+      params$phi <- apply(obs_phi_matrix, 1, geom_mean)
+      params$phi[is.na(params$phi)] <- 1
+    } else {
+      params$phi <- obs_phi_matrix[, 1]
+      params$phi[is.na(params$phi) | params$phi <= 0] <- 1
+    }
+    params$phi <- params$phi / mean(params$phi, na.rm = TRUE)
   }
   
   # Storage for samples
@@ -458,6 +539,14 @@ run_roc_mcmc <- function(codon_counts,
   phi_samples <- matrix(NA, nrow = n_store, ncol = n_genes)
   sphi_samples <- numeric(n_store)
   log_posterior_trace <- numeric(n_store)
+  
+  # Storage for sepsilon (one per tissue)
+  if (n_tissues > 0 && with_phi) {
+    sepsilon_samples <- matrix(NA, nrow = n_store, ncol = n_tissues)
+    colnames(sepsilon_samples) <- tissue_names
+  } else {
+    sepsilon_samples <- NULL
+  }
   
   # Store CSP samples (flattened)
   dM_samples <- list()
@@ -473,6 +562,7 @@ run_roc_mcmc <- function(codon_counts,
   dM_prop_sd <- 0.1
   dEta_prop_sd <- 0.1
   sphi_prop_sd <- 0.1
+  sepsilon_prop_sd <- rep(0.1, max(1, n_tissues))
   
   # Acceptance counters
   phi_accept <- rep(0, n_genes)
@@ -484,12 +574,21 @@ run_roc_mcmc <- function(codon_counts,
     dEta_accept[[aa]] <- rep(0, n_params)
   }
   sphi_accept <- 0
+  sepsilon_accept <- rep(0, max(1, n_tissues))
   
   # Current log posterior
   current_log_lik <- calc_total_log_likelihood(
     codon_counts, params$dM, params$dEta, params$phi, aa_to_codons, n_cores
   )
   current_log_prior_phi <- log_prior_phi(params$phi, params$sphi)
+  
+  # Observed phi likelihood (multi-tissue)
+  current_log_lik_obs_phi <- 0
+  if (with_phi && n_tissues > 0) {
+    current_log_lik_obs_phi <- log_lik_obs_phi_multitissue(
+      obs_phi_matrix, params$phi, params$sepsilon
+    )
+  }
   
   current_log_prior_dM <- 0
   current_log_prior_dEta <- 0
@@ -499,7 +598,7 @@ run_roc_mcmc <- function(codon_counts,
   }
   
   current_log_posterior <- current_log_lik + current_log_prior_phi + 
-    current_log_prior_dM + current_log_prior_dEta
+    current_log_prior_dM + current_log_prior_dEta + current_log_lik_obs_phi
   
   sample_idx <- 0
   
@@ -512,13 +611,28 @@ run_roc_mcmc <- function(codon_counts,
         phi_new <- propose_phi(params$phi[g], phi_prop_sd[g])
         
         if (phi_new > 0) {
-          # Calculate new likelihood for this gene only
+          # Calculate new codon likelihood for this gene only
           old_lik_g <- calc_log_likelihood_gene(
             codon_counts[g, ], params$dM, params$dEta, params$phi[g], aa_to_codons
           )
           new_lik_g <- calc_log_likelihood_gene(
             codon_counts[g, ], params$dM, params$dEta, phi_new, aa_to_codons
           )
+          
+          # Observed phi likelihood contribution (multi-tissue)
+          old_obs_lik_g <- 0
+          new_obs_lik_g <- 0
+          if (with_phi && n_tissues > 0) {
+            for (k in seq_len(n_tissues)) {
+              obs_k <- obs_phi_matrix[g, k]
+              if (!is.na(obs_k) && obs_k > 0) {
+                old_obs_lik_g <- old_obs_lik_g + dnorm(log(obs_k), log(params$phi[g]), 
+                                                       params$sepsilon[k], log = TRUE)
+                new_obs_lik_g <- new_obs_lik_g + dnorm(log(obs_k), log(phi_new), 
+                                                       params$sepsilon[k], log = TRUE)
+              }
+            }
+          }
           
           # Prior ratio (on log scale)
           mu <- -params$sphi^2 / 2
@@ -528,13 +642,41 @@ run_roc_mcmc <- function(codon_counts,
           # Jacobian for log-scale proposal
           log_jacobian <- log(phi_new) - log(params$phi[g])
           
-          log_accept_ratio <- (new_lik_g - old_lik_g) + (new_prior - old_prior) + log_jacobian
+          log_accept_ratio <- (new_lik_g - old_lik_g) + 
+            (new_obs_lik_g - old_obs_lik_g) +
+            (new_prior - old_prior) + log_jacobian
           
           if (log(runif(1)) < log_accept_ratio) {
             current_log_lik <- current_log_lik + (new_lik_g - old_lik_g)
+            current_log_lik_obs_phi <- current_log_lik_obs_phi + (new_obs_lik_g - old_obs_lik_g)
             current_log_prior_phi <- current_log_prior_phi + (new_prior - old_prior)
             params$phi[g] <- phi_new
             phi_accept[g] <- phi_accept[g] + 1
+          }
+        }
+      }
+    }
+    
+    # --- Update sepsilon (observation noise per tissue) ---
+    if (with_phi && n_tissues > 0 && !fix_phi) {
+      for (k in seq_len(n_tissues)) {
+        sepsilon_new <- exp(rnorm(1, log(params$sepsilon[k]), sepsilon_prop_sd[k]))
+        
+        if (sepsilon_new > 0.01 && sepsilon_new < 5) {
+          # Calculate new observed phi likelihood for this tissue
+          old_obs_lik_k <- log_prior_obs_phi(obs_phi_matrix[, k], params$phi, params$sepsilon[k])
+          new_obs_lik_k <- log_prior_obs_phi(obs_phi_matrix[, k], params$phi, sepsilon_new)
+          
+          # Jacobian for log-scale proposal
+          log_jacobian <- log(sepsilon_new) - log(params$sepsilon[k])
+          
+          # Flat prior on sepsilon (could add informative prior)
+          log_accept_ratio <- (new_obs_lik_k - old_obs_lik_k) + log_jacobian
+          
+          if (log(runif(1)) < log_accept_ratio) {
+            current_log_lik_obs_phi <- current_log_lik_obs_phi + (new_obs_lik_k - old_obs_lik_k)
+            params$sepsilon[k] <- sepsilon_new
+            sepsilon_accept[k] <- sepsilon_accept[k] + 1
           }
         }
       }
@@ -616,7 +758,7 @@ run_roc_mcmc <- function(codon_counts,
     
     # Update total log posterior
     current_log_posterior <- current_log_lik + current_log_prior_phi + 
-      current_log_prior_dM + current_log_prior_dEta
+      current_log_prior_dM + current_log_prior_dEta + current_log_lik_obs_phi
     
     # --- Store samples ---
     if (iter %% thin == 0) {
@@ -624,6 +766,10 @@ run_roc_mcmc <- function(codon_counts,
       phi_samples[sample_idx, ] <- params$phi
       sphi_samples[sample_idx] <- params$sphi
       log_posterior_trace[sample_idx] <- current_log_posterior
+      
+      if (!is.null(sepsilon_samples)) {
+        sepsilon_samples[sample_idx, ] <- params$sepsilon
+      }
       
       for (aa in syn_aas) {
         dM_samples[[aa]][sample_idx, ] <- params$dM[[aa]]
@@ -644,7 +790,18 @@ run_roc_mcmc <- function(codon_counts,
         phi_accept[g] <- 0
       }
       
-      # Could adapt CSP proposals similarly...
+      # Adapt sepsilon proposals
+      if (with_phi && n_tissues > 0) {
+        for (k in seq_len(n_tissues)) {
+          accept_rate <- sepsilon_accept[k] / adapt_interval
+          if (accept_rate < 0.2) {
+            sepsilon_prop_sd[k] <- sepsilon_prop_sd[k] * 0.8
+          } else if (accept_rate > 0.4) {
+            sepsilon_prop_sd[k] <- sepsilon_prop_sd[k] * 1.2
+          }
+          sepsilon_accept[k] <- 0
+        }
+      }
     }
     
     # Progress
@@ -662,6 +819,14 @@ run_roc_mcmc <- function(codon_counts,
   phi_sd <- apply(phi_samples[post_samples, , drop = FALSE], 2, sd)
   sphi_mean <- mean(sphi_samples[post_samples])
   
+  # Sepsilon summaries
+  if (!is.null(sepsilon_samples)) {
+    sepsilon_mean <- colMeans(sepsilon_samples[post_samples, , drop = FALSE])
+    names(sepsilon_mean) <- tissue_names
+  } else {
+    sepsilon_mean <- NULL
+  }
+  
   dM_mean <- list()
   dEta_mean <- list()
   for (aa in syn_aas) {
@@ -674,6 +839,10 @@ run_roc_mcmc <- function(codon_counts,
     message("MCMC Complete!")
     message(sprintf("Final log posterior: %.2f", current_log_posterior))
     message(sprintf("Posterior mean sphi: %.3f", sphi_mean))
+    if (!is.null(sepsilon_mean)) {
+      message(sprintf("Posterior mean sepsilon: %s", 
+                      paste(sprintf("%s=%.3f", names(sepsilon_mean), sepsilon_mean), collapse = ", ")))
+    }
     message("============================================")
   }
   
@@ -681,6 +850,7 @@ run_roc_mcmc <- function(codon_counts,
     # Traces
     phi_samples = phi_samples,
     sphi_samples = sphi_samples,
+    sepsilon_samples = sepsilon_samples,
     dM_samples = dM_samples,
     dEta_samples = dEta_samples,
     log_posterior = log_posterior_trace,
@@ -689,6 +859,7 @@ run_roc_mcmc <- function(codon_counts,
     phi_mean = phi_mean,
     phi_sd = phi_sd,
     sphi_mean = sphi_mean,
+    sepsilon_mean = sepsilon_mean,
     dM_mean = dM_mean,
     dEta_mean = dEta_mean,
     
@@ -696,6 +867,8 @@ run_roc_mcmc <- function(codon_counts,
     n_samples = n_samples,
     thin = thin,
     burnin_frac = burnin_frac,
+    n_tissues = n_tissues,
+    tissue_names = tissue_names,
     gene_ids = rownames(codon_counts)
   ))
 }
@@ -764,10 +937,20 @@ save_results <- function(results, output_dir) {
   dEta_df <- params_to_dataframe(results$dEta_mean, aa_to_codons, "DeltaEta")
   write.csv(dEta_df, file.path(output_dir, "dEta_estimates.csv"), row.names = FALSE)
   
-  # Save hyperparameters
+  # Save hyperparameters (including sepsilon per tissue)
+  hyper_params <- c("sphi")
+  hyper_means <- c(results$sphi_mean)
+  
+  if (!is.null(results$sepsilon_mean)) {
+    for (tissue in names(results$sepsilon_mean)) {
+      hyper_params <- c(hyper_params, paste0("sepsilon_", tissue))
+      hyper_means <- c(hyper_means, results$sepsilon_mean[tissue])
+    }
+  }
+  
   hyper_df <- data.frame(
-    Parameter = c("sphi"),
-    Mean = c(results$sphi_mean)
+    Parameter = hyper_params,
+    Mean = hyper_means
   )
   write.csv(hyper_df, file.path(output_dir, "hyperparameters.csv"), row.names = FALSE)
   
@@ -777,6 +960,13 @@ save_results <- function(results, output_dir) {
     file.path(output_dir, "log_posterior_trace.csv"), 
     row.names = FALSE
   )
+  
+  # Save sepsilon traces if available
+  if (!is.null(results$sepsilon_samples)) {
+    sepsilon_trace_df <- as.data.frame(results$sepsilon_samples)
+    sepsilon_trace_df$Sample <- seq_len(nrow(sepsilon_trace_df))
+    write.csv(sepsilon_trace_df, file.path(output_dir, "sepsilon_trace.csv"), row.names = FALSE)
+  }
   
   message(paste("Results saved to:", output_dir))
 }
@@ -798,7 +988,7 @@ save_results <- function(results, output_dir) {
 if (!interactive() && .is_main_script()) {
   library(argparse)
   
-  parser <- ArgumentParser(description = "Pure R ROC Model MCMC")
+  parser <- ArgumentParser(description = "Pure R ROC Model MCMC with Multi-Tissue Support")
   
   parser$add_argument("-i", "--input", required = TRUE,
                       help = "Input FASTA file with CDS sequences")
@@ -811,11 +1001,11 @@ if (!interactive() && .is_main_script()) {
   parser$add_argument("-c", "--cores", type = "integer", default = 0,
                       help = "Number of parallel cores (0 = auto-detect)")
   parser$add_argument("--phi", default = NULL,
-                      help = "CSV file with observed phi values (GeneID, expression columns)")
-  parser$add_argument("--phi_col", default = NULL,
-                      help = "Column name for phi values (default: use column 2)")
+                      help = "CSV file with observed phi values (GeneID + expression columns)")
+  parser$add_argument("--with_phi", action = "store_true",
+                      help = "Include observed phi in likelihood (enables multi-tissue model)")
   parser$add_argument("--fix_phi", action = "store_true",
-                      help = "Fix phi at observed values (requires --phi)")
+                      help = "Fix phi at observed values (uses geometric mean of tissues)")
   parser$add_argument("--dM", default = NULL,
                       help = "CSV file with initial dM values (AA, Codon, dM columns)")
   parser$add_argument("--fix_dM", action = "store_true",
@@ -834,24 +1024,40 @@ if (!interactive() && .is_main_script()) {
   message("Reading FASTA file...")
   data <- read_fasta_codon_counts(args$input)
   
-  # Read observed phi if provided
-  obs_phi <- NULL
+  # Read observed phi if provided (multi-tissue support)
+  obs_phi_matrix <- NULL
   if (!is.null(args$phi)) {
     message("Reading observed phi values...")
     phi_df <- read.csv(args$phi)
     
-    # Determine which column to use for phi
-    if (!is.null(args$phi_col) && args$phi_col %in% colnames(phi_df)) {
-      phi_col <- args$phi_col
-    } else {
-      phi_col <- colnames(phi_df)[2]  # Default: second column
-    }
-    message(sprintf("Using column '%s' for phi values", phi_col))
+    # First column is gene ID, remaining columns are expression sources
+    gene_col <- colnames(phi_df)[1]
+    expr_cols <- colnames(phi_df)[-1]
+    n_tissues <- length(expr_cols)
     
-    # Match to gene order
-    gene_col <- colnames(phi_df)[1]  # First column is gene ID
-    obs_phi <- phi_df[match(data$gene_ids, phi_df[[gene_col]]), phi_col]
-    obs_phi[is.na(obs_phi)] <- 1  # Default for missing
+    message(sprintf("Found %d expression source(s): %s", n_tissues, paste(expr_cols, collapse = ", ")))
+    
+    # Match genes to FASTA order
+    matched_idx <- match(data$gene_ids, phi_df[[gene_col]])
+    n_matched <- sum(!is.na(matched_idx))
+    message(sprintf("Matched %d / %d genes", n_matched, length(data$gene_ids)))
+    
+    # Create matrix of observed phi values (genes x tissues)
+    obs_phi_matrix <- matrix(NA, nrow = length(data$gene_ids), ncol = n_tissues)
+    colnames(obs_phi_matrix) <- expr_cols
+    rownames(obs_phi_matrix) <- data$gene_ids
+    
+    for (k in seq_len(n_tissues)) {
+      obs_phi_matrix[, k] <- phi_df[[expr_cols[k]]][matched_idx]
+    }
+    
+    # Normalize each tissue to mean = 1
+    for (k in seq_len(n_tissues)) {
+      valid <- !is.na(obs_phi_matrix[, k]) & obs_phi_matrix[, k] > 0
+      if (sum(valid) > 0) {
+        obs_phi_matrix[valid, k] <- obs_phi_matrix[valid, k] / mean(obs_phi_matrix[valid, k])
+      }
+    }
   }
   
   # Read initial dM if provided
@@ -896,7 +1102,8 @@ if (!interactive() && .is_main_script()) {
     codon_counts = data$codon_counts,
     n_samples = args$samples,
     thin = args$thin,
-    obs_phi = obs_phi,
+    obs_phi_matrix = obs_phi_matrix,
+    with_phi = args$with_phi,
     fix_phi = args$fix_phi,
     fix_dM = args$fix_dM,
     init_dM = init_dM,
