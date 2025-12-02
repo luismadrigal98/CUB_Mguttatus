@@ -3804,55 +3804,13 @@ write.table(
   quote = FALSE 
 )
 
+# 14.3.1) dM-fixed-with_phi ----
 
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_dM_fixed_with_phi/run_1",
+  "./results/MCMC_results/results_dM_fixed_with_phi/run_2",
+  "./results/MCMC_results/results_dM_fixed_with_phi/run_3"
+)
 
-
-
-
-
-
-### Local test of AnaCoDa with phi values 
-
-genome <- initializeGenomeObject(file = "./data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa",
-                                 match.expression.by.id = TRUE,
-                                 observed.expression.file = "./data/observed_expression_multitissue.csv")
-
-size <- length(genome)
-message(paste("Genome loaded with", size, "genes"))
-
-index <- c(1:size)
-
-geneAssignment <- rep(1, size)
-mixture.labels <- c("Cluster_1")
-numMixtures <- 1
-
-message(paste("Number of mixtures:", numMixtures))
-message(paste("Mixture labels:", paste(mixture.labels, collapse=", ")))
-
-init_phi <- NULL
-sphi_input <- 1
-
-s_eps <- c(0.5, 0.5)
-
-parameter <- initializeParameterObject(genome = genome, 
-                                       sphi = sphi_input,
-                                       num.mixtures = numMixtures, 
-                                       gene.assignment = geneAssignment,
-                                       init.sepsilon = s_eps,
-                                       split.serine = TRUE, 
-                                       mixture.definition = "allUnique")
-
-parameter$initMutationCategories(c('./data/Mguttatus_intron_derived_dM.csv'), 1, TRUE)
-
-mcmc <- initializeMCMCObject(samples = 100, thinning = 10, 
-                             adaptive.width = 20,
-                             est.expression = F, 
-                             est.csp = T, 
-                             est.hyper = T,
-                             est.mix = T)
-
-mcmc$setStepsToAdapt(50)
-
-model <- initializeModelObject(parameter = parameter, model = "ROC", with.phi = TRUE)
-
-runMCMC(mcmc, genome, model, 10, div = 40)
+dM_fixed_with_phi_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed

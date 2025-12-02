@@ -1437,9 +1437,13 @@ create_diagnostic_plots <- function(results, graphs_dir) {
                   col = ifelse(means > 0, "coral", "lightblue"),
                   ylim = range(c(means - 2*sds, means + 2*sds, 0)) * 1.2)
     
-    # Add error bars
-    arrows(bp, means - sds, bp, means + sds,
-           angle = 90, code = 3, length = 0.05)
+    # Add error bars (only for non-zero SDs to avoid warnings)
+    has_error <- sds > 0
+    if (any(has_error)) {
+      arrows(bp[has_error], means[has_error] - sds[has_error], 
+             bp[has_error], means[has_error] + sds[has_error],
+             angle = 90, code = 3, length = 0.05)
+    }
     abline(h = 0, lty = 2)
   }
   
@@ -1467,8 +1471,13 @@ create_diagnostic_plots <- function(results, graphs_dir) {
                   col = ifelse(means > 0, "darkseagreen", "lightyellow"),
                   ylim = range(c(means - 2*sds, means + 2*sds, 0)) * 1.2)
     
-    arrows(bp, means - sds, bp, means + sds,
-           angle = 90, code = 3, length = 0.05)
+    # Add error bars (only for non-zero SDs to avoid warnings)
+    has_error <- sds > 0
+    if (any(has_error)) {
+      arrows(bp[has_error], means[has_error] - sds[has_error], 
+             bp[has_error], means[has_error] + sds[has_error],
+             angle = 90, code = 3, length = 0.05)
+    }
     abline(h = 0, lty = 2)
   }
   
