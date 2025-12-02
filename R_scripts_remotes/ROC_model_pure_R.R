@@ -1089,64 +1089,392 @@ params_to_dataframe <- function(param_list, aa_to_codons, param_name = "Value") 
   return(result)
 }
 
-#' Save MCMC results to files
+#' Save MCMC results in AnaCoDa-compatible format
 #' @param results MCMC results from run_roc_mcmc
 #' @param output_dir Output directory
-save_results <- function(results, output_dir) {
-  if (!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
+#' @param create_plots Whether to create diagnostic plots
+save_results <- function(results, output_dir, create_plots = TRUE) {
+  
+  # Create directory structure matching AnaCoDa
+  dirs <- list(
+    base = output_dir,
+    params = file.path(output_dir, "Parameter_est"),
+    graphs = file.path(output_dir, "Graphs"),
+    robjects = file.path(output_dir, "R_objects"),
+    traces = file.path(output_dir, "Traces")
+  )
+  
+  for (d in dirs) {
+    if (!dir.exists(d)) dir.create(d, recursive = TRUE)
   }
   
   aa_to_codons <- get_genetic_code()
+  syn_aas <- get_synonymous_aas()
   
-  # Save phi estimates
+  # ============================================================================
+  # 1. Gene Expression Estimates (like AnaCoDa's gene_expression.txt)
+  # ============================================================================
   phi_df <- data.frame(
     GeneID = results$gene_ids,
     Phi_Mean = results$phi_mean,
-    Phi_SD = results$phi_sd
+    Phi_Std = results$phi_sd,
+    Phi_Median = apply(results$phi_samples[(results$n_samples * results$burnin_frac + 1):results$n_samples, , drop = FALSE], 2, median),
+    Phi_Lower = apply(results$phi_samples[(results$n_samples * results$burnin_frac + 1):results$n_samples, , drop = FALSE], 2, quantile, 0.025),
+    Phi_Upper = apply(results$phi_samples[(results$n_samples * results$burnin_frac + 1):results$n_samples, , drop = FALSE], 2, quantile, 0.975)
   )
-  write.csv(phi_df, file.path(output_dir, "phi_estimates.csv"), row.names = FALSE)
+  write.csv(phi_df, file.path(dirs$params, "gene_expression.csv"), row.names = FALSE)
   
-  # Save dM estimates
-  dM_df <- params_to_dataframe(results$dM_mean, aa_to_codons, "DeltaM")
-  write.csv(dM_df, file.path(output_dir, "dM_estimates.csv"), row.names = FALSE)
+  # ============================================================================
+  # 2. CSP Estimates (Selection = dEta, Mutation = dM)
+  # ============================================================================
   
-  # Save dEta estimates
-  dEta_df <- params_to_dataframe(results$dEta_mean, aa_to_codons, "DeltaEta")
-  write.csv(dEta_df, file.path(output_dir, "dEta_estimates.csv"), row.names = FALSE)
+  # dEta (Selection) - AnaCoDa format: AA, Codon, Value, Std
+  dEta_df <- data.frame(
+    AA = character(),
+    Codon = character(),
+    Selection = numeric(),
+    Std = numeric(),
+    stringsAsFactors = FALSE
+  )
   
-  # Save hyperparameters (including sepsilon per tissue)
-  hyper_params <- c("sphi")
-  hyper_means <- c(results$sphi_mean)
+  for (aa in syn_aas) {
+    codons <- aa_to_codons[[aa]]
+    n_codons <- length(codons)
+    
+    for (i in seq_len(n_codons - 1)) {
+      post_samples <- results$dEta_samples[[aa]][(results$n_samples * results$burnin_frac + 1):results$n_samples, i]
+      dEta_df <- rbind(dEta_df, data.frame(
+        AA = aa,
+        Codon = codons[i],
+        Selection = mean(post_samples),
+        Std = sd(post_samples)
+      ))
+    }
+    # Reference codon
+    dEta_df <- rbind(dEta_df, data.frame(
+      AA = aa,
+      Codon = codons[n_codons],
+      Selection = 0,
+      Std = 0
+    ))
+  }
+  write.csv(dEta_df, file.path(dirs$params, "selection_coefficients.csv"), row.names = FALSE)
+  
+  # dM (Mutation) - AnaCoDa format
+  dM_df <- data.frame(
+    AA = character(),
+    Codon = character(),
+    Mutation = numeric(),
+    Std = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (aa in syn_aas) {
+    codons <- aa_to_codons[[aa]]
+    n_codons <- length(codons)
+    
+    for (i in seq_len(n_codons - 1)) {
+      post_samples <- results$dM_samples[[aa]][(results$n_samples * results$burnin_frac + 1):results$n_samples, i]
+      dM_df <- rbind(dM_df, data.frame(
+        AA = aa,
+        Codon = codons[i],
+        Mutation = mean(post_samples),
+        Std = sd(post_samples)
+      ))
+    }
+    # Reference codon
+    dM_df <- rbind(dM_df, data.frame(
+      AA = aa,
+      Codon = codons[n_codons],
+      Mutation = 0,
+      Std = 0
+    ))
+  }
+  write.csv(dM_df, file.path(dirs$params, "mutation_coefficients.csv"), row.names = FALSE)
+  
+  # ============================================================================
+  # 3. Hyperparameters
+  # ============================================================================
+  hyper_df <- data.frame(
+    Parameter = "Sphi",
+    Mean = results$sphi_mean,
+    Std = sd(results$sphi_samples[(results$n_samples * results$burnin_frac + 1):results$n_samples])
+  )
   
   if (!is.null(results$sepsilon_mean)) {
-    for (tissue in names(results$sepsilon_mean)) {
-      hyper_params <- c(hyper_params, paste0("sepsilon_", tissue))
-      hyper_means <- c(hyper_means, results$sepsilon_mean[tissue])
+    for (i in seq_along(results$sepsilon_mean)) {
+      tissue <- names(results$sepsilon_mean)[i]
+      post_samples <- results$sepsilon_samples[(results$n_samples * results$burnin_frac + 1):results$n_samples, i]
+      hyper_df <- rbind(hyper_df, data.frame(
+        Parameter = paste0("Sepsilon_", tissue),
+        Mean = results$sepsilon_mean[i],
+        Std = sd(post_samples)
+      ))
+    }
+  }
+  write.csv(hyper_df, file.path(dirs$params, "hyperparameters.csv"), row.names = FALSE)
+  
+  # ============================================================================
+  # 4. Trace files
+  # ============================================================================
+  # Log posterior
+  write.csv(
+    data.frame(Sample = seq_along(results$log_posterior), LogPosterior = results$log_posterior),
+    file.path(dirs$traces, "log_posterior_trace.csv"), row.names = FALSE
+  )
+  
+  # Sphi trace
+  write.csv(
+    data.frame(Sample = seq_along(results$sphi_samples), Sphi = results$sphi_samples),
+    file.path(dirs$traces, "sphi_trace.csv"), row.names = FALSE
+  )
+  
+  # Sepsilon traces
+  if (!is.null(results$sepsilon_samples)) {
+    sepsilon_df <- as.data.frame(results$sepsilon_samples)
+    colnames(sepsilon_df) <- paste0("Sepsilon_", results$tissue_names)
+    sepsilon_df$Sample <- seq_len(nrow(sepsilon_df))
+    write.csv(sepsilon_df, file.path(dirs$traces, "sepsilon_trace.csv"), row.names = FALSE)
+  }
+  
+  # ============================================================================
+  # 5. R objects for later analysis
+  # ============================================================================
+  saveRDS(results, file.path(dirs$robjects, "mcmc_results.rds"))
+  
+  # ============================================================================
+  # 6. Convergence diagnostics
+  # ============================================================================
+  diag_df <- data.frame(
+    Parameter = character(),
+    Geweke_Z = numeric(),
+    Converged = logical(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Geweke diagnostic for log posterior
+  post_trace <- results$log_posterior
+  n <- length(post_trace)
+  frac1 <- 0.1
+  frac2 <- 0.5
+  n1 <- floor(n * frac1)
+  n2 <- floor(n * frac2)
+  
+  start_mean <- mean(post_trace[1:n1])
+  start_var <- var(post_trace[1:n1]) / n1
+  end_mean <- mean(post_trace[(n - n2 + 1):n])
+  end_var <- var(post_trace[(n - n2 + 1):n]) / n2
+  
+  z_post <- (start_mean - end_mean) / sqrt(start_var + end_var)
+  diag_df <- rbind(diag_df, data.frame(
+    Parameter = "LogPosterior",
+    Geweke_Z = z_post,
+    Converged = abs(z_post) < 1.96
+  ))
+  
+  # Geweke for sphi
+  sphi_trace <- results$sphi_samples
+  n1 <- floor(length(sphi_trace) * frac1)
+  n2 <- floor(length(sphi_trace) * frac2)
+  start_mean <- mean(sphi_trace[1:n1])
+  start_var <- var(sphi_trace[1:n1]) / n1
+  end_mean <- mean(sphi_trace[(length(sphi_trace) - n2 + 1):length(sphi_trace)])
+  end_var <- var(sphi_trace[(length(sphi_trace) - n2 + 1):length(sphi_trace)]) / n2
+  z_sphi <- (start_mean - end_mean) / sqrt(start_var + end_var)
+  diag_df <- rbind(diag_df, data.frame(
+    Parameter = "Sphi",
+    Geweke_Z = z_sphi,
+    Converged = abs(z_sphi) < 1.96
+  ))
+  
+  write.csv(diag_df, file.path(dirs$params, "convergence_diagnostics.csv"), row.names = FALSE)
+  
+  # ============================================================================
+  # 7. Diagnostic Plots
+  # ============================================================================
+  if (create_plots) {
+    tryCatch({
+      create_diagnostic_plots(results, dirs$graphs)
+    }, error = function(e) {
+      warning(sprintf("Could not create plots: %s", e$message))
+    })
+  }
+  
+  # ============================================================================
+  # 8. Summary file
+  # ============================================================================
+  summary_lines <- c(
+    "========================================",
+    "ROC Model MCMC Results Summary",
+    "========================================",
+    sprintf("Genes: %d", length(results$gene_ids)),
+    sprintf("MCMC Samples: %d (after thinning)", results$n_samples),
+    sprintf("Burn-in: %.0f%%", results$burnin_frac * 100),
+    sprintf("Tissues: %d", results$n_tissues),
+    "",
+    "Hyperparameters:",
+    sprintf("  Sphi (mean): %.4f", results$sphi_mean),
+    if (!is.null(results$sepsilon_mean)) {
+      paste(sprintf("  Sepsilon_%s (mean): %.4f", names(results$sepsilon_mean), results$sepsilon_mean), collapse = "\n")
+    } else "",
+    "",
+    "Convergence:",
+    sprintf("  LogPosterior Geweke Z: %.3f (%s)", z_post, ifelse(abs(z_post) < 1.96, "OK", "WARNING")),
+    sprintf("  Sphi Geweke Z: %.3f (%s)", z_sphi, ifelse(abs(z_sphi) < 1.96, "OK", "WARNING")),
+    "",
+    sprintf("Output saved to: %s", output_dir),
+    "========================================"
+  )
+  
+  writeLines(summary_lines, file.path(output_dir, "summary.txt"))
+  message(paste(summary_lines, collapse = "\n"))
+}
+
+#' Create diagnostic plots
+#' @param results MCMC results
+#' @param graphs_dir Directory for plots
+create_diagnostic_plots <- function(results, graphs_dir) {
+  
+  aa_to_codons <- get_genetic_code()
+  syn_aas <- get_synonymous_aas()
+  burnin_idx <- floor(results$n_samples * results$burnin_frac) + 1
+  post_idx <- burnin_idx:results$n_samples
+  
+  # ============================================================================
+  # Plot 1: MCMC Traces (like AnaCoDa's mcmc_traces.pdf)
+  # ============================================================================
+  pdf(file.path(graphs_dir, "mcmc_traces.pdf"), width = 10, height = 8)
+  
+  # Log posterior trace
+  par(mfrow = c(2, 2))
+  plot(results$log_posterior, type = "l", 
+       main = "Log Posterior Trace",
+       xlab = "Sample", ylab = "Log Posterior",
+       col = "steelblue")
+  abline(v = burnin_idx, col = "red", lty = 2)
+  
+  # Sphi trace
+  plot(results$sphi_samples, type = "l",
+       main = "Sphi Trace",
+       xlab = "Sample", ylab = "Sphi",
+       col = "darkgreen")
+  abline(v = burnin_idx, col = "red", lty = 2)
+  
+  # Sphi posterior
+  hist(results$sphi_samples[post_idx], breaks = 30,
+       main = "Sphi Posterior",
+       xlab = "Sphi", col = "lightgreen", border = "darkgreen")
+  abline(v = results$sphi_mean, col = "red", lwd = 2)
+  
+  # Log posterior posterior
+  hist(results$log_posterior[post_idx], breaks = 30,
+       main = "Log Posterior Distribution",
+       xlab = "Log Posterior", col = "lightblue", border = "steelblue")
+  
+  # Sepsilon traces if available
+  if (!is.null(results$sepsilon_samples)) {
+    n_tissues <- ncol(results$sepsilon_samples)
+    par(mfrow = c(min(n_tissues, 2), 2))
+    
+    for (k in seq_len(n_tissues)) {
+      tissue <- results$tissue_names[k]
+      
+      plot(results$sepsilon_samples[, k], type = "l",
+           main = sprintf("Sepsilon_%s Trace", tissue),
+           xlab = "Sample", ylab = "Sepsilon",
+           col = "purple")
+      abline(v = burnin_idx, col = "red", lty = 2)
+      
+      hist(results$sepsilon_samples[post_idx, k], breaks = 30,
+           main = sprintf("Sepsilon_%s Posterior", tissue),
+           xlab = "Sepsilon", col = "plum", border = "purple")
+      abline(v = results$sepsilon_mean[k], col = "red", lwd = 2)
     }
   }
   
-  hyper_df <- data.frame(
-    Parameter = hyper_params,
-    Mean = hyper_means
-  )
-  write.csv(hyper_df, file.path(output_dir, "hyperparameters.csv"), row.names = FALSE)
+  dev.off()
   
-  # Save log posterior trace
-  write.csv(
-    data.frame(Sample = seq_along(results$log_posterior), LogPosterior = results$log_posterior),
-    file.path(output_dir, "log_posterior_trace.csv"), 
-    row.names = FALSE
-  )
+  # ============================================================================
+  # Plot 2: Phi distribution
+  # ============================================================================
+  pdf(file.path(graphs_dir, "phi_distribution.pdf"), width = 10, height = 6)
   
-  # Save sepsilon traces if available
-  if (!is.null(results$sepsilon_samples)) {
-    sepsilon_trace_df <- as.data.frame(results$sepsilon_samples)
-    sepsilon_trace_df$Sample <- seq_len(nrow(sepsilon_trace_df))
-    write.csv(sepsilon_trace_df, file.path(output_dir, "sepsilon_trace.csv"), row.names = FALSE)
+  par(mfrow = c(1, 2))
+  
+  # Phi histogram
+  hist(log10(results$phi_mean + 1e-10), breaks = 50,
+       main = "Distribution of Estimated Phi",
+       xlab = "log10(Phi)", col = "lightblue", border = "steelblue")
+  
+  # Phi vs uncertainty
+  plot(log10(results$phi_mean + 1e-10), results$phi_sd / results$phi_mean,
+       pch = 16, cex = 0.5, col = rgb(0.2, 0.4, 0.6, 0.5),
+       main = "Phi Uncertainty vs Expression",
+       xlab = "log10(Phi Mean)", ylab = "Coefficient of Variation")
+  
+  dev.off()
+  
+  # ============================================================================
+  # Plot 3: CSP (Selection and Mutation) estimates
+  # ============================================================================
+  pdf(file.path(graphs_dir, "CSP_estimates.pdf"), width = 12, height = 10)
+  
+  # Selection coefficients by amino acid
+  par(mfrow = c(4, 5), mar = c(3, 3, 2, 1))
+  
+  for (aa in syn_aas) {
+    codons <- aa_to_codons[[aa]]
+    n_codons <- length(codons)
+    
+    means <- c(results$dEta_mean[[aa]], 0)
+    sds <- numeric(n_codons)
+    for (i in seq_len(n_codons - 1)) {
+      sds[i] <- sd(results$dEta_samples[[aa]][post_idx, i])
+    }
+    
+    bp <- barplot(means, names.arg = codons,
+                  main = paste(aa, "- Selection"),
+                  col = ifelse(means > 0, "coral", "lightblue"),
+                  ylim = range(c(means - 2*sds, means + 2*sds, 0)) * 1.2)
+    
+    # Add error bars
+    arrows(bp, means - sds, bp, means + sds,
+           angle = 90, code = 3, length = 0.05)
+    abline(h = 0, lty = 2)
   }
   
-  message(paste("Results saved to:", output_dir))
+  dev.off()
+  
+  # ============================================================================
+  # Plot 4: Mutation coefficients
+  # ============================================================================
+  pdf(file.path(graphs_dir, "mutation_coefficients.pdf"), width = 12, height = 10)
+  
+  par(mfrow = c(4, 5), mar = c(3, 3, 2, 1))
+  
+  for (aa in syn_aas) {
+    codons <- aa_to_codons[[aa]]
+    n_codons <- length(codons)
+    
+    means <- c(results$dM_mean[[aa]], 0)
+    sds <- numeric(n_codons)
+    for (i in seq_len(n_codons - 1)) {
+      sds[i] <- sd(results$dM_samples[[aa]][post_idx, i])
+    }
+    
+    bp <- barplot(means, names.arg = codons,
+                  main = paste(aa, "- Mutation"),
+                  col = ifelse(means > 0, "darkseagreen", "lightyellow"),
+                  ylim = range(c(means - 2*sds, means + 2*sds, 0)) * 1.2)
+    
+    arrows(bp, means - sds, bp, means + sds,
+           angle = 90, code = 3, length = 0.05)
+    abline(h = 0, lty = 2)
+  }
+  
+  dev.off()
+  
+  message(sprintf("Diagnostic plots saved to: %s", graphs_dir))
 }
 
 # ==============================================================================
