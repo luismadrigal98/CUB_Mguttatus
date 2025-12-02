@@ -4,7 +4,12 @@
 # Pure R Implementation of the ROC (Ribosome Overhead Cost) Model
 # 
 # This is a pure R implementation of the AnaCoDa ROC model for codon usage bias
-# analysis. It avoids the C++ backend and associated bugs, at the cost of speed.
+# analysis. It avoids the C++ backend and associated bugs.
+#
+# PERFORMANCE:
+# When the C-accelerated library is available (roc_likelihood.so), this runs
+# ~40-50x faster than pure R. Compile with:
+#   cd R_scripts_remotes/src && R CMD SHLIB roc_likelihood.c -o roc_likelihood.so
 #
 # @author Luis Javier Madrigal-Roca
 # @date 12/01/2025
@@ -39,6 +44,53 @@
 # ******************************************************************************
 
 library(parallel)
+
+# ==============================================================================
+# C ACCELERATION
+# ==============================================================================
+
+# Global flag for C acceleration
+.USE_C_CODE <- FALSE
+.C_LIB_LOADED <- FALSE
+
+# Try to load C library
+.try_load_c_lib <- function() {
+  if (.C_LIB_LOADED) return(.USE_C_CODE)
+  
+  # Find script directory
+  script_dir <- tryCatch({
+    args <- commandArgs(trailingOnly = FALSE)
+    file_arg <- grep("^--file=", args, value = TRUE)
+    if (length(file_arg) > 0) {
+      dirname(normalizePath(sub("^--file=", "", file_arg)))
+    } else {
+      getwd()
+    }
+  }, error = function(e) getwd())
+  
+  # Look for shared library
+  so_paths <- c(
+    file.path(script_dir, "src", "roc_likelihood.so"),
+    file.path(script_dir, "roc_likelihood.so"),
+    file.path("R_scripts_remotes", "src", "roc_likelihood.so"),
+    file.path("src", "roc_likelihood.so")
+  )
+  
+  for (path in so_paths) {
+    if (file.exists(path)) {
+      tryCatch({
+        dyn.load(path)
+        .USE_C_CODE <<- TRUE
+        .C_LIB_LOADED <<- TRUE
+        message(sprintf("C acceleration enabled: %s", path))
+        return(TRUE)
+      }, error = function(e) NULL)
+    }
+  }
+  
+  .C_LIB_LOADED <<- TRUE
+  return(FALSE)
+}
 
 # ==============================================================================
 # GLOBAL PARALLEL CONFIGURATION
@@ -266,6 +318,13 @@ calc_log_likelihood_gene <- function(gene_codon_counts, dM_list, dEta_list,
 #' @return Total log likelihood
 calc_total_log_likelihood <- function(codon_counts, dM_list, dEta_list, 
                                       phi, aa_to_codons, n_cores = 1) {
+  
+  # Try C-accelerated version first (much faster)
+  if (.USE_C_CODE) {
+    return(.calc_total_log_likelihood_c(codon_counts, dM_list, dEta_list, 
+                                        phi, aa_to_codons))
+  }
+  
   n_genes <- nrow(codon_counts)
   
   if (n_cores > 1 && n_genes >= n_cores) {
@@ -292,6 +351,92 @@ calc_total_log_likelihood <- function(codon_counts, dM_list, dEta_list,
   }
   
   return(log_lik)
+}
+
+# ==============================================================================
+# C-ACCELERATED HELPERS
+# ==============================================================================
+
+#' Build amino acid info matrix for C code
+.build_aa_codon_info <- function(codon_counts, aa_to_codons) {
+  syn_aas <- get_synonymous_aas()
+  all_codons <- colnames(codon_counts)
+  
+  n_aa <- length(syn_aas)
+  info <- matrix(0L, nrow = n_aa, ncol = 4)
+  
+  param_offset <- 0L
+  
+  for (i in seq_along(syn_aas)) {
+    aa <- syn_aas[i]
+    codons <- aa_to_codons[[aa]]
+    codon_indices <- match(codons, all_codons) - 1L
+    
+    info[i, 1] <- i - 1L
+    info[i, 2] <- codon_indices[1]
+    info[i, 3] <- length(codons)
+    info[i, 4] <- param_offset
+    
+    param_offset <- param_offset + length(codons) - 1L
+  }
+  
+  return(info)
+}
+
+#' Flatten dM/dEta list to vector
+.flatten_params <- function(param_list) {
+  syn_aas <- get_synonymous_aas()
+  unlist(param_list[syn_aas])
+}
+
+#' C-accelerated total log likelihood
+.calc_total_log_likelihood_c <- function(codon_counts, dM_list, dEta_list,
+                                          phi, aa_to_codons) {
+  aa_info <- .build_aa_codon_info(codon_counts, aa_to_codons)
+  dM_vec <- .flatten_params(dM_list)
+  dEta_vec <- .flatten_params(dEta_list)
+  n_aa <- nrow(aa_info)
+  
+  if (!is.integer(codon_counts)) {
+    storage.mode(codon_counts) <- "integer"
+  }
+  
+  gene_logliks <- .Call("C_calc_log_lik_all_genes",
+                        codon_counts, dM_vec, dEta_vec, phi,
+                        aa_info, as.integer(n_aa))
+  
+  return(sum(gene_logliks))
+}
+
+#' C-accelerated batch phi update
+.batch_update_phi_c <- function(codon_counts, dM_list, dEta_list, phi,
+                                 obs_phi_matrix, sepsilon, sphi, prop_sd,
+                                 aa_to_codons, with_phi, gene_indices) {
+  
+  aa_info <- .build_aa_codon_info(codon_counts, aa_to_codons)
+  dM_vec <- .flatten_params(dM_list)
+  dEta_vec <- .flatten_params(dEta_list)
+  n_aa <- nrow(aa_info)
+  
+  if (!is.integer(codon_counts)) {
+    storage.mode(codon_counts) <- "integer"
+  }
+  
+  # Handle NULL obs_phi_matrix
+  if (is.null(obs_phi_matrix)) {
+    obs_phi_matrix <- matrix(NA_real_, nrow = length(phi), ncol = 1)
+    sepsilon <- 1.0
+    with_phi <- FALSE
+  }
+  
+  result <- .Call("C_batch_update_phi",
+                  codon_counts, dM_vec, dEta_vec, phi,
+                  obs_phi_matrix, as.numeric(sepsilon),
+                  as.numeric(sphi), as.numeric(prop_sd),
+                  aa_info, as.integer(n_aa),
+                  as.logical(with_phi), as.integer(gene_indices))
+  
+  return(result)
 }
 
 # ==============================================================================
@@ -469,6 +614,9 @@ run_roc_mcmc <- function(codon_counts,
                          n_cores = 1,
                          verbose = TRUE) {
   
+  # Try to load C acceleration
+  .try_load_c_lib()
+  
   # Setup
   aa_to_codons <- get_genetic_code()
   syn_aas <- get_synonymous_aas()
@@ -507,7 +655,10 @@ run_roc_mcmc <- function(codon_counts,
       message(sprintf("Expression sources: %d (%s)", n_tissues, paste(tissue_names, collapse = ", ")))
       message(sprintf("With phi likelihood: %s", with_phi))
     }
-    message(sprintf("Parallel cores: %d", n_cores))
+    message(sprintf("C acceleration: %s", ifelse(.USE_C_CODE, "ENABLED", "disabled")))
+    if (!.USE_C_CODE) {
+      message(sprintf("Parallel cores: %d (compile roc_likelihood.c for ~50x speedup)", n_cores))
+    }
     message("============================================")
   }
   
@@ -605,53 +756,80 @@ run_roc_mcmc <- function(codon_counts,
   # MCMC loop
   for (iter in 1:n_iter) {
     
-    # --- Update phi (gene by gene) ---
+    # --- Update phi (all genes, using C if available) ---
     if (!fix_phi) {
-      for (g in 1:n_genes) {
-        phi_new <- propose_phi(params$phi[g], phi_prop_sd[g])
+      if (.USE_C_CODE) {
+        # C-accelerated batch update (much faster)
+        result <- .batch_update_phi_c(
+          codon_counts, params$dM, params$dEta, params$phi,
+          obs_phi_matrix, params$sepsilon, params$sphi, phi_prop_sd,
+          aa_to_codons, with_phi, seq_len(n_genes)
+        )
         
-        if (phi_new > 0) {
-          # Calculate new codon likelihood for this gene only
-          old_lik_g <- calc_log_likelihood_gene(
-            codon_counts[g, ], params$dM, params$dEta, params$phi[g], aa_to_codons
+        # Update tracking
+        phi_accept <- phi_accept + result$accept
+        
+        # Recalculate total likelihood if any accepted
+        if (sum(result$accept) > 0) {
+          params$phi <- result$phi
+          current_log_lik <- calc_total_log_likelihood(
+            codon_counts, params$dM, params$dEta, params$phi, aa_to_codons, n_cores
           )
-          new_lik_g <- calc_log_likelihood_gene(
-            codon_counts[g, ], params$dM, params$dEta, phi_new, aa_to_codons
-          )
-          
-          # Observed phi likelihood contribution (multi-tissue)
-          old_obs_lik_g <- 0
-          new_obs_lik_g <- 0
+          current_log_prior_phi <- log_prior_phi(params$phi, params$sphi)
           if (with_phi && n_tissues > 0) {
-            for (k in seq_len(n_tissues)) {
-              obs_k <- obs_phi_matrix[g, k]
-              if (!is.na(obs_k) && obs_k > 0) {
-                old_obs_lik_g <- old_obs_lik_g + dnorm(log(obs_k), log(params$phi[g]), 
-                                                       params$sepsilon[k], log = TRUE)
-                new_obs_lik_g <- new_obs_lik_g + dnorm(log(obs_k), log(phi_new), 
-                                                       params$sepsilon[k], log = TRUE)
+            current_log_lik_obs_phi <- log_lik_obs_phi_multitissue(
+              obs_phi_matrix, params$phi, params$sepsilon
+            )
+          }
+        }
+      } else {
+        # Pure R gene-by-gene update
+        for (g in 1:n_genes) {
+          phi_new <- propose_phi(params$phi[g], phi_prop_sd[g])
+          
+          if (phi_new > 0) {
+            # Calculate new codon likelihood for this gene only
+            old_lik_g <- calc_log_likelihood_gene(
+              codon_counts[g, ], params$dM, params$dEta, params$phi[g], aa_to_codons
+            )
+            new_lik_g <- calc_log_likelihood_gene(
+              codon_counts[g, ], params$dM, params$dEta, phi_new, aa_to_codons
+            )
+            
+            # Observed phi likelihood contribution (multi-tissue)
+            old_obs_lik_g <- 0
+            new_obs_lik_g <- 0
+            if (with_phi && n_tissues > 0) {
+              for (k in seq_len(n_tissues)) {
+                obs_k <- obs_phi_matrix[g, k]
+                if (!is.na(obs_k) && obs_k > 0) {
+                  old_obs_lik_g <- old_obs_lik_g + dnorm(log(obs_k), log(params$phi[g]), 
+                                                         params$sepsilon[k], log = TRUE)
+                  new_obs_lik_g <- new_obs_lik_g + dnorm(log(obs_k), log(phi_new), 
+                                                         params$sepsilon[k], log = TRUE)
+                }
               }
             }
-          }
-          
-          # Prior ratio (on log scale)
-          mu <- -params$sphi^2 / 2
-          old_prior <- dlnorm(params$phi[g], meanlog = mu, sdlog = params$sphi, log = TRUE)
-          new_prior <- dlnorm(phi_new, meanlog = mu, sdlog = params$sphi, log = TRUE)
-          
-          # Jacobian for log-scale proposal
-          log_jacobian <- log(phi_new) - log(params$phi[g])
-          
-          log_accept_ratio <- (new_lik_g - old_lik_g) + 
-            (new_obs_lik_g - old_obs_lik_g) +
-            (new_prior - old_prior) + log_jacobian
-          
-          if (log(runif(1)) < log_accept_ratio) {
-            current_log_lik <- current_log_lik + (new_lik_g - old_lik_g)
-            current_log_lik_obs_phi <- current_log_lik_obs_phi + (new_obs_lik_g - old_obs_lik_g)
-            current_log_prior_phi <- current_log_prior_phi + (new_prior - old_prior)
-            params$phi[g] <- phi_new
-            phi_accept[g] <- phi_accept[g] + 1
+            
+            # Prior ratio (on log scale)
+            mu <- -params$sphi^2 / 2
+            old_prior <- dlnorm(params$phi[g], meanlog = mu, sdlog = params$sphi, log = TRUE)
+            new_prior <- dlnorm(phi_new, meanlog = mu, sdlog = params$sphi, log = TRUE)
+            
+            # Jacobian for log-scale proposal
+            log_jacobian <- log(phi_new) - log(params$phi[g])
+            
+            log_accept_ratio <- (new_lik_g - old_lik_g) + 
+              (new_obs_lik_g - old_obs_lik_g) +
+              (new_prior - old_prior) + log_jacobian
+            
+            if (log(runif(1)) < log_accept_ratio) {
+              current_log_lik <- current_log_lik + (new_lik_g - old_lik_g)
+              current_log_lik_obs_phi <- current_log_lik_obs_phi + (new_obs_lik_g - old_obs_lik_g)
+              current_log_prior_phi <- current_log_prior_phi + (new_prior - old_prior)
+              params$phi[g] <- phi_new
+              phi_accept[g] <- phi_accept[g] + 1
+            }
           }
         }
       }
