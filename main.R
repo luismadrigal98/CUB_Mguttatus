@@ -160,13 +160,11 @@ codon_columns <- names(codon_usage)[names(codon_usage) != "Gene_name"]
 
 gene_lengths <- codon_usage |>
   dplyr::mutate(
-    Gene_name_clean = sub("\\.1$", "", Gene_name),  # Remove .1 suffix
     Total_Codons = rowSums(across(all_of(codon_columns)), na.rm = TRUE),
     CDS_length_nt = Total_Codons * 3,  # nucleotides
     CDS_length_aa = Total_Codons        # amino acids (codons)
   ) |>
-  dplyr::select(Gene_name_clean, Total_Codons, CDS_length_nt, CDS_length_aa) |>
-  dplyr::rename(Gene_name = Gene_name_clean)
+  dplyr::select(Gene_name, Total_Codons, CDS_length_nt, CDS_length_aa)
 
 integrated_data <- integrated_data |>
   left_join(gene_lengths, by = "Gene_name")
@@ -361,14 +359,31 @@ integrated_data <- integrated_data |>
   dplyr::mutate(High_exp_log2 = log2(High_exp + 1), # Adding 1 to avoid log2(0)
                 High_exp_log10 = log10(High_exp + 1))  
 
-# Linear models ----
+# Generalized Linear Models ----
 
 integrated_data <- integrated_data |> 
   left_join(enc_cdc_data |> dplyr::select(Gene_name, CDC), by = "Gene_name")
   
-CDC_vs_exp <- lm(CDC ~ High_exp_log2 + CDS_length_nt, 
-                 data = integrated_data)
+CDC_vs_exp <- glm(CDC ~ High_exp_log2 + CDS_length_nt, 
+                 data = integrated_data, 
+                 family = quasibinomial(link = "logit"))
+
 summary(CDC_vs_exp)
+
+# Check fitting results
+integrated_data$predicted_CDC <- predict(CDC_vs_exp, type = "response")
+
+# 2. Plot Observed vs Predicted
+ggplot(integrated_data, aes(x = predicted_CDC, y = CDC)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  theme_minimal() +
+  labs(title = "Quasibinomial GLM: Observed vs Predicted",
+       x = "Predicted CDC",
+       y = "Observed CDC")
+
+ggsave("./results/CDC_observed_vs_predicted.pdf", 
+       width = 8, height = 6)
 
 # Density plots
 
@@ -408,17 +423,20 @@ ggsave("./results/CDC_raw_vs_gene_length_density.pdf",
 # we are going to fit a GAM model to account for this and assess effectively the
 # effect of expression
 
-cdc_model_beta <- gam(CDC ~ High_exp_log2 + s(CDS_length_nt), 
-                      data = integrated_data, family = betar(link = "logit"))
+cdc_model_quasibinom <- gam(CDC ~ High_exp_log2 + s(CDS_length_nt), 
+                      data = integrated_data, family = quasibinomial(link = "logit"))
 
-summary(cdc_model_beta)
+summary(cdc_model_quasibinom)
 
 # Plotting detrended ENC against expression
 
 confounder_model_gam <- gam(CDC ~ s(CDS_length_nt),
-                            data = integrated_data)
+                            data = integrated_data,
+                            family = quasibinomial(link = "logit"))
 
 integrated_data$CDC_detrended <- residuals(confounder_model_gam)
+
+summary(lm(CDC_detrended ~ High_exp_log2, data = integrated_data))
 
 p_detrended <- ggplot(integrated_data, aes(x = High_exp_log2, y = CDC_detrended)) +
   # Use ggpointdensity for a clear view of the cluster
@@ -430,12 +448,11 @@ p_detrended <- ggplot(integrated_data, aes(x = High_exp_log2, y = CDC_detrended)
   labs(
     title = "Detrended CDC vs. Gene Expression",
     subtitle = "Showing CDC after accounting for non-linear effects of gene length",
-    y = "ENC Residuals (Detrended)",
+    y = "CDC Residuals (Detrended)",
     x = "log2(Expression + 1)"
   ) +
   theme_custom()
 
-print(p_detrended)
 ggsave("./results/ENC_detrended_vs_expression.pdf", p_detrended, width = 8, height = 6)
 
 # Define expression groups: Top 5% vs Bottom 5% (extreme comparison) ----
@@ -448,96 +465,6 @@ integrated_data$Expression_Group <- case_when(
   integrated_data$High_exp_log2 <= bottom_5_cutoff ~ "Bottom 5%",
   TRUE ~ "Middle 90%"
 )
-
-# Boxplot comparison
-
-p_boxplot <- ggplot(integrated_data, aes(x = Expression_Group, y = CDC, fill = Expression_Group)) +
-  geom_boxplot(outlier.alpha = 0.3) +
-  geom_jitter(width = 0.2, alpha = 0.1, size = 0.5) +
-  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
-  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
-                                "Bottom 5%" = "#377EB8",
-                                "Middle 90%" = "#999999")) +
-  labs(title = "CDC by Expression Level",
-       subtitle = "Diamond = mean, box = median ± IQR",
-       y = "CDC",
-       x = "Expression Group") +
-  theme_custom() +
-  theme(legend.position = "none")
-
-ggsave("./results/CDC_by_expression_group.pdf", p_boxplot, width = 8, height = 6)
-
-# Statistical tests for three groups
-cat("\n=== Kruskal-Wallis Test: ENC across All Three Groups ===\n")
-cat("H0: All three groups have the same median ENC\n")
-kw_test_cdc <- kruskal.test(CDC ~ Expression_Group, data = integrated_data)
-print(kw_test_cdc)
-
-if (kw_test_cdc$p.value < 0.05) {
-  cat("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
-  cat("\n=== Dunn's Test: Pairwise Comparisons with FDR Correction ===\n")
-  
-  # Install and load dunn.test if not available
-  if (!require("dunn.test", quietly = TRUE)) {
-    cat("Installing dunn.test package...\n")
-    install.packages("dunn.test", repos = "https://cloud.r-project.org")
-    library(dunn.test)
-  }
-  
-  # Perform Dunn's test with FDR correction
-  dunn_result_cdc <- dunn.test::dunn.test(
-    x = integrated_data$CDC,
-    g = integrated_data$Expression_Group,
-    method = "bh",
-    kw = TRUE,
-    label = TRUE,
-    wrap = FALSE,
-    table = TRUE,
-    list = FALSE,
-    altp = TRUE
-  )
-} else {
-  cat("\nNo significant difference among groups (p >= 0.05)\n")
-  cat("Post-hoc tests not necessary.\n")
-}
-
-cat("\n=== Summary Statistics ===\n")
-summary_stats <- integrated_data |>
-  group_by(Expression_Group) |>
-  summarise(
-    n = n(),
-    mean_CDC = mean(CDC, na.rm = TRUE),
-    median_CDC = median(CDC, na.rm = TRUE),
-    sd_CDC = sd(CDC, na.rm = TRUE),
-    mean_Expression = mean(High_exp, na.rm = TRUE)
-  )
-print(summary_stats)
-
-# Effect sizes for pairwise comparisons
-cat("\n=== Effect Sizes (Cohen's d) for Pairwise Comparisons ===\n")
-
-# Get ENC values for each group
-top5_cdc <- integrated_data |> filter(Expression_Group == "Top 5%") |> pull(CDC)
-middle_cdc <- integrated_data |> filter(Expression_Group == "Middle 90%") |> pull(CDC)
-bottom5_cdc <- integrated_data |> filter(Expression_Group == "Bottom 5%") |> pull(CDC)
-
-# Calculate effect sizes
-if (length(top5_cdc) > 0 && length(middle_cdc) > 0) {
-  d_top_middle <- cohens_d_calc(top5_cdc, middle_cdc)
-  cat(sprintf("Top 5%% vs Middle 90%%: d = %.3f\n", d_top_middle))
-}
-
-if (length(top5_cdc) > 0 && length(bottom5_cdc) > 0) {
-  d_top_bottom <- cohens_d_calc(top5_cdc, bottom5_cdc)
-  cat(sprintf("Top 5%% vs Bottom 5%%: d = %.3f\n", d_top_bottom))
-}
-
-if (length(middle_cdc) > 0 && length(bottom5_cdc) > 0) {
-  d_middle_bottom <- cohens_d_calc(middle_cdc, bottom5_cdc)
-  cat(sprintf("Middle 90%% vs Bottom 5%%: d = %.3f\n", d_middle_bottom))
-}
-
-cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
 # Confounding out-based analysis (detendred CDC) ----
 
@@ -593,7 +520,7 @@ p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = CDC
 ggsave("./results/Detrended_ENC_by_expression_group.pdf", 
        p_boxplot_detrended, width = 8, height = 6)
 
-# Get ENC values for each group
+# Get CDC values for each group
 top5_cdc_de <- integrated_data |> filter(Expression_Group == "Top 5%") |> pull(CDC_detrended)
 middle_cdc_de <- integrated_data |> filter(Expression_Group == "Middle 90%") |> pull(CDC_detrended)
 bottom5_cdc_de <- integrated_data |> filter(Expression_Group == "Bottom 5%") |> pull(CDC_detrended)

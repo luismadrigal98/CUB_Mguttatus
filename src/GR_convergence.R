@@ -39,6 +39,10 @@ GR_convergence <- function(dirs_run, parameter = 'all', burn_in = 1000) {
   
   # 2. Identify which trace types we have (selection, mutation, or both)
   trace_types <- names(raw_chains[[1]])
+  if(parameter != 'all')
+  {
+    trace_types <- trace_types[trace_types == parameter]
+  }
   
   # 3. Calculate GR Stat for each trace type
   GR_stats_list <- lapply(trace_types, function(type) {
