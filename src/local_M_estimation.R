@@ -381,21 +381,29 @@ calculate_window_metrics <- function(window_idx,
   return(c(window_data, total_bp = total_bp, freqs, N_count = N_count))
 }
 
-get_base_composition_per_windows <- function(genome_seqinfo, 
-                                             intergenic_data, # Accepts the LIST output from get_intergenic_sequences
+get_base_composition_per_windows <- function(input_data, 
                                              window_size = 100000)
 {
-  #' @title Aggregate Intergenic Base Composition per Window
+  #' @title Aggregate Base Composition per Window (Generic)
   #'
   #' @description Tiles the genome into windows and calculates A, C, G, T frequencies
-  #' for both upstream and downstream intergenic regions separately.
+  #' for any valid genomic regions present in the input object (introns, upstream, or downstream).
   #'
-  #' @param genome_seqinfo GenomeInfoDb::Seqinfo object with chromosome names and lengths.
-  #' @param intergenic_data The list returned by get_intergenic_sequences(). Must contain:
-  #'   upstream_ranges, upstream_seqs, downstream_ranges, downstream_seqs.
+  #' @param input_data A list output from either `get_intron_sequences()` or `get_intergenic_sequences()`.
+  #'   Must contain 'genome_seqinfo' and paired ranges/sequences (e.g., 'trimmed_introns'/'intron_seqs' 
+  #'   OR 'upstream_ranges'/'upstream_seqs', etc.).
   #' @param window_size Numeric. The size of the genomic windows (default: 100000 bp).
   #' @return A combined data frame with window coordinates, base frequencies, and a 'region_type' column.
   #' @export
+  #' ___________________________________________________________________________
+  
+  # --- 1. Validation and Setup ---
+  
+  if (!"genome_seqinfo" %in% names(input_data)) {
+    stop("input_data must contain a 'genome_seqinfo' object to define chromosome lengths.")
+  }
+  
+  genome_seqinfo <- input_data$genome_seqinfo
   
   message("Step 1: Tiling Genome...")
   
@@ -405,7 +413,8 @@ get_base_composition_per_windows <- function(genome_seqinfo,
                                        tilewidth = window_size, 
                                        cut.last.tile.in.chrom = TRUE)
   
-  # Helper function to process one set of ranges/sequences
+  # --- 2. Define Processing Helper ---
+  
   process_region <- function(ranges_obj, seqs_obj, region_label) {
     
     message(paste("  Processing", region_label, "regions..."))
@@ -419,8 +428,7 @@ get_base_composition_per_windows <- function(genome_seqinfo,
                            all_seqs = seqs_obj, 
                            hit_list = overlaps)
     
-    # Bind results
-    # Check if list is empty or all NULLs first
+    # Filter empty results
     non_null_results <- results_list[!sapply(results_list, is.null)]
     
     if (length(non_null_results) == 0) {
@@ -428,10 +436,11 @@ get_base_composition_per_windows <- function(genome_seqinfo,
       return(NULL)
     }
     
+    # Combine and Format
     df_results <- do.call(rbind, non_null_results)
     df_results <- as.data.frame(df_results)
     
-    # Numeric conversion
+    # Numeric conversion for relevant columns
     numeric_cols <- c("start", "end", "window_idx", "pi_A", "pi_C", "pi_G", "pi_T",
                       "total_bp", "N_count")
     for(col in numeric_cols) {
@@ -446,18 +455,39 @@ get_base_composition_per_windows <- function(genome_seqinfo,
     return(df_results)
   }
   
-  # --- Step 2: Run Analysis for Upstream ---
-  df_upstream <- process_region(intergenic_data$upstream_ranges, 
-                                intergenic_data$upstream_seqs, 
-                                "upstream")
+  # --- 3. Dynamic Execution based on Input Content ---
   
-  # --- Step 3: Run Analysis for Downstream ---
-  df_downstream <- process_region(intergenic_data$downstream_ranges, 
-                                  intergenic_data$downstream_seqs, 
-                                  "downstream")
+  results_list <- list()
   
-  # --- Step 4: Combine Results ---
-  final_df <- rbind(df_upstream, df_downstream)
+  # Case A: Introns (from get_intron_sequences)
+  if (!is.null(input_data$trimmed_introns) && !is.null(input_data$intron_seqs)) {
+    results_list[["intron"]] <- process_region(input_data$trimmed_introns, 
+                                               input_data$intron_seqs, 
+                                               "intron")
+  }
+  
+  # Case B: Upstream Intergenic (from get_intergenic_sequences)
+  if (!is.null(input_data$upstream_ranges) && !is.null(input_data$upstream_seqs)) {
+    results_list[["upstream"]] <- process_region(input_data$upstream_ranges, 
+                                                 input_data$upstream_seqs, 
+                                                 "upstream")
+  }
+  
+  # Case C: Downstream Intergenic (from get_intergenic_sequences)
+  if (!is.null(input_data$downstream_ranges) && !is.null(input_data$downstream_seqs)) {
+    results_list[["downstream"]] <- process_region(input_data$downstream_ranges, 
+                                                   input_data$downstream_seqs, 
+                                                   "downstream")
+  }
+  
+  # --- 4. Final Combination ---
+  
+  if (length(results_list) == 0) {
+    stop("Input data does not contain recognizable sequence data (introns, upstream, or downstream).")
+  }
+  
+  final_df <- do.call(rbind, results_list)
+  rownames(final_df) <- NULL # Clean up row names
   
   return(final_df)
 }

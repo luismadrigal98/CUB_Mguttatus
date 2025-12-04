@@ -2317,14 +2317,29 @@ introns_list <- get_intron_sequences(fasta_file = "./data/Mguttatusvar_IM767_887
                                      organism = "Mimulus guttatus")
 
 # Calculate nucleotide composicion per window
-nuc_composition <- get_base_composition_per_windows(genome_seqinfo = introns_list$genome_seqinfo, 
-                                                    trimmed_introns = introns_list$trimmed_introns,
-                                                    intron_seqs = introns_list$intron_seqs,
+nuc_composition_introns <- get_base_composition_per_windows(introns_list,
                                                     window_size = 100000)
 
-windows_thinned <- refine_windows_for_genes(nuc_composition, 1000)
+windows_thinned_introns <- refine_windows_for_genes(nuc_composition_introns, 1000)
 
-nuc_composition_filtered <- nuc_composition |>
+nuc_composition_filteredintrons <- nuc_composition_introns |>
+  dplyr::filter(total_bp >= 1000) |>
+  dplyr::mutate(mid_point = (start + end ) / 2)
+
+# As a check, let's extract intergenic sequences and check the correspondence ----
+
+intergenic_list <- get_inergenic_sequences(
+  fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.hardmasked.fa", 
+  ann_file = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
+  organism = "Mimulus guttatus"
+)
+
+nuc_composition_intergenic <- get_base_composition_per_windows(input_data = intergenic_list, 
+                                                               window_size = 100000)
+
+windows_thinned_intergenic <- refine_windows_for_genes(nuc_composition_intergenic, 1000)
+
+nuc_composition_filtered_intergenic <- nuc_composition_intergenic |>
   dplyr::filter(total_bp >= 1000) |>
   dplyr::mutate(mid_point = (start + end ) / 2)
 
@@ -2340,113 +2355,36 @@ nuc_composition_filtered <- nuc_composition_filtered |>
 
 # Calculate Q matrix
 
-Q_matrices <- apply_q_matrix_to_windows(nuc_composition_filtered)
-
-# Plot frequency sprectrum across windows
-
-freq_pi_nuc_long <- nuc_composition_filtered |>
-  pivot_longer(cols = contains("pi"),
-               names_to = "Pi_nuc",
-               values_to = "Freq")
-
-ggplot(data = freq_pi_nuc_long, 
-       mapping = aes(x = mid_point, 
-                     y = Freq, 
-                     color = Pi_nuc)) +
-  
-  # 1. Light lines for raw data (shows the noise/variance)
-  geom_line(alpha = 0.2, linewidth = 0.3) + 
-  
-  # 2. Smooth trend lines (shows the mutational pressure signal)
-  geom_smooth(se = FALSE, span = 0.2, linewidth = 1) +
-  
-  # 3. Facet by Chromosome to separate genomic contexts
-  # scales = "free_x" ensures chromosomes with different lengths fit well
-  # space = "free_x" keeps the physical scale consistent across panels
-  facet_grid(. ~ seqnames, scales = "free_x", space = "free_x") +
-  
-  # 4. Formatting
-  scale_x_continuous(labels = unit_format(unit = "Mb", scale = 1e-6), 
-                     breaks = pretty_breaks(n = 3)) +
-  labs(
-    x = "Genomic Position (Mb)",
-    y = "Nucleotide Frequency (Pi)",
-    title = "Mutational Spectrum Across the Genome"
-  ) +
-  theme_custom() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1), # Rotate labels if crowded
-    panel.spacing = unit(0.1, "lines") # Tighten the gap between chromosomes
-  )
-
-ggsave(filename = "results/pi_spectrum_across_windows.pdf", width = 16,
-       height = 8)
+Q_matrices_introns <- apply_q_matrix_to_windows(nuc_composition_filtered_introns)
+Q_matrices_intergenic <- apply_q_matrix_to_windows(nuc_composition_filtered_intergenic)
 
 # Extract the list of matrices from the data frame
-q_list <- Q_matrices$Q_matrix
-names(q_list) <- Q_matrices$window_idx
+q_list_introns <- Q_matrices_introns$Q_matrix
+names(q_list_introns) <- Q_matrices_introns$window_idx
+
+q_list_intergenic <- Q_matrices_intergenic$Q_matrix
+names(q_list_intergenic) <- Q_matrices_intergenic$window_idx
 
 # Use abind to stack the matrices along the third dimension (windows)
 # The dimensions will be [from base, to base, window index]
-Q_array <- abind::abind(q_list, along = 3)
+Q_array_introns <- abind::abind(q_list_introns, along = 3)
+Q_array_intergenic <- abind::abind(q_list_intergenic, along = 3)
 
 # Assign dimnames for clarity (optional, but good practice)
-dimnames(Q_array) <- list(
+dimnames(Q_array_introns) <- list(
   From = c("A", "C", "G", "T"), 
   To = c("A", "C", "G", "T"), 
-  Window = Q_matrices$window_idx
+  Window = Q_matrices_introns$window_idx
 )
 
-message(paste("Created Q_array with dimensions:", 
-              paste(dim(Q_array), collapse = " x ")))
+dimnames(Q_array_intergenic) <- list(
+  From = c("A", "C", "G", "T"), 
+  To = c("A", "C", "G", "T"), 
+  Window = Q_matrices_intergenic$window_idx
+)
 
-# Searching for evidence of variation in M
-
-df_analysis <- Q_matrices |>
-  # Add the extracted rate as a new column
-  dplyr::mutate(Q_AG_rate = Q_array["A", "G", ]) |>
-  dplyr::mutate(Q_AT_rate = Q_array["A", "T", ]) |>
-  # Ensure chromosome names are a factor for ANOVA
-  dplyr::mutate(seqnames = as.factor(seqnames))
-
-# Test if the mean A->G transition rate differs significantly by chromosome
-rate_anova <- aov(Q_AT_rate ~ seqnames, data = df_analysis)
-summary(rate_anova)
-
-df_analysis <- df_analysis |>
-  dplyr::mutate(GC_content = pi_G + pi_C)
-
-GC_content <- aov(GC_content ~ seqnames, data = df_analysis)
-summary(GC_content)
-
-df_plot <- df_analysis |>
-  dplyr::mutate(GC_content = pi_G + pi_C) |>
-  
-  # B. Define the X-axis position (midpoint of the window)
-  dplyr::mutate(midpoint = (start + end) / 2) |>
-  
-  # C. Select only the columns needed for the plot
-  #    (Chromosome, Position, and the two metrics)
-  dplyr::select(seqnames, midpoint, GC_content, Q_AG_rate) |>
-  
-  # D. Reshape to "Long" format for ggplot
-  #    This stacks 'GC_content' and 'Q_AG_rate' into a single column
-  pivot_longer(
-    cols = c(GC_content, Q_AG_rate),
-    names_to = "Variable",
-    values_to = "Rate_Value"
-  )
-
-plot_genomic_rate_variation(df_plot)
-
-ggsave(filename = "results/genomic_rate_variation.pdf", width = 16,
-       height = 8)
-
-# These analysis suggest that the mutational pressure is not shared across all
-# genes. Let's cluster windows as a function of these matrices and exmploy Gaussian
-# mixed models to get putative clusters.
-
-# Getting rates out for each nucleotide and normalized directional mutation spectrum
+# Getting rates out for each nucleotide and normalized directional mutation 
+# spectrum
 
 window_data <- data.frame(window_idx = Q_matrices$window_idx)
 out_rates <- base::do.call("rbind", base::lapply(X = q_list, FUN = function(x)
@@ -2646,7 +2584,7 @@ cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi,
 
 # 14.3.2) Codon frequency trajectories across expression levels ----
 
-# This section evaluates if the ROC multinomial model:
+# This section visualizes whether the ROC multinomial model:
 #   P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
 # correctly predicts how codon frequencies change with expression.
 
@@ -2655,107 +2593,56 @@ source("./src/roc_model_validation.R")
 
 cat("\n=== ROC Model: Codon Frequency Trajectories ===\n")
 
-# 1. Load the CSP estimates from AnaCoDa (dM and dEta)
-csp_params <- load_csp_parameters(
-  mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Mutation.csv",
-  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv"
+# 1. Prepare codon frequency data from the codon_usage already in environment
+# codon_usage is a matrix with genes as rows and codons as columns
+codon_freq_long <- codon_usage |>
+  as.data.frame() |>
+  tibble::rownames_to_column("Gene") |>
+  tidyr::pivot_longer(cols = -Gene, names_to = "Codon", values_to = "Count")
+
+# Map codons to amino acids
+codon_to_aa <- Biostrings::GENETIC_CODE
+codon_to_aa_df <- data.frame(
+  Codon = names(codon_to_aa),
+  AA = as.character(codon_to_aa),
+  stringsAsFactors = FALSE
 )
 
-# 2. Load CDS sequences and calculate observed codon frequencies
-cat("Loading CDS sequences...\n")
-cds_seqs <- Biostrings::readDNAStringSet("./data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa")
-codon_freq_all <- calculate_observed_codon_frequencies(cds_seqs)
+codon_freq_long <- codon_freq_long |>
+  dplyr::left_join(codon_to_aa_df, by = "Codon") |>
+  dplyr::filter(AA != "*")  # Remove stop codons
 
-# 3. Prepare expression data
-expr_data <- read.csv("./data/observed_expression_multitissue.csv") |>
+# Calculate frequency within each gene's AA family
+codon_freq_long <- codon_freq_long |>
+  dplyr::group_by(Gene, AA) |>
   dplyr::mutate(
-    Exp_max = pmax(Exp_leaf, Exp_bud),
-    Exp_log10 = log10(Exp_max + 1)
+    AA_total = sum(Count, na.rm = TRUE),
+    Observed_freq = ifelse(AA_total > 0, Count / AA_total, NA_real_)
   ) |>
-  dplyr::rename(Gene = GeneID)
+  dplyr::ungroup() |>
+  dplyr::filter(!is.na(Observed_freq))
 
-# 4. Merge codon frequencies with expression
-codon_freq_with_expr <- codon_freq_all |>
-  dplyr::inner_join(expr_data, by = "Gene")
+cat(sprintf("Codon frequencies: %d gene-codon observations\n", nrow(codon_freq_long)))
 
-cat(sprintf("Data: %d genes\n", length(unique(codon_freq_with_expr$Gene))))
+# 2. Prepare expression data from exp_complete already in environment
+expr_data <- exp_complete |>
+  dplyr::mutate(Exp_log10 = log10(High_exp + 1)) |>
+  dplyr::select(Gene, Exp_log10)
 
-# 5. Calculate predicted frequencies using empirical expression
-gene_expr <- codon_freq_with_expr |>
-  dplyr::select(Gene, Exp_log10) |>
-  dplyr::distinct()
+cat(sprintf("Expression data: %d genes\n", nrow(expr_data)))
 
-predictions_all <- predict_codon_probs_batch(gene_expr, csp_params, phi_col = "Exp_log10")
-
-# 6. Merge predictions with observations
-codon_freq_with_expr <- map_aa_to_anacoda(codon_freq_with_expr)
-
-validation_data <- codon_freq_with_expr |>
-  dplyr::inner_join(predictions_all, 
-                    by = c("Gene", "AA_anacoda" = "AA", "Codon"))
-
-# 7. Create expression bins for trajectory plot
-validation_data <- validation_data |>
-  dplyr::mutate(
-    Exp_bin = cut(Exp_log10, 
-                  breaks = quantile(Exp_log10, probs = seq(0, 1, by = 0.1)),
-                  labels = paste0("Q", 1:10),
-                  include.lowest = TRUE)
-  )
-
-# 8. Calculate mean observed and predicted frequencies per codon per expression bin
-trajectory_data <- validation_data |>
-  dplyr::group_by(AA_anacoda, Codon, Exp_bin) |>
-  dplyr::summarize(
-    Observed = mean(Observed_freq, na.rm = TRUE),
-    Predicted = mean(predicted_prob, na.rm = TRUE),
-    Exp_mean = mean(Exp_log10, na.rm = TRUE),
-    n_genes = dplyr::n(),
-    .groups = "drop"
-  ) |>
-  tidyr::pivot_longer(cols = c(Observed, Predicted),
-                      names_to = "Type",
-                      values_to = "Frequency")
-
-# 9. Plot: Codon frequency trajectories across expression
-p_trajectories <- ggplot(trajectory_data, 
-                          aes(x = Exp_mean, y = Frequency, 
-                              color = Codon, linetype = Type)) +
-  geom_line(linewidth = 0.8) +
-  geom_point(size = 1, alpha = 0.7) +
-  facet_wrap(~ AA_anacoda, scales = "free_y", ncol = 5) +
-  scale_linetype_manual(values = c("Observed" = "solid", "Predicted" = "dashed")) +
-  labs(
-    x = "Expression (log10 CPM)",
-    y = "Codon Frequency within AA Family",
-    title = "ROC Model: Predicted vs Observed Codon Frequencies",
-    subtitle = "Solid = Observed, Dashed = Predicted (using empirical expression as phi)",
-    color = "Codon",
-    linetype = "Type"
-  ) +
-  theme_bw(base_size = 10) +
-  theme(
-    legend.position = "bottom",
-    legend.box = "vertical",
-    strip.text = element_text(size = 9, face = "bold"),
-    axis.text.x = element_text(size = 7),
-    axis.text.y = element_text(size = 7)
-  ) +
-  guides(color = guide_legend(nrow = 4))
-
-ggsave("./results/ROC_codon_trajectories.pdf", p_trajectories, width = 16, height = 14)
-cat("Saved: ./results/ROC_codon_trajectories.pdf\n")
-
-# 10. Summary: Overall model fit
-cor_overall <- cor(validation_data$predicted_prob, validation_data$Observed_freq, 
-                   use = "complete.obs")
-mae <- mean(abs(validation_data$predicted_prob - validation_data$Observed_freq), na.rm = TRUE)
-
-cat(sprintf("\n=== Model Fit Summary ===\n"))
-cat(sprintf("Overall correlation (predicted vs observed): r = %.4f\n", cor_overall))
-cat(sprintf("Mean absolute error: %.4f\n", mae))
+# 3. Run the trajectory analysis using the convenience wrapper
+trajectory_results <- run_trajectory_analysis(
+  mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Mutation.csv",
+  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv",
+  codon_freq_df = codon_freq_long,
+  expression_df = expr_data,
+  output_file = "./results/ROC_codon_trajectories.pdf",
+  n_bins = 10
+)
 
 cat("\n✓ Codon trajectory analysis complete!\n")
+cat("  Plot saved to: ./results/ROC_codon_trajectories.pdf\n")
 
 ## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
 

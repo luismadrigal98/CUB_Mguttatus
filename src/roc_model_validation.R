@@ -1,212 +1,269 @@
-# =============================================================================
-# ROC Model Trajectory Plotting Functions
-# =============================================================================
-# Functions to visualize codon frequency trajectories across expression levels
-# using CSP parameters (dM, dEta) from AnaCoDa ROC model
-# =============================================================================
+#' ROC Model Codon Trajectory Plot
+#' 
+#' Functions to visualize predicted vs observed codon frequencies across
+#' expression levels using the AnaCoDa ROC model.
+#'
+#' ROC model: P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
+#'
+#' @author Luis Javier Madrigal-Roca
+#' @date 2024-12-04
 
-library(dplyr)
-library(tidyr)
+# ==============================================================================
+# LOAD CSP PARAMETERS
+# ==============================================================================
 
-# -----------------------------------------------------------------------------
-# Load CSP parameters from AnaCoDa MCMC output
-# -----------------------------------------------------------------------------
-# AnaCoDa outputs separate files for mutation (dM) and selection (dEta)
-# Format: columns are codons, single row with parameter estimates
-# -----------------------------------------------------------------------------
+#' Load CSP parameters from AnaCoDa output files
+#'
+#' @param mutation_file Path to Cluster_X_Mutation.csv
+#' @param selection_file Path to Cluster_X_Selection.csv
+#' @return Data frame with AA, Codon, dM, dEta
 load_csp_parameters <- function(mutation_file, selection_file) {
   
-  dM_raw <- read.csv(mutation_file, stringsAsFactors = FALSE)
-  dEta_raw <- read.csv(selection_file, stringsAsFactors = FALSE)
+  dM_df <- read.csv(mutation_file, stringsAsFactors = FALSE)
+  dEta_df <- read.csv(selection_file, stringsAsFactors = FALSE)
   
-  # Get codon names from column headers (remove any prefix)
-  codon_cols_dM <- colnames(dM_raw)
-  codon_cols_dEta <- colnames(dEta_raw)
-  
-  # Extract values
-  dM_values <- as.numeric(dM_raw[1, ])
-  dEta_values <- as.numeric(dEta_raw[1, ])
-  
-  # Create data frame
-  csp <- data.frame(
-    Codon = codon_cols_dM,
-    dM = dM_values,
-    dEta = dEta_values,
-    stringsAsFactors = FALSE
+  csp <- merge(
+    dM_df[, c("AA", "Codon", "Mean")],
+    dEta_df[, c("AA", "Codon", "Mean")],
+    by = c("AA", "Codon"),
+    suffixes = c("_dM", "_dEta")
   )
   
-  # Standard genetic code for AA mapping
-  codon_table <- c(
-    "TTT" = "F", "TTC" = "F",
-    "TTA" = "L", "TTG" = "L", "CTT" = "L", "CTC" = "L", "CTA" = "L", "CTG" = "L",
-    "ATT" = "I", "ATC" = "I", "ATA" = "I",
-    "ATG" = "M",
-    "GTT" = "V", "GTC" = "V", "GTA" = "V", "GTG" = "V",
-    "TCT" = "S", "TCC" = "S", "TCA" = "S", "TCG" = "S",
-    "AGT" = "S", "AGC" = "S",
-    "CCT" = "P", "CCC" = "P", "CCA" = "P", "CCG" = "P",
-    "ACT" = "T", "ACC" = "T", "ACA" = "T", "ACG" = "T",
-    "GCT" = "A", "GCC" = "A", "GCA" = "A", "GCG" = "A",
-    "TAT" = "Y", "TAC" = "Y",
-    "CAT" = "H", "CAC" = "H",
-    "CAA" = "Q", "CAG" = "Q",
-    "AAT" = "N", "AAC" = "N",
-    "AAA" = "K", "AAG" = "K",
-    "GAT" = "D", "GAC" = "D",
-    "GAA" = "E", "GAG" = "E",
-    "TGT" = "C", "TGC" = "C",
-    "TGG" = "W",
-    "CGT" = "R", "CGC" = "R", "CGA" = "R", "CGG" = "R",
-    "AGA" = "R", "AGG" = "R",
-    "GGT" = "G", "GGC" = "G", "GGA" = "G", "GGG" = "G"
-  )
+  names(csp)[names(csp) == "Mean_dM"] <- "dM"
+  names(csp)[names(csp) == "Mean_dEta"] <- "dEta"
   
-  # Add AA column
-  csp$AA <- codon_table[csp$Codon]
+  # Identify reference codons (dM = 0 and dEta = 0)
+  csp$is_reference <- (csp$dM == 0 & csp$dEta == 0)
   
-  # AnaCoDa convention: "Z" for Ser AGC/AGT codons
-  csp$AA_anacoda <- ifelse(csp$Codon %in% c("AGC", "AGT"), "Z", csp$AA)
-  
-  # Handle reference codons (NA becomes 0)
-  csp$dM[is.na(csp$dM)] <- 0
-  csp$dEta[is.na(csp$dEta)] <- 0
+  message(sprintf("Loaded CSP for %d codons, %d amino acids", 
+                  nrow(csp), length(unique(csp$AA))))
   
   return(csp)
 }
 
-# -----------------------------------------------------------------------------
-# Map amino acids to AnaCoDa convention in codon frequency data frame
-# -----------------------------------------------------------------------------
-map_aa_to_anacoda <- function(codon_freq_df) {
-  
-  codon_freq_df$AA_anacoda <- ifelse(
-    codon_freq_df$Codon %in% c("AGC", "AGT"), 
-    "Z", 
-    codon_freq_df$AA
-  )
-  
-  return(codon_freq_df)
-}
+# ==============================================================================
+# PREDICT CODON PROBABILITIES
+# ==============================================================================
 
-# -----------------------------------------------------------------------------
-# Calculate observed codon frequencies per gene from CDS sequences
-# -----------------------------------------------------------------------------
-calculate_observed_codon_frequencies <- function(cds_seqs) {
+#' Calculate predicted codon probabilities for a range of phi values
+#'
+#' @param phi_values Numeric vector of phi (expression) values
+#' @param csp_df CSP parameters data frame
+#' @return Data frame with phi, AA, Codon, predicted_prob
+predict_across_phi_range <- function(phi_values, csp_df) {
   
-  # Standard genetic code
-  codon_table <- c(
-    "TTT" = "F", "TTC" = "F",
-    "TTA" = "L", "TTG" = "L", "CTT" = "L", "CTC" = "L", "CTA" = "L", "CTG" = "L",
-    "ATT" = "I", "ATC" = "I", "ATA" = "I",
-    "ATG" = "M",
-    "GTT" = "V", "GTC" = "V", "GTA" = "V", "GTG" = "V",
-    "TCT" = "S", "TCC" = "S", "TCA" = "S", "TCG" = "S",
-    "AGT" = "S", "AGC" = "S",
-    "CCT" = "P", "CCC" = "P", "CCA" = "P", "CCG" = "P",
-    "ACT" = "T", "ACC" = "T", "ACA" = "T", "ACG" = "T",
-    "GCT" = "A", "GCC" = "A", "GCA" = "A", "GCG" = "A",
-    "TAT" = "Y", "TAC" = "Y",
-    "CAT" = "H", "CAC" = "H",
-    "CAA" = "Q", "CAG" = "Q",
-    "AAT" = "N", "AAC" = "N",
-    "AAA" = "K", "AAG" = "K",
-    "GAT" = "D", "GAC" = "D",
-    "GAA" = "E", "GAG" = "E",
-    "TGT" = "C", "TGC" = "C",
-    "TGG" = "W",
-    "CGT" = "R", "CGC" = "R", "CGA" = "R", "CGG" = "R",
-    "AGA" = "R", "AGG" = "R",
-    "GGT" = "G", "GGC" = "G", "GGA" = "G", "GGG" = "G",
-    "TAA" = "Stop", "TAG" = "Stop", "TGA" = "Stop"
-  )
+  results <- list()
   
-  result_list <- lapply(seq_along(cds_seqs), function(i) {
-    gene_name <- names(cds_seqs)[i]
-    seq_str <- as.character(cds_seqs[[i]])
+  for (phi in phi_values) {
+    # For each AA, calculate multinomial probabilities
+    aa_list <- split(csp_df, csp_df$AA)
     
-    # Split into codons
-    seq_len <- nchar(seq_str)
-    n_codons <- seq_len %/% 3
-    
-    if (n_codons == 0) return(NULL)
-    
-    codons <- substring(seq_str, 
-                        seq(1, n_codons * 3, by = 3), 
-                        seq(3, n_codons * 3, by = 3))
-    
-    # Count codons
-    codon_counts <- table(codons)
-    
-    # Create data frame
-    df <- data.frame(
-      Gene = gene_name,
-      Codon = names(codon_counts),
-      Count = as.numeric(codon_counts),
-      stringsAsFactors = FALSE
-    )
-    
-    # Add AA
-    df$AA <- codon_table[df$Codon]
-    
-    # Remove stop codons and any unknown
-    df <- df[!is.na(df$AA) & df$AA != "Stop", ]
-    
-    # Calculate frequency within AA family
-    df <- df %>%
-      group_by(Gene, AA) %>%
-      mutate(
-        AA_total = sum(Count),
-        Observed_freq = Count / AA_total
-      ) %>%
-      ungroup()
-    
-    return(df)
-  })
-  
-  result <- do.call(rbind, result_list)
-  return(result)
-}
-
-# -----------------------------------------------------------------------------
-# Predict codon probabilities for a batch of genes
-# -----------------------------------------------------------------------------
-# ROC multinomial model: P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
-# where Z normalizes within each amino acid family
-# -----------------------------------------------------------------------------
-predict_codon_probs_batch <- function(gene_expression_df, csp, phi_col = "Exp_log10") {
-  
-  aa_families <- unique(csp$AA_anacoda)
-  
-  result_list <- lapply(1:nrow(gene_expression_df), function(i) {
-    gene <- gene_expression_df$Gene[i]
-    phi <- gene_expression_df[[phi_col]][i]
-    
-    # Predict for each AA family
-    aa_results <- lapply(aa_families, function(aa) {
-      csp_aa <- csp[csp$AA_anacoda == aa, ]
+    pred_list <- lapply(aa_list, function(aa_df) {
+      # log P(codon) = -dM - dEta * phi - log(Z)
+      log_unnorm <- -aa_df$dM - aa_df$dEta * phi
       
-      if (nrow(csp_aa) <= 1) return(NULL)  # Skip non-degenerate
-      
-      # Calculate unnormalized log probabilities
-      log_unnorm <- -csp_aa$dM - csp_aa$dEta * phi
-      
-      # Softmax normalization
+      # Log-sum-exp for numerical stability
       max_log <- max(log_unnorm)
-      unnorm <- exp(log_unnorm - max_log)
-      probs <- unnorm / sum(unnorm)
+      log_Z <- max_log + log(sum(exp(log_unnorm - max_log)))
       
-      data.frame(
-        Gene = gene,
-        AA = aa,
-        Codon = csp_aa$Codon,
-        predicted_prob = probs,
-        stringsAsFactors = FALSE
-      )
+      aa_df$predicted_prob <- exp(log_unnorm - log_Z)
+      aa_df$phi <- phi
+      
+      aa_df[, c("AA", "Codon", "phi", "predicted_prob", "is_reference")]
     })
     
-    do.call(rbind, aa_results)
-  })
+    results[[length(results) + 1]] <- do.call(rbind, pred_list)
+  }
   
-  result <- do.call(rbind, result_list)
-  return(result)
+  out <- do.call(rbind, results)
+  rownames(out) <- NULL
+  return(out)
+}
+
+# ==============================================================================
+# MAP AMINO ACIDS TO ANACODA CONVENTION
+# ==============================================================================
+
+#' Map observed codon data to AnaCoDa AA convention
+#' 
+#' AnaCoDa uses "Z" for Serine AGN codons (AGC, AGT)
+#'
+#' @param codon_df Data frame with AA and Codon columns
+#' @return Data frame with AA_anacoda column added
+map_aa_to_anacoda <- function(codon_df) {
+  
+  codon_df$AA_anacoda <- codon_df$AA
+  
+  # AGC and AGT are coded as "Z" in AnaCoDa
+  codon_df$AA_anacoda[codon_df$Codon %in% c("AGC", "AGT")] <- "Z"
+  
+  return(codon_df)
+}
+
+# ==============================================================================
+# CALCULATE OBSERVED FREQUENCIES BY EXPRESSION BIN
+# ==============================================================================
+
+#' Calculate observed codon frequencies in expression bins
+#'
+#' @param obs_data Data frame with Gene, Codon, AA_anacoda, Observed_freq, Exp_log10
+#' @param n_bins Number of expression bins (default: 10)
+#' @return Data frame with binned observed frequencies and SDs
+calculate_observed_by_bin <- function(obs_data, n_bins = 10) {
+  
+  # Create expression bins
+  breaks <- quantile(obs_data$Exp_log10, probs = seq(0, 1, length.out = n_bins + 1), 
+                     na.rm = TRUE)
+  
+  # Ensure unique breaks
+  breaks <- unique(breaks)
+  n_actual_bins <- length(breaks) - 1
+  
+  obs_data$Exp_bin <- cut(obs_data$Exp_log10, breaks = breaks, 
+                          include.lowest = TRUE, labels = FALSE)
+  
+  # Calculate mean and SD per codon per bin
+  obs_summary <- obs_data |>
+    dplyr::filter(!is.na(Exp_bin)) |>
+    dplyr::group_by(AA_anacoda, Codon, Exp_bin) |>
+    dplyr::summarize(
+      Observed_mean = mean(Observed_freq, na.rm = TRUE),
+      Observed_sd = sd(Observed_freq, na.rm = TRUE),
+      Exp_mean = mean(Exp_log10, na.rm = TRUE),
+      n_genes = dplyr::n(),
+      .groups = "drop"
+    )
+  
+  return(obs_summary)
+}
+
+# ==============================================================================
+# MAIN PLOTTING FUNCTION
+# ==============================================================================
+
+#' Plot codon frequency trajectories across expression
+#'
+#' Creates a faceted plot showing predicted (lines) vs observed (points + error bars)
+#' codon frequencies across expression levels, similar to AnaCoDa diagnostic plots.
+#'
+#' @param csp_df CSP parameters (from load_csp_parameters)
+#' @param obs_binned Observed frequencies by bin (from calculate_observed_by_bin)
+#' @param phi_range Range of phi values for prediction curves (default: c(-4, 5))
+#' @param phi_n Number of points for smooth prediction curves (default: 100)
+#' @param output_file Path to save PDF (optional)
+#' @return ggplot object
+plot_codon_trajectories <- function(csp_df, obs_binned, 
+                                     phi_range = c(-4, 5), 
+                                     phi_n = 100,
+                                     output_file = NULL) {
+  
+  require(ggplot2)
+  
+  # Generate prediction curves
+  phi_seq <- seq(phi_range[1], phi_range[2], length.out = phi_n)
+  pred_curves <- predict_across_phi_range(phi_seq, csp_df)
+  
+  # Mark reference codons with asterisk in legend
+  pred_curves$Codon_label <- ifelse(pred_curves$is_reference, 
+                                     paste0(pred_curves$Codon, "*"),
+                                     pred_curves$Codon)
+  
+  # Same for observed data
+  obs_binned <- merge(obs_binned, 
+                      unique(csp_df[, c("AA", "Codon", "is_reference")]),
+                      by.x = c("AA_anacoda", "Codon"),
+                      by.y = c("AA", "Codon"),
+                      all.x = TRUE)
+  
+  obs_binned$Codon_label <- ifelse(obs_binned$is_reference, 
+                                    paste0(obs_binned$Codon, "*"),
+                                    obs_binned$Codon)
+  
+  # Create plot
+  p <- ggplot() +
+    # Prediction curves (lines)
+    geom_line(data = pred_curves,
+              aes(x = phi, y = predicted_prob, color = Codon_label),
+              linewidth = 1) +
+    # Observed points
+    geom_point(data = obs_binned,
+               aes(x = Exp_mean, y = Observed_mean, color = Codon_label),
+               size = 2) +
+    # Error bars (SD)
+    geom_errorbar(data = obs_binned,
+                  aes(x = Exp_mean, 
+                      ymin = pmax(0, Observed_mean - Observed_sd),
+                      ymax = pmin(1, Observed_mean + Observed_sd),
+                      color = Codon_label),
+                  width = 0.1, alpha = 0.7) +
+    # Facet by amino acid
+    facet_wrap(~ AA_anacoda, scales = "free_y", ncol = 5) +
+    # Axis limits
+    scale_y_continuous(limits = c(0, 1)) +
+    # Labels
+    labs(
+      x = "Expression (log10 scale)",
+      y = "Codon Frequency",
+      title = "ROC Model: Predicted vs Observed Codon Usage",
+      subtitle = "Lines = Model prediction | Points = Observed (mean ± SD) | * = Reference codon",
+      color = "Codon"
+    ) +
+    # Theme
+    theme_bw(base_size = 11) +
+    theme(
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      strip.text = element_text(size = 12, face = "bold"),
+      panel.grid.minor = element_blank()
+    ) +
+    guides(color = guide_legend(nrow = 2, override.aes = list(linewidth = 2)))
+  
+  # Save if output file specified
+  if (!is.null(output_file)) {
+    ggsave(output_file, p, width = 16, height = 14)
+    message(sprintf("Saved: %s", output_file))
+  }
+  
+  return(p)
+}
+
+# ==============================================================================
+# CONVENIENCE WRAPPER
+# ==============================================================================
+
+#' Run complete codon trajectory analysis
+#'
+#' @param mutation_file Path to AnaCoDa mutation CSV
+#' @param selection_file Path to AnaCoDa selection CSV
+#' @param codon_freq_df Data frame with Gene, Codon, AA, Observed_freq columns
+#' @param expression_df Data frame with Gene, Exp_log10 columns
+#' @param output_file Path to save plot (optional)
+#' @param n_bins Number of expression bins for observed data
+#' @return List with plot, csp_params, and trajectory data
+run_trajectory_analysis <- function(mutation_file, selection_file,
+                                     codon_freq_df, expression_df,
+                                     output_file = NULL, n_bins = 10) {
+  
+  # 1. Load CSP parameters
+  csp <- load_csp_parameters(mutation_file, selection_file)
+  
+  # 2. Merge codon frequencies with expression
+  obs_data <- merge(codon_freq_df, expression_df, by = "Gene")
+  
+  # 3. Map to AnaCoDa AA convention
+  obs_data <- map_aa_to_anacoda(obs_data)
+  
+  # 4. Calculate observed frequencies by expression bin
+  obs_binned <- calculate_observed_by_bin(obs_data, n_bins = n_bins)
+  
+  message(sprintf("Binned observations: %d AA-codon-bin combinations", nrow(obs_binned)))
+  
+  # 5. Create trajectory plot
+  p <- plot_codon_trajectories(csp, obs_binned, output_file = output_file)
+  
+  return(list(
+    plot = p,
+    csp = csp,
+    observed_binned = obs_binned
+  ))
 }
