@@ -557,7 +557,8 @@ reference_genes <- integrated_data |>
   filter(Expression_Group == "Top 5%") |>
   pull(Gene_name)
 
-cat(sprintf("Using %d highly expressed genes as reference set\n", length(reference_genes)))
+cat(sprintf("Using %d highly expressed genes as reference set\n", 
+            length(reference_genes)))
 
 # Remove .1 suffix from codon_usage gene names to match gene-level IDs
 # (codon_usage has transcript IDs like MgIM767.10G127000.1,

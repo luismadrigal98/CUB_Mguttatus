@@ -161,6 +161,156 @@ get_intron_sequences <- function(fasta_file, ann_file,
   ))
 }
 
+get_inergenic_sequences <- function(fasta_file, ann_file,
+                                 trim_bp = 1000,
+                                 width = 10000,
+                                 organism = NA)
+{
+  #' @title Extract Trimmed Intergenic Sequences
+  #'
+  #' @description
+  #' Loads an annotation file (GFF3) and a genome FASTA file, filters for primary 
+  #' transcripts on main chromosomes, get width / 2 bp from each side of the 
+  #' gene after removing the trim_bp proximal to it (main regulatory core).
+  #'
+  #' @param fasta_file Character string. Path to the genome reference FASTA file.
+  #' @param ann_file Character string. Path to the gene annotation file (GFF3).
+  #' @param trim_bp Numeric. Number of base pairs to trim from both the 5' and 3' ends of each intron
+  #'   (to remove splice site signals). Default is 30.
+  #' @param min_width Numeric. Minimum required intron width *after* trimming (i.e., total required length 
+  #'   is min_width + 2*trim_bp). Introns shorter than this are discarded. Default is 86.
+  #' @param organism Character string. The organism name for the TxDb object metadata 
+  #'   (e.g., "Mimulus guttatus"). Default is NA.
+  #'
+  #' @details
+  #' \strong{Filtering Assumptions:}
+  #' \itemize{
+  #'   \item \strong{Primary Transcript:} The transcript ID ends with ".1" (e.g., "GeneID.1").
+  #'   \item \strong{Main Chromosomes:} Chromosome names follow the pattern "^Chr_[0-9]{1,2}$".
+  #' }
+  #'
+  #' @return A list containing:
+  #' \itemize{
+  #'   \item \strong{intron_seqs:} A \code{DNAStringSet} of the extracted, trimmed deep intronic sequences.
+  #'   \item \strong{trimmed_introns:} A \code{GRanges} object with the coordinates of the extracted sequences.
+  #' }
+  #' @import GenomicFeatures txdbmaker Rsamtools GenomicRanges Biostrings S4Vectors
+  #' @export
+  #' ___________________________________________________________________________
+  
+  message("Step 1: Loading Annotation and Extracting Introns...")
+  
+  # --- 1. Load Annotation and Create TxDb ---
+  txdb <- txdbmaker::makeTxDbFromGFF(file = ann_file, 
+                                     format = "gff3",
+                                     organism = organism)
+  
+  introns_list <- GenomicFeatures::intronsByTranscript(txdb, use.names = TRUE)
+  
+  # --- 2. Filter for Primary Transcripts (.1) ---
+  transcript_ids <- names(introns_list)
+  # Look for IDs ending in ".1"
+  is_primary_transcript <- sapply(strsplit(transcript_ids, "\\."), 
+                                  function(x) tail(x, 1) == "1")
+  primary_introns_list <- introns_list[is_primary_transcript]
+  
+  message(paste("Original number of transcripts:", length(introns_list)))
+  message(paste("Number of primary transcripts (.1):", length(primary_introns_list)))
+  
+  # --- 3. Filter for Main Chromosomes (e.g., Chr_01) ---
+  
+  # Define main chromosome pattern based on common annotation formats
+  main_chr_pattern <- "^Chr_[0-9]{1,2}$"
+  
+  # Extract the single chromosome name for each transcript
+  seq_names <- sapply(primary_introns_list, function(gr) {
+    return(as.character(GenomeInfoDb::seqlevelsInUse(gr)))
+  })
+  
+  # Filter the GRangesList
+  is_main_chromosome <- grepl(main_chr_pattern, seq_names)
+  final_introns_list <- primary_introns_list[is_main_chromosome]
+  
+  message(paste("Final list contains", length(final_introns_list), 
+                "intron sets for primary transcripts on main chromosomes."))
+  
+  # --- 4. Intron Width Filtering and Trimming ---
+  
+  all_introns <- unlist(final_introns_list)
+  
+  # Filtering: Check if the intron is long enough to survive trimming
+  required_min_width <- min_width + (2 * trim_bp)
+  clean_introns <- all_introns[width(all_introns) > required_min_width]
+  
+  # Trimming: Remove splice sites from both ends
+  trimmed_introns <- GenomicRanges::narrow(clean_introns, 
+                                           start = trim_bp + 1, 
+                                           end = width(clean_introns) - trim_bp)
+  
+  # --- 5. Prepare Genome FASTA for Sequence Extraction (FaFile) ---
+  
+  # Use FaFile for robust coordinate-based sequence extraction (required by getSeq)
+  if (!file.exists(fasta_file)) stop("FASTA file not found.")
+  
+  dna <- readDNAStringSet(filepath = fasta_file)
+  
+  original_names <- names(dna)
+  
+  # Simplify the names
+  names(dna) <- sub("^(\\S+)\\s.*", "\\1", original_names)
+  
+  main_chroms_to_keep <- names(dna)[grepl(main_chr_pattern, 
+                                          names(dna))]
+  
+  dna <- dna[main_chroms_to_keep]
+  
+  # --- 6. Final Synchronization and Sequence Extraction ---
+  
+  # Crucial: Synchronize the GRanges seqlevels to the cleaned FASTA names
+  trimmed_introns <- GenomeInfoDb::keepSeqlevels(
+    trimmed_introns, 
+    main_chroms_to_keep, 
+    pruning.mode = "coarse"
+  )
+  
+  # --- CUSTOM DIRECT SEQUENCE EXTRACTION (Your requested method) ---
+  
+  # 1. Get components for extraction
+  r <- GenomicRanges::ranges(trimmed_introns)
+  seq_names <- as.character(GenomicRanges::seqnames(trimmed_introns))
+  
+  intron_seqs_raw <- Biostrings::DNAStringSet(
+    sapply(1:length(r), function(i) {
+      # Extract the sequence for the current chromosome (seq_names[i])
+      chrom_seq <- dna[seq_names[i]]
+      
+      # Subseq the single-chromosome DNAStringSet
+      subseq_obj <- Biostrings::subseq(chrom_seq, start(r[i]), end(r[i]))
+      
+      return(as.character(subseq_obj))
+    })
+  )
+  
+  # 3. Handle Reverse Complementation for Negative Strand
+  neg_strand_idx <- GenomicRanges::strand(trimmed_introns) == "-"
+  
+  intron_seqs_final <- intron_seqs_raw
+  intron_seqs_final[neg_strand_idx] <- Biostrings::reverseComplement(intron_seqs_final[neg_strand_idx])
+  
+  names(intron_seqs_final) <- names(trimmed_introns)
+  
+  # Get the Seqinfo object for the next function call
+  genome_seqinfo <- GenomeInfoDb::seqinfo(dna) 
+  
+  return(list(
+    # The full genome DNAStringSet (optional, but requested earlier)
+    dna = dna, 
+    intron_seqs = intron_seqs_final, 
+    trimmed_introns = trimmed_introns,
+    genome_seqinfo = genome_seqinfo
+  ))
+}
+
 # ******************************************************************************
 # STEP 2: Measure Base Composition per Window ----
 # ______________________________________________________________________________
