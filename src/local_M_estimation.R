@@ -254,6 +254,31 @@ get_inergenic_sequences <- function(fasta_file, ann_file,
   upstream_ranges <- upstream_ranges[width(upstream_ranges) == width]
   downstream_ranges <- downstream_ranges[width(downstream_ranges) == width]
   
+  # --- 4b. Handle Overlapping Regions ---
+  # When genes are close together, their flanking regions can overlap.
+  # We use `reduce()` to merge overlapping ranges, ensuring each genomic
+
+  # position is counted only ONCE in downstream nucleotide composition analysis.
+  
+  message("Step 3b: Resolving overlapping regions...")
+  
+  n_upstream_before <- length(upstream_ranges)
+  n_downstream_before <- length(downstream_ranges)
+  
+  # Combine upstream and downstream, then reduce overlaps
+  # This creates non-overlapping intervals that cover all intergenic space
+  all_intergenic <- c(upstream_ranges, downstream_ranges)
+  all_intergenic_reduced <- GenomicRanges::reduce(all_intergenic)
+  
+  # Also remove any regions that overlap with genes themselves
+  # (in case flanking regions from adjacent genes intrude)
+  all_intergenic_reduced <- GenomicRanges::setdiff(all_intergenic_reduced, genes_on_main)
+  
+  message(sprintf("  Upstream regions: %d -> reduced", n_upstream_before))
+  message(sprintf("  Downstream regions: %d -> reduced", n_downstream_before))
+  message(sprintf("  Combined non-overlapping intergenic regions: %d", length(all_intergenic_reduced)))
+  message(sprintf("  Total bp coverage: %s", format(sum(width(all_intergenic_reduced)), big.mark = ",")))
+  
   # --- 5. Extract Sequences (Manual Method) ---
   message("Step 4: Extracting Sequences...")
   
@@ -291,7 +316,8 @@ get_inergenic_sequences <- function(fasta_file, ann_file,
     names(dss) <- names(granges_obj)
     
     # 3. Handle Strand (Reverse Complement Negative Strand)
-    # This preserves the bias you requested
+    # For reduced intergenic regions, strand is "*" (unstranded)
+    # Only apply RC if explicitly negative strand
     neg_strand <- as.character(GenomicRanges::strand(granges_obj)) == "-"
     if (any(neg_strand)) {
       dss[neg_strand] <- Biostrings::reverseComplement(dss[neg_strand])
@@ -300,18 +326,27 @@ get_inergenic_sequences <- function(fasta_file, ann_file,
     return(dss)
   }
   
-  # Run the extraction helper
+  # Extract sequences from the REDUCED (non-overlapping) intergenic regions
+  # This ensures each genomic position is counted only once
+  intergenic_seqs <- extract_and_orient(all_intergenic_reduced, dna)
+  
+  message("Extraction complete.")
+  message(sprintf("  Extracted %d non-overlapping intergenic sequences", length(intergenic_seqs)))
+  
+  # Also keep the original upstream/downstream for backward compatibility if needed
   upstream_seqs <- extract_and_orient(upstream_ranges, dna)
   downstream_seqs <- extract_and_orient(downstream_ranges, dna)
   
-  message("Extraction complete.")
-  
   return(list(
+    # PRIMARY: Use these for unbiased nucleotide composition
+    intergenic_seqs = intergenic_seqs,
+    intergenic_ranges = all_intergenic_reduced,
+    # SECONDARY: Original (potentially overlapping) for other analyses
     upstream_seqs = upstream_seqs,
     downstream_seqs = downstream_seqs,
     upstream_ranges = upstream_ranges,
     downstream_ranges = downstream_ranges,
-    genome_seqinfo = seqinfo(dna)
+    genome_seqinfo = GenomeInfoDb::seqinfo(dna)
   ))
 }
 
@@ -466,24 +501,36 @@ get_base_composition_per_windows <- function(input_data,
                                                "intron")
   }
   
-  # Case B: Upstream Intergenic (from get_intergenic_sequences)
-  if (!is.null(input_data$upstream_ranges) && !is.null(input_data$upstream_seqs)) {
-    results_list[["upstream"]] <- process_region(input_data$upstream_ranges, 
-                                                 input_data$upstream_seqs, 
-                                                 "upstream")
-  }
-  
-  # Case C: Downstream Intergenic (from get_intergenic_sequences)
-  if (!is.null(input_data$downstream_ranges) && !is.null(input_data$downstream_seqs)) {
-    results_list[["downstream"]] <- process_region(input_data$downstream_ranges, 
-                                                   input_data$downstream_seqs, 
-                                                   "downstream")
+  # Case B: PREFERRED - Reduced/merged intergenic regions (non-overlapping)
+  # This should be used for unbiased nucleotide composition estimation
+  if (!is.null(input_data$intergenic_ranges) && !is.null(input_data$intergenic_seqs)) {
+    results_list[["intergenic"]] <- process_region(input_data$intergenic_ranges, 
+                                                   input_data$intergenic_seqs, 
+                                                   "intergenic")
+    message("  Using REDUCED (non-overlapping) intergenic regions for unbiased composition")
+  } else {
+    # Fallback: Use separate upstream/downstream (may have overlaps - backward compatibility)
+    # Case B-alt: Upstream Intergenic (from get_intergenic_sequences)
+    if (!is.null(input_data$upstream_ranges) && !is.null(input_data$upstream_seqs)) {
+      results_list[["upstream"]] <- process_region(input_data$upstream_ranges, 
+                                                   input_data$upstream_seqs, 
+                                                   "upstream")
+      warning("Using separate upstream regions - may contain overlaps with downstream!")
+    }
+    
+    # Case C-alt: Downstream Intergenic (from get_intergenic_sequences)
+    if (!is.null(input_data$downstream_ranges) && !is.null(input_data$downstream_seqs)) {
+      results_list[["downstream"]] <- process_region(input_data$downstream_ranges, 
+                                                     input_data$downstream_seqs, 
+                                                     "downstream")
+      warning("Using separate downstream regions - may contain overlaps with upstream!")
+    }
   }
   
   # --- 4. Final Combination ---
   
   if (length(results_list) == 0) {
-    stop("Input data does not contain recognizable sequence data (introns, upstream, or downstream).")
+    stop("Input data does not contain recognizable sequence data (introns, intergenic, upstream, or downstream).")
   }
   
   final_df <- do.call(rbind, results_list)

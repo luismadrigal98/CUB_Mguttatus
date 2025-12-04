@@ -2337,10 +2337,14 @@ dM_results <- estimate_dM_from_neutral_regions(
 
 # Optional: Additional analysis on the intermediate data
 # For example, cluster genomic windows by mutational spectrum
-if (!is.null(dM_results$intermediates$introns$nuc_filtered)) {
+if (!is.null(dM_results$intermediates$introns$nuc_filtered) &
+    !is.null(dM_results$intermediates$intergenic$nuc_filtered)) {
   
   # Prepare window data for clustering (optional advanced analysis)
   window_data_introns <- dM_results$intermediates$introns$nuc_filtered |>
+    dplyr::select(window_idx, pi_A, pi_C, pi_G, pi_T)
+  
+  window_data_intergenic <- dM_results$intermediates$intergenic$nuc_filtered |>
     dplyr::select(window_idx, pi_A, pi_C, pi_G, pi_T)
   
   # PCA summary
@@ -2350,11 +2354,21 @@ if (!is.null(dM_results$intermediates$introns$nuc_filtered)) {
     scale. = TRUE
   )
   
+  pca_intergenic <- prcomp(
+    x = as.matrix(window_data_intergenic[, c("pi_A", "pi_C", "pi_G", "pi_T")]),
+    center = TRUE,
+    scale. = TRUE
+  )
+  
   cat("\nPCA of nucleotide composition (introns):\n")
   print(summary(pca_introns))
   
+  cat("\nPCA of nucleotide composition (intergenic):\n")
+  print(summary(pca_intergenic))
+  
   # GMM clustering (optional - may find no evidence for multiple clusters)
-  clusters_localM <- make_clusters(data = window_data_introns[, -1], G = 1:10)
+  clusters_localM_introns <- make_clusters(data = window_data_introns[, -1], G = 1:10)
+  clusters_localM_intergenic <- make_clusters(data = window_data_intergenic[, -1], G = 1:10)
 }
 
 ## *****************************************************************************
