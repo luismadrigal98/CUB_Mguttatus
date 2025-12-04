@@ -2644,123 +2644,118 @@ phi_dM_fixed_with_phi <- exp_complete |>
 cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi, 
          phi_dM_fixed_with_phi$High_exp_log10)
 
-# 14.3.2) Independent check of the multinomial model replacing phi values with empirical expression in log10 scale ----
+# 14.3.2) Codon frequency trajectories across expression levels ----
 
-# This section validates the AnaCoDa ROC model by using EMPIRICAL expression
-# to predict codon frequencies via the multinomial likelihood:
-#
+# This section evaluates if the ROC multinomial model:
 #   P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
-#
-# where Z = sum over all codons in AA family of exp(-dM_j - dEta_j * phi)
+# correctly predicts how codon frequencies change with expression.
 
 # Load validation functions
 source("./src/roc_model_validation.R")
 
-cat("\n=== ROC Model Validation with Empirical Expression ===\n")
+cat("\n=== ROC Model: Codon Frequency Trajectories ===\n")
 
 # 1. Load the CSP estimates from AnaCoDa (dM and dEta)
 csp_params <- load_csp_parameters(
-
   mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Mutation.csv",
   selection_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv"
 )
 
-# 2. Get observed codon frequencies per gene
+# 2. Load CDS sequences and calculate observed codon frequencies
 cat("Loading CDS sequences...\n")
-cds_seqs <- Biostrings::readDNAStringSet("./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa")
-
-# Calculate observed codon frequencies
+cds_seqs <- Biostrings::readDNAStringSet("./data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa")
 codon_freq_all <- calculate_observed_codon_frequencies(cds_seqs)
 
 # 3. Prepare expression data
-expr_data <- read.csv("./data/observed_expression_multitissue.csv")
-expr_data <- expr_data |>
+expr_data <- read.csv("./data/observed_expression_multitissue.csv") |>
   dplyr::mutate(
-    # Use max expression across tissues as phi proxy
     Exp_max = pmax(Exp_leaf, Exp_bud),
-    # Log10 scale (adding small constant to avoid log(0))
     Exp_log10 = log10(Exp_max + 1)
   ) |>
   dplyr::rename(Gene = GeneID)
 
-# 4. Merge codon frequencies with expression data
+# 4. Merge codon frequencies with expression
 codon_freq_with_expr <- codon_freq_all |>
   dplyr::inner_join(expr_data, by = "Gene")
 
-cat(sprintf("Merged with expression: %d observations from %d genes\n", 
-            nrow(codon_freq_with_expr), length(unique(codon_freq_with_expr$Gene))))
+cat(sprintf("Data: %d genes\n", length(unique(codon_freq_with_expr$Gene))))
 
-# 5. Get unique genes for prediction
+# 5. Calculate predicted frequencies using empirical expression
 gene_expr <- codon_freq_with_expr |>
   dplyr::select(Gene, Exp_log10) |>
   dplyr::distinct()
 
-# 6. Calculate predicted frequencies for each gene using empirical expression
 predictions_all <- predict_codon_probs_batch(gene_expr, csp_params, phi_col = "Exp_log10")
 
-# 7. Validate model: merge predictions with observations
-validation_result <- validate_roc_model(codon_freq_with_expr, predictions_all, csp_params)
-print(validation_result)
+# 6. Merge predictions with observations
+codon_freq_with_expr <- map_aa_to_anacoda(codon_freq_with_expr)
 
-# 8. Create visualizations
-plot_pred_vs_obs(validation_result, "./results/ROC_validation_pred_vs_obs.pdf")
-plot_by_amino_acid(validation_result, "./results/ROC_validation_by_AA.pdf")
-plot_selection_vs_expression(validation_result, n_quantiles = 4, 
-                              "./results/ROC_validation_selection_vs_expression.pdf")
+validation_data <- codon_freq_with_expr |>
+  dplyr::inner_join(predictions_all, 
+                    by = c("Gene", "AA_anacoda" = "AA", "Codon"))
 
-# 9. Test biological prediction
-selection_test <- test_selection_expression_relationship(validation_result)
-
-# 10. Additional analysis: Correlation by expression group
-validation_data <- validation_result$data
+# 7. Create expression bins for trajectory plot
 validation_data <- validation_data |>
   dplyr::mutate(
-    Expression_Group = cut(Phi_empirical, 
-                           breaks = quantile(Phi_empirical, probs = c(0, 0.25, 0.5, 0.75, 1)),
-                           labels = c("Low", "Medium-Low", "Medium-High", "High"),
-                           include.lowest = TRUE)
+    Exp_bin = cut(Exp_log10, 
+                  breaks = quantile(Exp_log10, probs = seq(0, 1, by = 0.1)),
+                  labels = paste0("Q", 1:10),
+                  include.lowest = TRUE)
   )
 
-cor_by_expr <- validation_data |>
-  dplyr::group_by(Expression_Group) |>
+# 8. Calculate mean observed and predicted frequencies per codon per expression bin
+trajectory_data <- validation_data |>
+  dplyr::group_by(AA_anacoda, Codon, Exp_bin) |>
   dplyr::summarize(
-    r = cor(predicted_prob, Observed_freq, use = "complete.obs"),
-    n = dplyr::n(),
-    mean_phi = mean(Phi_empirical),
+    Observed = mean(Observed_freq, na.rm = TRUE),
+    Predicted = mean(predicted_prob, na.rm = TRUE),
+    Exp_mean = mean(Exp_log10, na.rm = TRUE),
+    n_genes = dplyr::n(),
     .groups = "drop"
-  )
-
-cat("\nCorrelation by expression group:\n")
-print(cor_by_expr)
-
-# 11. Model fit across expression gradient - error analysis
-error_by_expr <- validation_data |>
-  dplyr::mutate(
-    prediction_error = Observed_freq - predicted_prob,
-    abs_error = abs(prediction_error)
   ) |>
-  dplyr::group_by(Expression_Group, AA_anacoda) |>
-  dplyr::summarize(
-    mean_error = mean(prediction_error),
-    mean_abs_error = mean(abs_error),
-    .groups = "drop"
-  )
+  tidyr::pivot_longer(cols = c(Observed, Predicted),
+                      names_to = "Type",
+                      values_to = "Frequency")
 
-p_error_by_expr <- ggplot(error_by_expr, aes(x = Expression_Group, y = mean_error, fill = AA_anacoda)) +
-  geom_boxplot() +
-  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+# 9. Plot: Codon frequency trajectories across expression
+p_trajectories <- ggplot(trajectory_data, 
+                          aes(x = Exp_mean, y = Frequency, 
+                              color = Codon, linetype = Type)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1, alpha = 0.7) +
+  facet_wrap(~ AA_anacoda, scales = "free_y", ncol = 5) +
+  scale_linetype_manual(values = c("Observed" = "solid", "Predicted" = "dashed")) +
   labs(
-    x = "Expression Group",
-    y = "Mean Prediction Error (Observed - Predicted)",
-    title = "ROC Model Bias Across Expression Levels"
+    x = "Expression (log10 CPM)",
+    y = "Codon Frequency within AA Family",
+    title = "ROC Model: Predicted vs Observed Codon Frequencies",
+    subtitle = "Solid = Observed, Dashed = Predicted (using empirical expression as phi)",
+    color = "Codon",
+    linetype = "Type"
   ) +
-  theme_bw() +
-  theme(legend.position = "none")
+  theme_bw(base_size = 10) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    strip.text = element_text(size = 9, face = "bold"),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7)
+  ) +
+  guides(color = guide_legend(nrow = 4))
 
-ggsave("./results/ROC_validation_error_by_expression.pdf", p_error_by_expr, width = 10, height = 6)
-cat("Saved: ./results/ROC_validation_error_by_expression.pdf\n")
+ggsave("./results/ROC_codon_trajectories.pdf", p_trajectories, width = 16, height = 14)
+cat("Saved: ./results/ROC_codon_trajectories.pdf\n")
 
-cat("\n✓ ROC model validation complete!\n")
+# 10. Summary: Overall model fit
+cor_overall <- cor(validation_data$predicted_prob, validation_data$Observed_freq, 
+                   use = "complete.obs")
+mae <- mean(abs(validation_data$predicted_prob - validation_data$Observed_freq), na.rm = TRUE)
+
+cat(sprintf("\n=== Model Fit Summary ===\n"))
+cat(sprintf("Overall correlation (predicted vs observed): r = %.4f\n", cor_overall))
+cat(sprintf("Mean absolute error: %.4f\n", mae))
+
+cat("\n✓ Codon trajectory analysis complete!\n")
 
 ## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
 
