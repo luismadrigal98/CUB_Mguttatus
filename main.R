@@ -2311,138 +2311,51 @@ cat("  Results saved to ./results/selection_coefficients.csv\n")
 ## Estimate mutation rates ----
 ## _____________________________________________________________________________
 
-# Extract intronic sequences
-introns_list <- get_intron_sequences(fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.hardmasked.fa",
-                                     ann_file = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
-                                     organism = "Mimulus guttatus")
+# Use the wrapper function to generate dM files from both introns and intergenic regions
+# This replaces ~130 lines of duplicated code with a single function call
 
-# Calculate nucleotide composicion per window
-nuc_composition_introns <- get_base_composition_per_windows(introns_list,
-                                                    window_size = 100000)
-
-windows_thinned_introns <- refine_windows_for_genes(nuc_composition_introns, 1000)
-
-nuc_composition_filteredintrons <- nuc_composition_introns |>
-  dplyr::filter(total_bp >= 1000) |>
-  dplyr::mutate(mid_point = (start + end ) / 2)
-
-# As a check, let's extract intergenic sequences and check the correspondence ----
-
-intergenic_list <- get_inergenic_sequences(
-  fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.hardmasked.fa", 
+dM_results <- estimate_dM_from_neutral_regions(
+ fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.hardmasked.fa",
   ann_file = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
-  organism = "Mimulus guttatus"
+  output_dir = "./data",
+  output_prefix = "Mguttatus",
+  source = "both",  # Generate dM from BOTH introns and intergenic regions
+  window_size = 100000,
+  min_bp = 1000,
+  max_N_freq = 0.25,
+  organism = "Mimulus guttatus",
+  return_intermediates = TRUE  # Keep intermediate data for further analysis if needed
 )
 
-nuc_composition_intergenic <- get_base_composition_per_windows(input_data = intergenic_list, 
-                                                               window_size = 100000)
+# Access results:
+# - dM_results$dM_introns          : dM data frame from introns
+# - dM_results$dM_intergenic       : dM data frame from intergenic
+# - dM_results$global_stats_introns: Nucleotide frequencies from introns
+# - dM_results$global_stats_intergenic: Nucleotide frequencies from intergenic
+# - dM_results$output_files        : Paths to generated CSV files
+# - dM_results$intermediates       : Raw data (seq_data, nuc_composition, etc.)
 
-windows_thinned_intergenic <- refine_windows_for_genes(nuc_composition_intergenic, 1000)
-
-nuc_composition_filtered_intergenic <- nuc_composition_intergenic |>
-  dplyr::filter(total_bp >= 1000) |>
-  dplyr::mutate(mid_point = (start + end ) / 2)
-
-# How frequent is N?
-
-nuc_composition_filtered <- nuc_composition_filtered |> 
-  dplyr::mutate(N_freq = N_count / (total_bp + N_count)) 
-
-cor.test(nuc_composition_filtered$total_bp, nuc_composition_filtered$N_freq)
-
-nuc_composition_filtered <- nuc_composition_filtered |>
-  dplyr::filter(N_freq < 0.25)
-
-# Calculate Q matrix
-
-Q_matrices_introns <- apply_q_matrix_to_windows(nuc_composition_filtered_introns)
-Q_matrices_intergenic <- apply_q_matrix_to_windows(nuc_composition_filtered_intergenic)
-
-# Extract the list of matrices from the data frame
-q_list_introns <- Q_matrices_introns$Q_matrix
-names(q_list_introns) <- Q_matrices_introns$window_idx
-
-q_list_intergenic <- Q_matrices_intergenic$Q_matrix
-names(q_list_intergenic) <- Q_matrices_intergenic$window_idx
-
-# Use abind to stack the matrices along the third dimension (windows)
-# The dimensions will be [from base, to base, window index]
-Q_array_introns <- abind::abind(q_list_introns, along = 3)
-Q_array_intergenic <- abind::abind(q_list_intergenic, along = 3)
-
-# Assign dimnames for clarity (optional, but good practice)
-dimnames(Q_array_introns) <- list(
-  From = c("A", "C", "G", "T"), 
-  To = c("A", "C", "G", "T"), 
-  Window = Q_matrices_introns$window_idx
-)
-
-dimnames(Q_array_intergenic) <- list(
-  From = c("A", "C", "G", "T"), 
-  To = c("A", "C", "G", "T"), 
-  Window = Q_matrices_intergenic$window_idx
-)
-
-# Getting rates out for each nucleotide and normalized directional mutation 
-# spectrum
-
-window_data <- data.frame(window_idx = Q_matrices$window_idx)
-out_rates <- base::do.call("rbind", base::lapply(X = q_list, FUN = function(x)
-                    {
-                      diag(x)
-                    }))
-window_data <- window_data |> cbind(as.data.frame(out_rates))
-
-# Getting six representative instantaneous transition rates
-
-trans_rates <- base::do.call("rbind", base::lapply(X = q_list, FUN = function(x)
-{
-  c(
-    "A>C" = x["A", "C"], # A --> C
-    "A>G" = x["A", "G"], # A --> G
-    "A>T" = x["A", "T"], # A --> T
-    "C>G" = x["C", "G"], # C --> G
-    "C>T" = x["C", "T"], # C --> T
-    "G>T" = x["G", "T"] # G --> T
+# Optional: Additional analysis on the intermediate data
+# For example, cluster genomic windows by mutational spectrum
+if (!is.null(dM_results$intermediates$introns$nuc_filtered)) {
+  
+  # Prepare window data for clustering (optional advanced analysis)
+  window_data_introns <- dM_results$intermediates$introns$nuc_filtered |>
+    dplyr::select(window_idx, pi_A, pi_C, pi_G, pi_T)
+  
+  # PCA summary
+  pca_introns <- prcomp(
+    x = as.matrix(window_data_introns[, c("pi_A", "pi_C", "pi_G", "pi_T")]),
+    center = TRUE,
+    scale. = TRUE
   )
-}))
-
-window_data <- window_data |> cbind(trans_rates)
-
-# Getting summary variables
-
-widow_data <- window_data |>
-  dplyr::select(window_idx) |>
-  cbind(prcomp(x = as.matrix(window_data[, -1]), center = T,
-               scale = T)$x[, paste0("PC", 1:4)])
-
-# Getting the clusters
-
-clusters_localM <- make_clusters(data = window_data[, -1], G = 1:10)
-
-# NOTE: GMM does not find evidence for multiple clusters, and the model with greater
-# BIC was EEE with one component.
-
-# Calcultate dM
-
-# 1. Calculate Global Average Nucleotide Frequencies (weighted by total_bp)
-global_stats <- nuc_composition_filtered |>
-  summarize(
-    total_genome_bp = sum(total_bp),
-    avg_pi_A = sum(pi_A * total_bp) / total_genome_bp,
-    avg_pi_C = sum(pi_C * total_bp) / total_genome_bp,
-    avg_pi_G = sum(pi_G * total_bp) / total_genome_bp,
-    avg_pi_T = sum(pi_T * total_bp) / total_genome_bp
-  )
-
-# 2. Generate the file
-dM_data <- generate_anacoda_dM(
-  pi_A = global_stats$avg_pi_A,
-  pi_C = global_stats$avg_pi_C,
-  pi_G = global_stats$avg_pi_G,
-  pi_T = global_stats$avg_pi_T,
-  output_file = "./data/Mguttatus_intron_derived_dM.csv"
-)
+  
+  cat("\nPCA of nucleotide composition (introns):\n")
+  print(summary(pca_introns))
+  
+  # GMM clustering (optional - may find no evidence for multiple clusters)
+  clusters_localM <- make_clusters(data = window_data_introns[, -1], G = 1:10)
+}
 
 ## *****************************************************************************
 ## 14) AnaCoDa-based analysis ----

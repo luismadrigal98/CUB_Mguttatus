@@ -819,3 +819,284 @@ generate_anacoda_dM <- function(pi_A, pi_C, pi_G, pi_T, output_file,
   message(paste("dM file written to:", output_file))
   return(dM_df)
 }
+
+# ******************************************************************************
+# STEP 6: Complete dM Estimation Pipeline (Wrapper) ----
+# ______________________________________________________________________________
+
+estimate_dM_from_neutral_regions <- function(fasta_file, 
+                                              ann_file,
+                                              output_dir = "./data",
+                                              output_prefix = "Mguttatus",
+                                              source = c("introns", "intergenic", "both"),
+                                              window_size = 100000,
+                                              min_bp = 1000,
+                                              max_N_freq = 0.25,
+                                              organism = "Mimulus guttatus",
+                                              # Intron-specific parameters
+                                              intron_trim_bp = 30,
+                                              intron_min_width = 86,
+                                              # Intergenic-specific parameters
+                                              intergenic_trim_bp = 1000,
+                                              intergenic_width = 10000,
+                                              return_intermediates = FALSE) 
+{
+  #' @title Complete dM Estimation Pipeline from Neutral Genomic Regions
+  #'
+
+  #' @description
+
+  #' Wrapper function that extracts neutral sequences (introns and/or intergenic regions),
+  #' calculates nucleotide composition per genomic window, filters for quality,
+  #' and generates AnaCoDa-compatible dM (mutation bias) files.
+  #'
+  #' This consolidates the workflow that was previously duplicated in main.R for
+
+  #' introns vs intergenic regions.
+  #'
+  #' @param fasta_file Character. Path to the genome reference FASTA file (preferably hard-masked).
+  #' @param ann_file Character. Path to the gene annotation GFF3 file.
+  #' @param output_dir Character. Directory to save output dM files. Default: "./data"
+  #' @param output_prefix Character. Prefix for output filenames. Default: "Mguttatus"
+  #' @param source Character. Which neutral regions to use: "introns", "intergenic", or "both".
+  #' @param window_size Numeric. Size of genomic windows for composition analysis. Default: 100000
+  #' @param min_bp Numeric. Minimum base pairs per window to retain. Default: 1000
+  #' @param max_N_freq Numeric. Maximum frequency of N's allowed per window. Default: 0.25
+  #' @param organism Character. Organism name for TxDb metadata. Default: "Mimulus guttatus"
+  #' @param intron_trim_bp Numeric. BP to trim from splice sites in introns. Default: 30
+  #' @param intron_min_width Numeric. Minimum intron width after trimming. Default: 86
+  #' @param intergenic_trim_bp Numeric. BP to trim near genes in intergenic regions. Default: 1000
+  #' @param intergenic_width Numeric. Width of intergenic flanking regions to extract. Default: 10000
+  #' @param return_intermediates Logical. Return intermediate data objects? Default: FALSE
+  #'
+  #' @return A list containing:
+  #' \itemize{
+  #'   \item \code{dM_introns}: dM data frame from introns (if source includes "introns")
+  #'   \item \code{dM_intergenic}: dM data frame from intergenic (if source includes "intergenic")
+  #'   \item \code{global_stats_introns}: Global nucleotide frequencies from introns
+  #'   \item \code{global_stats_intergenic}: Global nucleotide frequencies from intergenic
+  #'   \item \code{output_files}: Paths to generated dM CSV files
+  #'   \item \code{intermediates}: (Optional) Intermediate data objects if requested
+  #' }
+  #'
+  #' @examples
+  #' \dontrun{
+  #' # Generate dM from both introns and intergenic regions
+  #' dM_results <- estimate_dM_from_neutral_regions(
+  #'   fasta_file = "./data/genome.hardmasked.fa",
+  #'   ann_file = "./data/genes.gff3",
+  #'   source = "both",
+  #'   output_prefix = "Mguttatus"
+  #' )
+  #' 
+  #' # Access the dM files
+  #' print(dM_results$output_files)
+  #' }
+  #'
+  #' @export
+  #' ___________________________________________________________________________
+  
+  source <- match.arg(source)
+  
+  # Create output directory if needed
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  results <- list(
+    dM_introns = NULL,
+    dM_intergenic = NULL,
+    global_stats_introns = NULL,
+    global_stats_intergenic = NULL,
+    output_files = character(),
+    intermediates = list()
+  )
+  
+  # ---------------------------------------------------------------------------
+  # Helper: Process a single source type
+  # ---------------------------------------------------------------------------
+  process_source <- function(source_type) {
+    
+    cat(sprintf("\n%s\n", paste(rep("=", 70), collapse = "")))
+    cat(sprintf("Processing: %s\n", toupper(source_type)))
+    cat(sprintf("%s\n\n", paste(rep("=", 70), collapse = "")))
+    
+    # 1. Extract sequences based on source type
+    if (source_type == "introns") {
+      cat("Step 1: Extracting intronic sequences...\n")
+      seq_data <- get_intron_sequences(
+        fasta_file = fasta_file,
+        ann_file = ann_file,
+        trim_bp = intron_trim_bp,
+        min_width = intron_min_width,
+        organism = organism
+      )
+    } else {
+      cat("Step 1: Extracting intergenic sequences...\n")
+      seq_data <- get_inergenic_sequences(
+        fasta_file = fasta_file,
+        ann_file = ann_file,
+        trim_bp = intergenic_trim_bp,
+        width = intergenic_width,
+        organism = organism
+      )
+    }
+    
+    # 2. Calculate nucleotide composition per window
+    cat("\nStep 2: Calculating nucleotide composition per window...\n")
+    nuc_composition <- get_base_composition_per_windows(
+      input_data = seq_data,
+      window_size = window_size
+    )
+    
+    cat(sprintf("  Total windows: %d\n", nrow(nuc_composition)))
+    
+    # 3. Filter windows
+    cat("\nStep 3: Filtering windows...\n")
+    
+    # Filter by minimum base pairs
+    nuc_filtered <- nuc_composition |>
+      dplyr::filter(total_bp >= min_bp)
+    
+    cat(sprintf("  After min_bp filter (>= %d bp): %d windows\n", 
+                min_bp, nrow(nuc_filtered)))
+    
+    # Calculate and filter by N frequency
+    nuc_filtered <- nuc_filtered |>
+      dplyr::mutate(
+        N_freq = N_count / (total_bp + N_count)
+      ) |>
+      dplyr::filter(N_freq < max_N_freq)
+    
+    cat(sprintf("  After N frequency filter (< %.2f): %d windows\n", 
+                max_N_freq, nrow(nuc_filtered)))
+    
+    if (nrow(nuc_filtered) == 0) {
+      warning(sprintf("No windows passed filtering for %s!", source_type))
+      return(list(dM = NULL, global_stats = NULL, output_file = NULL, 
+                  intermediates = list(seq_data = seq_data, 
+                                       nuc_composition = nuc_composition)))
+    }
+    
+    # 4. Calculate global weighted nucleotide frequencies
+    cat("\nStep 4: Calculating global nucleotide frequencies (weighted by bp)...\n")
+    
+    global_stats <- nuc_filtered |>
+      dplyr::summarize(
+        total_genome_bp = sum(total_bp),
+        n_windows = dplyr::n(),
+        avg_pi_A = sum(pi_A * total_bp) / sum(total_bp),
+        avg_pi_C = sum(pi_C * total_bp) / sum(total_bp),
+        avg_pi_G = sum(pi_G * total_bp) / sum(total_bp),
+        avg_pi_T = sum(pi_T * total_bp) / sum(total_bp)
+      )
+    
+    cat(sprintf("  Total BP analyzed: %s\n", format(global_stats$total_genome_bp, big.mark = ",")))
+    cat(sprintf("  Windows used: %d\n", global_stats$n_windows))
+    cat(sprintf("  π(A) = %.4f, π(C) = %.4f, π(G) = %.4f, π(T) = %.4f\n",
+                global_stats$avg_pi_A, global_stats$avg_pi_C, 
+                global_stats$avg_pi_G, global_stats$avg_pi_T))
+    cat(sprintf("  GC content = %.2f%%\n", 
+                100 * (global_stats$avg_pi_G + global_stats$avg_pi_C)))
+    
+    # 5. Generate dM file
+    cat("\nStep 5: Generating AnaCoDa dM file...\n")
+    
+    output_file <- file.path(output_dir, 
+                              sprintf("%s_%s_derived_dM.csv", output_prefix, source_type))
+    
+    dM_data <- generate_anacoda_dM(
+      pi_A = global_stats$avg_pi_A,
+      pi_C = global_stats$avg_pi_C,
+      pi_G = global_stats$avg_pi_G,
+      pi_T = global_stats$avg_pi_T,
+      output_file = output_file
+    )
+    
+    cat(sprintf("\n✓ %s processing complete!\n", toupper(source_type)))
+    cat(sprintf("  Output: %s\n", output_file))
+    
+    return(list(
+      dM = dM_data,
+      global_stats = global_stats,
+      output_file = output_file,
+      intermediates = list(
+        seq_data = seq_data,
+        nuc_composition = nuc_composition,
+        nuc_filtered = nuc_filtered
+      )
+    ))
+  }
+  
+  # ---------------------------------------------------------------------------
+  # Execute based on source selection
+  # ---------------------------------------------------------------------------
+  
+  if (source %in% c("introns", "both")) {
+    intron_results <- process_source("introns")
+    results$dM_introns <- intron_results$dM
+    results$global_stats_introns <- intron_results$global_stats
+    results$output_files <- c(results$output_files, introns = intron_results$output_file)
+    if (return_intermediates) {
+      results$intermediates$introns <- intron_results$intermediates
+    }
+  }
+  
+  if (source %in% c("intergenic", "both")) {
+    intergenic_results <- process_source("intergenic")
+    results$dM_intergenic <- intergenic_results$dM
+    results$global_stats_intergenic <- intergenic_results$global_stats
+    results$output_files <- c(results$output_files, intergenic = intergenic_results$output_file)
+    if (return_intermediates) {
+      results$intermediates$intergenic <- intergenic_results$intermediates
+    }
+  }
+  
+  # ---------------------------------------------------------------------------
+  # Summary comparison (if both sources were processed)
+  # ---------------------------------------------------------------------------
+  
+  if (source == "both" && 
+      !is.null(results$global_stats_introns) && 
+      !is.null(results$global_stats_intergenic)) {
+    
+    cat("\n")
+    cat(sprintf("%s\n", paste(rep("=", 70), collapse = "")))
+    cat("COMPARISON: Introns vs Intergenic\n")
+    cat(sprintf("%s\n", paste(rep("=", 70), collapse = "")))
+    
+    cat("\nNucleotide Frequencies:\n")
+    cat(sprintf("  %-12s  %8s  %8s  %8s\n", "", "Introns", "Intergenic", "Diff"))
+    cat(sprintf("  %-12s  %8.4f  %8.4f  %+8.4f\n", "π(A)", 
+                results$global_stats_introns$avg_pi_A,
+                results$global_stats_intergenic$avg_pi_A,
+                results$global_stats_intergenic$avg_pi_A - results$global_stats_introns$avg_pi_A))
+    cat(sprintf("  %-12s  %8.4f  %8.4f  %+8.4f\n", "π(C)", 
+                results$global_stats_introns$avg_pi_C,
+                results$global_stats_intergenic$avg_pi_C,
+                results$global_stats_intergenic$avg_pi_C - results$global_stats_introns$avg_pi_C))
+    cat(sprintf("  %-12s  %8.4f  %8.4f  %+8.4f\n", "π(G)", 
+                results$global_stats_introns$avg_pi_G,
+                results$global_stats_intergenic$avg_pi_G,
+                results$global_stats_intergenic$avg_pi_G - results$global_stats_introns$avg_pi_G))
+    cat(sprintf("  %-12s  %8.4f  %8.4f  %+8.4f\n", "π(T)", 
+                results$global_stats_introns$avg_pi_T,
+                results$global_stats_intergenic$avg_pi_T,
+                results$global_stats_intergenic$avg_pi_T - results$global_stats_introns$avg_pi_T))
+    
+    gc_introns <- results$global_stats_introns$avg_pi_G + results$global_stats_introns$avg_pi_C
+    gc_intergenic <- results$global_stats_intergenic$avg_pi_G + results$global_stats_intergenic$avg_pi_C
+    cat(sprintf("\n  %-12s  %7.2f%%  %7.2f%%  %+7.2f%%\n", "GC Content", 
+                100 * gc_introns, 100 * gc_intergenic, 100 * (gc_intergenic - gc_introns)))
+    
+    cat("\n")
+  }
+  
+  cat("\n✓ dM estimation complete!\n")
+  cat("Output files:\n")
+  for (nm in names(results$output_files)) {
+    cat(sprintf("  - %s: %s\n", nm, results$output_files[nm]))
+  }
+  
+  return(results)
+}
