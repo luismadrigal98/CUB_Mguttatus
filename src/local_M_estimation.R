@@ -198,116 +198,120 @@ get_inergenic_sequences <- function(fasta_file, ann_file,
   #' @export
   #' ___________________________________________________________________________
   
-  message("Step 1: Loading Annotation and Extracting Introns...")
+  message("Step 1: Loading Annotation...")
   
   # --- 1. Load Annotation and Create TxDb ---
   txdb <- txdbmaker::makeTxDbFromGFF(file = ann_file, 
                                      format = "gff3",
                                      organism = organism)
   
-  introns_list <- GenomicFeatures::intronsByTranscript(txdb, use.names = TRUE)
+  all_genes <- GenomicFeatures::genes(txdb)
   
-  # --- 2. Filter for Primary Transcripts (.1) ---
-  transcript_ids <- names(introns_list)
-  # Look for IDs ending in ".1"
-  is_primary_transcript <- sapply(strsplit(transcript_ids, "\\."), 
-                                  function(x) tail(x, 1) == "1")
-  primary_introns_list <- introns_list[is_primary_transcript]
-  
-  message(paste("Original number of transcripts:", length(introns_list)))
-  message(paste("Number of primary transcripts (.1):", length(primary_introns_list)))
-  
-  # --- 3. Filter for Main Chromosomes (e.g., Chr_01) ---
-  
-  # Define main chromosome pattern based on common annotation formats
+  # --- 2. Filter for Main Chromosomes ---
   main_chr_pattern <- "^Chr_[0-9]{1,2}$"
+  genes_on_main <- all_genes[grepl(main_chr_pattern, seqnames(all_genes))]
   
-  # Extract the single chromosome name for each transcript
-  seq_names <- sapply(primary_introns_list, function(gr) {
-    return(as.character(GenomeInfoDb::seqlevelsInUse(gr)))
-  })
+  message(paste("Original genes:", length(all_genes)))
+  message(paste("Genes on main chromosomes:", length(genes_on_main)))
   
-  # Filter the GRangesList
-  is_main_chromosome <- grepl(main_chr_pattern, seq_names)
-  final_introns_list <- primary_introns_list[is_main_chromosome]
+  # --- 3. Define Upstream and Downstream Regions ---
+  message("Step 2: Calculating Flanking Coordinates...")
   
-  message(paste("Final list contains", length(final_introns_list), 
-                "intron sets for primary transcripts on main chromosomes."))
+  # A. Upstream (Promoter-ish side)
+  # flank(start=TRUE) gets the 5' side.
+  upstream_raw <- GenomicRanges::flank(genes_on_main, width = width + trim_bp, start = TRUE)
+  # Remove the 'trim_bp' part closest to the gene.
+  upstream_ranges <- GenomicRanges::resize(upstream_raw, width = width, fix = "start")
   
-  # --- 4. Intron Width Filtering and Trimming ---
+  # B. Downstream (Terminator-ish side)
+  # flank(start=FALSE) gets the 3' side.
+  downstream_raw <- GenomicRanges::flank(genes_on_main, width = width + trim_bp, start = FALSE)
+  # Remove the 'trim_bp' part closest to the gene.
+  downstream_ranges <- GenomicRanges::resize(downstream_raw, width = width, fix = "end")
   
-  all_introns <- unlist(final_introns_list)
+  # --- 4. Load Genome and Harmonize Seqlevels ---
+  message("Step 3: Loading Genome Sequence...")
   
-  # Filtering: Check if the intron is long enough to survive trimming
-  required_min_width <- min_width + (2 * trim_bp)
-  clean_introns <- all_introns[width(all_introns) > required_min_width]
-  
-  # Trimming: Remove splice sites from both ends
-  trimmed_introns <- GenomicRanges::narrow(clean_introns, 
-                                           start = trim_bp + 1, 
-                                           end = width(clean_introns) - trim_bp)
-  
-  # --- 5. Prepare Genome FASTA for Sequence Extraction (FaFile) ---
-  
-  # Use FaFile for robust coordinate-based sequence extraction (required by getSeq)
   if (!file.exists(fasta_file)) stop("FASTA file not found.")
+  dna <- Biostrings::readDNAStringSet(filepath = fasta_file)
   
-  dna <- readDNAStringSet(filepath = fasta_file)
+  # Simplify FASTA names
+  names(dna) <- sub("^(\\S+)\\s.*", "\\1", names(dna))
   
-  original_names <- names(dna)
+  # Harmonize
+  fasta_chroms <- names(dna)[grepl(main_chr_pattern, names(dna))]
+  upstream_ranges <- GenomeInfoDb::keepSeqlevels(upstream_ranges, fasta_chroms, pruning.mode = "coarse")
+  downstream_ranges <- GenomeInfoDb::keepSeqlevels(downstream_ranges, fasta_chroms, pruning.mode = "coarse")
   
-  # Simplify the names
-  names(dna) <- sub("^(\\S+)\\s.*", "\\1", original_names)
+  # Ensure ranges fit within chromosome limits
+  seqlengths(upstream_ranges) <- width(dna)[match(seqlevels(upstream_ranges), names(dna))]
+  seqlengths(downstream_ranges) <- width(dna)[match(seqlevels(downstream_ranges), names(dna))]
   
-  main_chroms_to_keep <- names(dna)[grepl(main_chr_pattern, 
-                                          names(dna))]
+  upstream_ranges <- GenomicRanges::trim(upstream_ranges)
+  downstream_ranges <- GenomicRanges::trim(downstream_ranges)
   
-  dna <- dna[main_chroms_to_keep]
+  # Remove truncated ranges
+  upstream_ranges <- upstream_ranges[width(upstream_ranges) == width]
+  downstream_ranges <- downstream_ranges[width(downstream_ranges) == width]
   
-  # --- 6. Final Synchronization and Sequence Extraction ---
+  # --- 5. Extract Sequences (Manual Method) ---
+  message("Step 4: Extracting Sequences...")
   
-  # Crucial: Synchronize the GRanges seqlevels to the cleaned FASTA names
-  trimmed_introns <- GenomeInfoDb::keepSeqlevels(
-    trimmed_introns, 
-    main_chroms_to_keep, 
-    pruning.mode = "coarse"
-  )
-  
-  # --- CUSTOM DIRECT SEQUENCE EXTRACTION (Your requested method) ---
-  
-  # 1. Get components for extraction
-  r <- GenomicRanges::ranges(trimmed_introns)
-  seq_names <- as.character(GenomicRanges::seqnames(trimmed_introns))
-  
-  intron_seqs_raw <- Biostrings::DNAStringSet(
-    sapply(1:length(r), function(i) {
-      # Extract the sequence for the current chromosome (seq_names[i])
-      chrom_seq <- dna[seq_names[i]]
+  # Helper function to extract and reverse complement based on strand
+  extract_and_orient <- function(granges_obj, genome_dna) {
+    
+    # 1. Map chromosome names to integer indices for faster extraction
+    chr_names <- as.character(GenomicRanges::seqnames(granges_obj))
+    starts <- GenomicRanges::start(granges_obj)
+    ends <- GenomicRanges::end(granges_obj)
+    
+    # 2. Vectorized extraction using lapply over the unique chromosomes
+    # (This is faster than looping over every single gene)
+    unique_chrs <- unique(chr_names)
+    
+    # Create a list to store results
+    extracted_list <- character(length(granges_obj))
+    
+    # Extract sequences per chromosome to minimize subsets
+    for (chr in unique_chrs) {
+      # Identify indices for this chromosome
+      idx <- which(chr_names == chr)
       
-      # Subseq the single-chromosome DNAStringSet
-      subseq_obj <- Biostrings::subseq(chrom_seq, start(r[i]), end(r[i]))
-      
-      return(as.character(subseq_obj))
-    })
-  )
+      # Extract from the specific chromosome DNAString
+      # Views is efficient for multiple ranges on one sequence
+      if (length(idx) > 0) {
+        chr_seq <- genome_dna[[chr]]
+        v <- Biostrings::Views(chr_seq, start = starts[idx], end = ends[idx])
+        extracted_list[idx] <- as.character(v)
+      }
+    }
+    
+    # Convert to DNAStringSet
+    dss <- Biostrings::DNAStringSet(extracted_list)
+    names(dss) <- names(granges_obj)
+    
+    # 3. Handle Strand (Reverse Complement Negative Strand)
+    # This preserves the bias you requested
+    neg_strand <- as.character(GenomicRanges::strand(granges_obj)) == "-"
+    if (any(neg_strand)) {
+      dss[neg_strand] <- Biostrings::reverseComplement(dss[neg_strand])
+    }
+    
+    return(dss)
+  }
   
-  # 3. Handle Reverse Complementation for Negative Strand
-  neg_strand_idx <- GenomicRanges::strand(trimmed_introns) == "-"
+  # Run the extraction helper
+  upstream_seqs <- extract_and_orient(upstream_ranges, dna)
+  downstream_seqs <- extract_and_orient(downstream_ranges, dna)
   
-  intron_seqs_final <- intron_seqs_raw
-  intron_seqs_final[neg_strand_idx] <- Biostrings::reverseComplement(intron_seqs_final[neg_strand_idx])
-  
-  names(intron_seqs_final) <- names(trimmed_introns)
-  
-  # Get the Seqinfo object for the next function call
-  genome_seqinfo <- GenomeInfoDb::seqinfo(dna) 
+  message("Extraction complete.")
   
   return(list(
-    # The full genome DNAStringSet (optional, but requested earlier)
-    dna = dna, 
-    intron_seqs = intron_seqs_final, 
-    trimmed_introns = trimmed_introns,
-    genome_seqinfo = genome_seqinfo
+    upstream_seqs = upstream_seqs,
+    downstream_seqs = downstream_seqs,
+    upstream_ranges = upstream_ranges,
+    downstream_ranges = downstream_ranges,
+    genome_seqinfo = seqinfo(dna)
   ))
 }
 
@@ -324,41 +328,37 @@ calculate_window_metrics <- function(window_idx,
                                      return_Ns = TRUE) 
 {
   #' @title Calculate Base Composition for a Single Genomic Window
-  #' @description Internal function to extract intron sequences within a window 
+  #' @description Internal function to extract sequences within a window 
   #' and calculate A, C, G, T frequencies.
   #' @param window_idx Numeric. Index of the current window.
   #' @param all_windows GRanges object defining all genomic windows.
-  #' @param all_seqs DNAStringSet containing all trimmed intron sequences.
-  #' @param hit_list Hits object from findOverlaps mapping windows to introns.
-  #' @param return_Ns Whether to return also the count of Ns if working with a 
-  #' masked fasta file
-  #' @return A named vector of window metadata, total base pairs, and base frequencies, 
-  #' or NULL if empty.
+  #' @param all_seqs DNAStringSet containing the sequences (upstream or downstream).
+  #' @param hit_list Hits object from findOverlaps mapping windows to features.
+  #' @param return_Ns Whether to return also the count of Ns.
+  #' @return A named vector of window metadata, total base pairs, and base frequencies.
   #' ___________________________________________________________________________
   
-  # Identify which introns belong to this specific window index
-  intron_indices <- S4Vectors::subjectHits(hit_list)[S4Vectors::queryHits(hit_list) == window_idx]
+  # Identify which features (upstream/downstream regions) belong to this specific window index
+  feature_indices <- S4Vectors::subjectHits(hit_list)[S4Vectors::queryHits(hit_list) == window_idx]
   
-  if (length(intron_indices) == 0) {
+  if (length(feature_indices) == 0) {
     return(NULL) # Skip empty windows
   }
   
   # Extract sequences for this window
-  local_seqs <- all_seqs[intron_indices]
+  local_seqs <- all_seqs[feature_indices]
   
   # Count bases (A, C, G, T)
   # baseOnly = TRUE returns 5 columns: A, C, G, T, and "other" (which includes N)
   counts <- Biostrings::alphabetFrequency(local_seqs, baseOnly = TRUE, as.prob = FALSE)
   
-  # Sum counts across all introns in this window
+  # Sum counts across all features in this window
   total_counts <- colSums(counts)
   
   # Calculate Total Valid Base Pairs (Strictly A + C + G + T)
-  # This effectively ignores 'N's from the hard masking
   total_bp <- sum(total_counts[1:4])
   
   # CRITICAL CHECK: If the window was mostly 'N's, total_bp might be tiny or zero.
-  # We return NULL if there are no valid bases to avoid division by zero or garbage data.
   if(total_bp == 0) return(NULL)
   
   # Calculate Frequencies (Pi vector) based on VALID bases only
@@ -377,60 +377,89 @@ calculate_window_metrics <- function(window_idx,
   # Optionally return N count
   if (return_Ns) N_count <- as.numeric(total_counts["other"]) else N_count <- NA
   
-  # Return data including the valid base pair count
+  # Return data
   return(c(window_data, total_bp = total_bp, freqs, N_count = N_count))
 }
 
 get_base_composition_per_windows <- function(genome_seqinfo, 
-                                             trimmed_introns,
-                                             intron_seqs,
+                                             intergenic_data, # Accepts the LIST output from get_intergenic_sequences
                                              window_size = 100000)
 {
-  #' @title Aggregate Intron Base Composition per Window
+  #' @title Aggregate Intergenic Base Composition per Window
   #'
-  #' @description Tiles the genome into windows and calculates the A, C, G, T 
-  #' frequencies of all trimmed deep introns falling within each window.
+  #' @description Tiles the genome into windows and calculates A, C, G, T frequencies
+  #' for both upstream and downstream intergenic regions separately.
   #'
   #' @param genome_seqinfo GenomeInfoDb::Seqinfo object with chromosome names and lengths.
-  #' @param trimmed_introns GenomicRanges::GRanges object of trimmed introns.
-  #' @param intron_seqs Biostrings::DNAStringSet of trimmed intron sequences.
+  #' @param intergenic_data The list returned by get_intergenic_sequences(). Must contain:
+  #'   upstream_ranges, upstream_seqs, downstream_ranges, downstream_seqs.
   #' @param window_size Numeric. The size of the genomic windows (default: 100000 bp).
-  #' @return A data frame with window coordinates and base frequencies (pi_A, pi_C, pi_G, pi_T).
+  #' @return A combined data frame with window coordinates, base frequencies, and a 'region_type' column.
   #' @export
-  #' ___________________________________________________________________________
   
-  message("Step 1: Calculating Base Frequencies per Window...")
+  message("Step 1: Tiling Genome...")
   
   # Define genomic windows
-  # FIX: Use qualified function call and correct input name
   seq_lengths <- GenomeInfoDb::seqlengths(genome_seqinfo)
   windows <- GenomicRanges::tileGenome(seq_lengths, 
                                        tilewidth = window_size, 
                                        cut.last.tile.in.chrom = TRUE)
   
-  # Map introns to windows
-  # We use 'findOverlaps' to see which introns fall into which 100kb window
-  overlaps <- GenomicRanges::findOverlaps(windows, trimmed_introns)
-  
-  # Apply calculation across windows (Use lapply for list, then bind)
-  results_list <- lapply(1:length(windows), calculate_window_metrics, 
-                         all_windows = windows, 
-                         all_seqs = intron_seqs, 
-                         hit_list = overlaps)
-  
-  # Remove NULL (empty windows) and Convert to Data Frame
-  df_results <- do.call(rbind, results_list[!sapply(results_list, is.null)])
-  df_results <- as.data.frame(df_results)
-  
-  # Ensure numeric columns are cast correctly (do.call(rbind) converts to matrix, 
-  # making them character/factor)
-  numeric_cols <- c("start", "end", "window_idx", "pi_A", "pi_C", "pi_G", "pi_T",
-                    "total_bp", "N_count")
-  for(col in numeric_cols) {
-    df_results[[col]] <- as.numeric(df_results[[col]])
+  # Helper function to process one set of ranges/sequences
+  process_region <- function(ranges_obj, seqs_obj, region_label) {
+    
+    message(paste("  Processing", region_label, "regions..."))
+    
+    # Map features to windows
+    overlaps <- GenomicRanges::findOverlaps(windows, ranges_obj)
+    
+    # Apply calculation across windows
+    results_list <- lapply(1:length(windows), calculate_window_metrics, 
+                           all_windows = windows, 
+                           all_seqs = seqs_obj, 
+                           hit_list = overlaps)
+    
+    # Bind results
+    # Check if list is empty or all NULLs first
+    non_null_results <- results_list[!sapply(results_list, is.null)]
+    
+    if (length(non_null_results) == 0) {
+      warning(paste("No overlapping windows found for", region_label))
+      return(NULL)
+    }
+    
+    df_results <- do.call(rbind, non_null_results)
+    df_results <- as.data.frame(df_results)
+    
+    # Numeric conversion
+    numeric_cols <- c("start", "end", "window_idx", "pi_A", "pi_C", "pi_G", "pi_T",
+                      "total_bp", "N_count")
+    for(col in numeric_cols) {
+      if(col %in% colnames(df_results)) {
+        df_results[[col]] <- as.numeric(df_results[[col]])
+      }
+    }
+    
+    # Add identifier column
+    df_results$region_type <- region_label
+    
+    return(df_results)
   }
   
-  return(df_results)
+  # --- Step 2: Run Analysis for Upstream ---
+  df_upstream <- process_region(intergenic_data$upstream_ranges, 
+                                intergenic_data$upstream_seqs, 
+                                "upstream")
+  
+  # --- Step 3: Run Analysis for Downstream ---
+  df_downstream <- process_region(intergenic_data$downstream_ranges, 
+                                  intergenic_data$downstream_seqs, 
+                                  "downstream")
+  
+  # --- Step 4: Combine Results ---
+  final_df <- rbind(df_upstream, df_downstream)
+  
+  return(final_df)
 }
 
 refine_windows_for_genes <- function(nuc_composition, min_bp = 1000) 

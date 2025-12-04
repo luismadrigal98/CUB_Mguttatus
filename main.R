@@ -553,20 +553,10 @@ cat("CAI ranges from 0 to 1, where higher values indicate stronger adaptation\n"
 cat("Higher CAI = more similar to codon usage in highly expressed genes\n\n")
 
 # Define reference set: Top 5% expressed genes
-reference_genes <- integrated_data |>
-  filter(Expression_Group == "Top 5%") |>
-  pull(Gene_name)
+reference_genes <- read.table(file = 'data/CAI_Reference_Set_Mguttatus.txt')[, 1]
 
-cat(sprintf("Using %d highly expressed genes as reference set\n", 
+cat(sprintf("Using %d highly expressed genes as reference set with relevant functional annotations\n", 
             length(reference_genes)))
-
-# Remove .1 suffix from codon_usage gene names to match gene-level IDs
-# (codon_usage has transcript IDs like MgIM767.10G127000.1,
-#  expression data has gene IDs like MgIM767.10G127000)
-codon_usage <- codon_usage |>
-  dplyr::mutate(Gene_name = sub("\\.1$", "", Gene_name))
-
-cat(sprintf("Converted codon usage transcript IDs to gene IDs\n"))
 
 # Calculate CAI for all genes
 cai_results <- calculate_cai(
@@ -601,8 +591,7 @@ ggplot(data = w_table, mapping = aes(x = reorder(codon, relative_adaptiveness),
     axis.text.y = element_text(size = 8),
     strip.text = element_text(face = "bold", size = 10)
   ) +
-  labs(y = "Relative Adaptiveness (w)", x = "Codon",
-       title = "Codon Preference in Highly Expressed Genes")
+  labs(y = "Relative Adaptiveness (w)", x = "Codon")
 
 ggsave("./results/optimal_codons_relative_adaptiveness.pdf", 
        width = 12, height = 10)
@@ -610,10 +599,6 @@ ggsave("./results/optimal_codons_relative_adaptiveness.pdf",
 # Merge CAI with expression and ENC data
 integrated_data <- integrated_data |>
   left_join(cai_values, by = "Gene_name")
-
-# Save results
-write.csv(integrated_data, "./results/expression_enc_cai.csv", row.names = FALSE)
-write.csv(w_table, "./results/optimal_codons_weights.csv", row.names = FALSE)
 
 cat("\n=== CAI vs Expression Level ===\n")
 # Compare CAI across expression groups
@@ -840,14 +825,14 @@ print(top_diff)
 cat("\nNote: These raw differences don't account for amino acid composition.\n")
 cat("Enrichment analysis (via w-table) corrects for this by normalizing within amino acids.\n\n")
 
-# 7.2.1) Preferred codon usage: Selected vs Neutral genes ---- ----
+# 7.2.1) Enriched codons usage ----
 
 # Get preferred codons (w = 1.0 from CAI)
-preferred_codons_vec <- w_table |>
+enriched_codons_vec <- w_table |>
   dplyr::filter(relative_adaptiveness == 1.0) |>
   dplyr::pull(codon)
 
-cat(sprintf("Using %d preferred codons (w = 1.0)\n\n", length(preferred_codons_vec)))
+cat(sprintf("Using %d preferred codons (w = 1.0)\n\n", length(enriched_codons_vec)))
 
 # Merge codon usage with expression groups
 codon_usage_with_groups <- codon_usage |>
@@ -864,14 +849,14 @@ cat(sprintf("Bottom 95%% genes (neutral/rest): %d genes\n\n", nrow(rest_genes)))
 # Calculate for both groups
 cat("Calculating preferred codon usage per amino acid...\n")
 
-selected_aa <- count_preferred_by_aa(top5_genes, preferred_codons_vec, genetic_code_dna_long)
-selected_aa$Group <- "Selected (Top 5%)"
+enriched_aa <- count_preferred_by_aa(top5_genes, enriched_codons_vec, genetic_code_dna_long)
+enriched_aa$Group <- "Selected (Top 5%)"
 
-rest_aa <- count_preferred_by_aa(rest_genes, preferred_codons_vec, genetic_code_dna_long)
+rest_aa <- count_preferred_by_aa(rest_genes, enriched_codons_vec, genetic_code_dna_long)
 rest_aa$Group <- "Rest (Bottom 95%)"
 
 # Combine for comparison
-comparison_table <- selected_aa |>
+comparison_table <- enriched_aa |>
   dplyr::select(Amino_Acid, N_synonymous, Preferred_codons, 
                 Selected_count = Preferred_count, 
                 Selected_prop = Prop_preferred) |>
@@ -888,13 +873,13 @@ comparison_table <- selected_aa |>
   dplyr::arrange(dplyr::desc(Difference))
 
 # Save table
-write.csv(comparison_table, "./results/preferred_codon_usage_selected_vs_neutral.csv",
+write.csv(comparison_table, "./results/enriched_codon_usage.csv",
           row.names = FALSE)
 
-cat("\n✓ Results saved: ./results/preferred_codon_usage_selected_vs_neutral.csv\n\n")
+cat("\n✓ Results saved: ./results/enriched_codon_usage.csv\n\n")
 
 # Print table
-cat("=== Preferred Codon Usage: Selected vs Rest ===\n\n")
+cat("=== Enriched Codon Usage: Selected vs Rest ===\n\n")
 cat(sprintf("%-4s %-4s %-15s %-12s %-12s %-12s %-8s\n",
             "AA", "Deg", "Preferred", "Top5%", "Rest95%", "Difference", "Fold"))
 cat(paste(rep("-", 80), collapse = ""), "\n")
@@ -914,9 +899,9 @@ cat(paste(rep("-", 80), collapse = ""), "\n\n")
 
 # Statistical summary
 cat("=== Summary Statistics ===\n\n")
-cat(sprintf("Mean proportion preferred (Top 5%%): %.4f\n", 
+cat(sprintf("Mean proportion enriched (Top 5%%): %.4f\n", 
             mean(comparison_table$Selected_prop, na.rm = TRUE)))
-cat(sprintf("Mean proportion preferred (Rest 95%%): %.4f\n", 
+cat(sprintf("Mean proportion enriched (Rest 95%%): %.4f\n", 
             mean(comparison_table$Rest_prop, na.rm = TRUE)))
 cat(sprintf("Mean difference: %.4f\n", 
             mean(comparison_table$Difference, na.rm = TRUE)))
@@ -931,15 +916,6 @@ wilcox_test <- wilcox.test(comparison_table$Selected_prop,
 cat(sprintf("Wilcoxon signed-rank test (paired by amino acid):\n"))
 cat(sprintf("  V = %.1f, p-value = %.2e\n", 
             wilcox_test$statistic, wilcox_test$p.value))
-
-if (wilcox_test$p.value < 0.001) {
-  cat("  *** Highly significant (p < 0.001)\n")
-  cat("  → Top 5%% genes use MORE preferred codons than rest\n")
-} else if (wilcox_test$p.value < 0.05) {
-  cat("  * Significant (p < 0.05)\n")
-} else {
-  cat("  Not significant (p >= 0.05)\n")
-}
 
 # Create visualization
 p_comparison <- ggplot(comparison_table, 
@@ -966,9 +942,6 @@ ggsave("./results/preferred_codon_usage_comparison.pdf", p_comparison,
        width = 10, height = 6)
 
 cat("\n")
-
-# Now create the same plot with CORRECTED preferred codons (after section 7.2.4)
-# This will be added in section 7.2.5 for comparison
 
 # 7.2.2) Statistical testing for codon-level differences ----
 
@@ -1026,8 +999,8 @@ cat(sprintf("  - Depleted in Top 5%% (avoided): %d\n",
 
 cat(sprintf("\nPreferred codons (w=1) that are significantly enriched: %d / %d (%.1f%%)\n",
             nrow(sig_preferred),
-            length(preferred_codons_vec),
-            100 * nrow(sig_preferred) / length(preferred_codons_vec)))
+            length(enriched_codons_vec),
+            100 * nrow(sig_preferred) / length(enriched_codons_vec)))
 
 if (nrow(sig_preferred) > 0) {
   cat("\nThese 'under selection' preferred codons are:\n")
@@ -1080,7 +1053,7 @@ codon_test_results <- codon_test_results |>
     Classification = Combined_Classification
   )
 
-# 7.2.4) Preferred codons (corrected) ----
+# 7.2.4) Enriched codons (corrected) ----
 cat("\n=== 7.2.4: Defining Corrected Preferred Codons ===\n")
 cat("Strategy: Preferentially choose w=1 codons, but use enrichment data when conflicts arise\n\n")
 
@@ -1100,7 +1073,7 @@ codon_combined <- w_table |>
 # 3. If no codon is significantly enriched: Use w=1 as default (CAI definition)
 # 4. If multiple codons enriched: Use the one with largest effect size
 
-preferred_codons_corrected <- codon_combined |>
+enriched_codons_corrected <- codon_combined |>
   dplyr::group_by(AA) |>
   dplyr::mutate(
     # Flag w=1 codons
@@ -1126,7 +1099,7 @@ preferred_codons_corrected <- codon_combined |>
 
 # Summary of decisions
 cat("Decision Summary:\n")
-decision_summary <- preferred_codons_corrected |>
+decision_summary <- enriched_codons_corrected |>
   dplyr::group_by(Selection_Rationale) |>
   dplyr::summarise(
     n_codons = n(),
@@ -1155,7 +1128,7 @@ if (nrow(conflicts) > 0) {
                     Difference[relative_adaptiveness == 1.0][1] > 0,
       enriched_codons = paste(Codon[Significant & Difference > 0], collapse = ", "),
       n_enriched = sum(Significant & Difference > 0, na.rm = TRUE),
-      final_choice = preferred_codons_corrected$Codon[preferred_codons_corrected$AA == AA[1]][1]
+      final_choice = enriched_codons_corrected$Codon[enriched_codons_corrected$AA == AA[1]][1]
     )
   
   print(conflict_summary)
@@ -1163,1122 +1136,25 @@ if (nrow(conflicts) > 0) {
 }
 
 # Save corrected preferred codons
-write.csv(preferred_codons_corrected, 
-          "./results/preferred_codons_corrected.csv",
+write.csv(enriched_codons_corrected, 
+          "./results/enriched_codons_corrected.csv",
           row.names = FALSE)
 
-cat("✓ Corrected preferred codons saved: ./results/preferred_codons_corrected.csv\n\n")
+cat("✓ Corrected preferred codons saved: ./results/enriched_codons_corrected.csv\n\n")
 
 # Show final preferred codon set
-cat("=== Final Preferred Codons (Corrected) ===\n")
-final_table <- preferred_codons_corrected |>
+cat("=== Final Enriched Codons (Corrected) ===\n")
+final_table <- enriched_codons_corrected |>
   dplyr::select(AA, Codon, w = relative_adaptiveness, 
                 Enriched = is_enriched, Diff = Difference, Selection_Rationale)
 print(final_table, n = Inf)
 cat("\n")
 
 # Use corrected set for downstream analysis
-preferred_codons_mg <- preferred_codons_corrected
-
-# 7.2.5) Recalculate CAI with corrected preferred codons ----
-cat("\n=== 7.2.5: Recalculating CAI with Corrected Preferred Codons ===\n\n")
-
-# Create corrected w-table from preferred_codons_corrected
-w_table_corrected <- preferred_codons_corrected |>
-  dplyr::select(amino_acid = AA, codon = Codon, relative_adaptiveness)
-
-# For codons not marked as preferred, calculate their relative adaptiveness
-# based on their frequency relative to the preferred codon
-all_codons_by_aa <- codon_combined |>
-  dplyr::select(AA, Codon, Selected_Prop) |>
-  dplyr::group_by(AA) |>
-  dplyr::mutate(
-    max_prop = max(Selected_Prop, na.rm = TRUE),
-    w_corrected = Selected_Prop / max_prop
-  ) |>
-  dplyr::ungroup() |>
-  dplyr::select(amino_acid = AA, codon = Codon, relative_adaptiveness = w_corrected)
-
-# Get Top 5% gene names (matching codon_usage IDs - without .1 suffix)
-top5_genes_for_cai <- integrated_data |>
-  dplyr::filter(Expression_Group == "Top 5%") |>
-  pull(Gene_name)
-
-cat(sprintf("Using %d Top 5%% genes as reference for corrected CAI\n", 
-            length(top5_genes_for_cai)))
-
-# Recalculate CAI using the corrected w-table
-cat("Recalculating CAI with corrected w-values...\n")
-cai_results_corrected <- calculate_cai(
-  codon_counts = codon_usage,
-  reference_genes = top5_genes_for_cai,
-  genetic_code = genetic_code_dna_long
-)
-
-# Extract corrected CAI values
-cai_values_corrected <- cai_results_corrected$cai_values |>
-  dplyr::rename(CAI_corrected = CAI)
-
-# Merge with integrated data
-integrated_data <- integrated_data |>
-  dplyr::left_join(cai_values_corrected, by = "Gene_name")
-
-# Compare original vs corrected CAI
-cat("\n=== CAI Comparison: Original vs Corrected ===\n")
-cai_comparison <- integrated_data |>
-  dplyr::select(Gene_name, Expression_Group, CAI, CAI_corrected) |>
-  dplyr::filter(!is.na(CAI) & !is.na(CAI_corrected))
-
-# Correlation
-cor_cai <- cor(cai_comparison$CAI, cai_comparison$CAI_corrected, 
-               use = "complete.obs")
-cat(sprintf("Correlation between original and corrected CAI: %.4f\n\n", cor_cai))
-
-# Summary by expression group
-cai_comparison_summary <- cai_comparison |>
-  dplyr::group_by(Expression_Group) |>
-  dplyr::summarise(
-    n = n(),
-    mean_CAI_original = mean(CAI, na.rm = TRUE),
-    mean_CAI_corrected = mean(CAI_corrected, na.rm = TRUE),
-    median_CAI_original = median(CAI, na.rm = TRUE),
-    median_CAI_corrected = median(CAI_corrected, na.rm = TRUE),
-    diff_mean = mean_CAI_corrected - mean_CAI_original
-  )
-
-print(cai_comparison_summary)
-cat("\n")
-
-# Plot comparison
-p_cai_comparison <- ggplot(cai_comparison, 
-                           aes(x = CAI, y = CAI_corrected, color = Expression_Group)) +
-  geom_point(alpha = 0.3, size = 1) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
-  geom_smooth(method = "lm", se = FALSE) +
-  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
-                                 "Bottom 5%" = "#377EB8",
-                                 "Middle 90%" = "#999999")) +
-  labs(
-    title = "CAI: Original vs Corrected",
-    subtitle = sprintf("Correlation: %.3f | Dashed line = perfect agreement", cor_cai),
-    x = "Original CAI (w=1 from raw frequencies)",
-    y = "Corrected CAI (w=1 from enrichment-corrected preferences)",
-    color = "Expression Group"
-  ) +
-  theme_custom() +
-  theme(legend.position = "right")
-
-ggsave("./results/CAI_original_vs_corrected.pdf", p_cai_comparison, 
-       width = 10, height = 7)
-
-cat("✓ Plot saved: ./results/CAI_original_vs_corrected.pdf\n\n")
-
-# Analyze preferred codon usage: Top 5% vs Bottom 5%
-cat("=== Preferred Codon Usage: Top 5% vs Bottom 5% ===\n\n")
-
-# Get gene lists
-top5_genes_list <- integrated_data |>
-  dplyr::filter(Expression_Group == "Top 5%") |>
-  pull(Gene_name)
-
-bottom5_genes_list <- integrated_data |>
-  dplyr::filter(Expression_Group == "Bottom 5%") |>
-  pull(Gene_name)
-
-# Count preferred codon usage
-cat("Counting preferred codon usage in Top 5% genes...\n")
-preferred_usage_top5 <- count_preferred_codons(
-  top5_genes_list, codon_usage, preferred_codons_corrected
-)
-
-cat("Counting preferred codon usage in Bottom 5% genes...\n")
-preferred_usage_bottom5 <- count_preferred_codons(
-  bottom5_genes_list, codon_usage, preferred_codons_corrected
-)
-
-# Summary statistics
-cat("\n=== Summary: Preferred Codon Usage ===\n")
-cat(sprintf("\nTop 5%% genes (n=%d):\n", nrow(preferred_usage_top5)))
-cat(sprintf("  Mean proportion of preferred codons: %.4f (SD = %.4f)\n",
-            mean(preferred_usage_top5$Preferred_Proportion, na.rm = TRUE),
-            sd(preferred_usage_top5$Preferred_Proportion, na.rm = TRUE)))
-cat(sprintf("  Median proportion: %.4f\n",
-            median(preferred_usage_top5$Preferred_Proportion, na.rm = TRUE)))
-
-cat(sprintf("\nBottom 5%% genes (n=%d):\n", nrow(preferred_usage_bottom5)))
-cat(sprintf("  Mean proportion of preferred codons: %.4f (SD = %.4f)\n",
-            mean(preferred_usage_bottom5$Preferred_Proportion, na.rm = TRUE),
-            sd(preferred_usage_bottom5$Preferred_Proportion, na.rm = TRUE)))
-cat(sprintf("  Median proportion: %.4f\n",
-            median(preferred_usage_bottom5$Preferred_Proportion, na.rm = TRUE)))
-
-# Statistical test
-cat("\n=== Statistical Test ===\n")
-wilcox_test_pref <- wilcox.test(
-  preferred_usage_top5$Preferred_Proportion,
-  preferred_usage_bottom5$Preferred_Proportion,
-  alternative = "greater"
-)
-
-cat(sprintf("Wilcoxon rank-sum test (Top 5%% > Bottom 5%%):\n"))
-cat(sprintf("  W = %.2f, p-value = %.2e\n", 
-            wilcox_test_pref$statistic, wilcox_test_pref$p.value))
-
-# Effect size
-d_preferred <- cohens_d_calc(
-  preferred_usage_top5$Preferred_Proportion,
-  preferred_usage_bottom5$Preferred_Proportion
-)
-cat(sprintf("  Cohen's d = %.3f\n", d_preferred))
-cat(sprintf("  Interpretation: %s\n",
-            ifelse(abs(d_preferred) < 0.2, "negligible",
-                   ifelse(abs(d_preferred) < 0.5, "small",
-                          ifelse(abs(d_preferred) < 0.8, "medium", "large")))))
-
-# Visualization
-preferred_usage_combined <- rbind(
-  preferred_usage_top5 |> dplyr::mutate(Group = "Top 5%"),
-  preferred_usage_bottom5 |> dplyr::mutate(Group = "Bottom 5%")
-)
-
-p_preferred_usage <- ggplot(preferred_usage_combined, 
-                            aes(x = Group, y = Preferred_Proportion, fill = Group)) +
-  geom_violin(alpha = 0.3) +
-  geom_boxplot(width = 0.3, outlier.alpha = 0.3) +
-  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
-  scale_fill_manual(values = c("Top 5%" = "#E41A1C", "Bottom 5%" = "#377EB8")) +
-  labs(
-    title = "Preferred Codon Usage: Top 5% vs Bottom 5%",
-    subtitle = sprintf("Wilcoxon p = %.2e, Cohen's d = %.3f", 
-                       wilcox_test_pref$p.value, d_preferred),
-    x = "Expression Group",
-    y = "Proportion of Preferred Codons",
-    caption = sprintf("%d corrected preferred codons (enrichment-based)", 
-                      nrow(preferred_codons_corrected))
-  ) +
-  theme_custom() +
-  theme(legend.position = "none")
-
-ggsave("./results/preferred_codon_usage_top5_vs_bottom5.pdf", 
-       p_preferred_usage, width = 8, height = 6)
-
-cat("\n✓ Plot saved: ./results/preferred_codon_usage_top5_vs_bottom5.pdf\n\n")
-
-# Save preferred codon usage data
-preferred_usage_summary <- preferred_usage_combined |>
-  dplyr::select(Gene_name, Group, Total_Codons, Preferred_Codons, Preferred_Proportion)
-
-write.csv(preferred_usage_summary, 
-          "./results/preferred_codon_usage_by_expression.csv",
-          row.names = FALSE)
-
-cat("✓ Preferred codon usage data saved: ./results/preferred_codon_usage_by_expression.csv\n\n")
-
-# Create amino acid-level comparison plot with corrected codons
-cat("Creating amino acid-level comparison plot with corrected preferred codons...\n")
-
-# Calculate preferred codon usage per amino acid for corrected set
-# Reuse the count_preferred_by_aa function but with corrected codons
-preferred_codons_corrected_vec <- preferred_codons_corrected$Codon
-
-selected_aa_corrected <- count_preferred_by_aa(top5_genes, 
-                                              preferred_codons_corrected_vec, 
-                                              genetic_code_dna_long)
-selected_aa_corrected$Group <- "Selected (Top 5%)"
-
-rest_aa_corrected <- count_preferred_by_aa(rest_genes, 
-                                          preferred_codons_corrected_vec, 
-                                          genetic_code_dna_long)
-rest_aa_corrected$Group <- "Rest (Bottom 95%)"
-
-# Combine for comparison
-comparison_table_corrected <- selected_aa_corrected |>
-  dplyr::select(Amino_Acid, N_synonymous, Preferred_codons, 
-                Selected_count = Preferred_count, 
-                Selected_prop = Prop_preferred) |>
-  dplyr::left_join(
-    rest_aa_corrected |> dplyr::select(Amino_Acid, 
-                                       Rest_count = Preferred_count,
-                                       Rest_prop = Prop_preferred),
-    by = "Amino_Acid"
-  ) |>
-  dplyr::mutate(
-    Difference = Selected_prop - Rest_prop,
-    Fold_enrichment = Selected_prop / Rest_prop
-  ) |>
-  dplyr::arrange(dplyr::desc(Difference))
-
-# Save table
-write.csv(comparison_table_corrected, 
-          "./results/preferred_codon_usage_selected_vs_neutral_CORRECTED.csv",
-          row.names = FALSE)
-
-cat("✓ Results saved: ./results/preferred_codon_usage_selected_vs_neutral_CORRECTED.csv\n\n")
-
-# Create corrected visualization
-p_comparison_corrected <- ggplot(comparison_table_corrected, 
-                                aes(x = reorder(Amino_Acid, -Difference))) +
-  geom_segment(aes(xend = Amino_Acid, y = Rest_prop, yend = Selected_prop),
-               color = "gray70", linewidth = 1) +
-  geom_point(aes(y = Selected_prop, color = "Top 5%"), 
-             size = 3, shape = 16) +
-  geom_point(aes(y = Rest_prop, color = "Rest 95%"), 
-             size = 3, shape = 16) +
-  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
-                                "Rest 95%" = "#377EB8"),
-                     name = "") +
-  labs(title = "Preferred Codon Usage: Top 5% vs Rest (CORRECTED)",
-       subtitle = "Proportion of corrected preferred codons per amino acid (after enrichment correction)",
-       x = "Amino Acid (ordered by difference)",
-       y = "Proportion of Preferred Codons") +
-  theme_custom() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "bottom",
-        plot.title = element_text(face = "bold"))
-
-ggsave("./results/preferred_codon_usage_comparison_CORRECTED.pdf", 
-       p_comparison_corrected,
-       width = 10, height = 6)
-
-cat("✓ Plot saved: ./results/preferred_codon_usage_comparison_CORRECTED.pdf\n\n")
-
-# Statistical test for corrected version
-wilcox_test_corrected <- wilcox.test(comparison_table_corrected$Selected_prop, 
-                                     comparison_table_corrected$Rest_prop,
-                                     paired = TRUE)
-
-cat("=== Corrected Preferred Codons: Statistical Test ===\n")
-cat(sprintf("Wilcoxon signed-rank test (paired by amino acid):\n"))
-cat(sprintf("  V = %.1f, p-value = %.2e\n", 
-            wilcox_test_corrected$statistic, 
-            wilcox_test_corrected$p.value))
-
-if (wilcox_test_corrected$p.value < 0.001) {
-  cat("  *** Highly significant (p < 0.001)\n")
-  cat("  → Top 5%% genes use MORE corrected preferred codons than rest\n\n")
-} else if (wilcox_test_corrected$p.value < 0.05) {
-  cat("  * Significant (p < 0.05)\n\n")
-} else {
-  cat("  Not significant (p >= 0.05)\n\n")
-}
-
-## 7.2.6) Comparing preferred codon of Mimulus guttatus to other plants ----
-
-# Use w_table from CAI analysis (already calculated preferred codons)
-cat("Using optimal codons from corrected reference set...\n")
-
-# Get preferred codons (those with relative_adaptiveness == 1.0)
-preferred_codons_comparative <- preferred_codons_mg |>
-  dplyr::mutate(Codon_RNA = gsub("T", "U", Codon)) |>
-  dplyr::select(Amino_Acid = AA, Codon_RNA, relative_adaptiveness)
-
-# Collapse amino acids with six codons back into six, based on relative adaptiveness
-
-preferred_codons_comparative <- preferred_codons_comparative |>
-  dplyr::mutate(AA_root = sapply(preferred_codons_comparative$Amino_Acid, 
-                                 function(x) 
-                                 {
-                                   unlist(strsplit(x, "_"))[1]
-                                 }))
-
-merge_2_and_4_to_6_fold <- function(preference_df, AA_family_col)
-{
-  #' This function will condense together the 4 and 2 fold families from a 6-fold
-  #' aminoacid family back to the one preferred codon per amino acid. It will take
-  #' the aminoacid with the greater adaptiveness.
-  #' 
-  #' FOR COMPATIBILITY WITH OTHER PLANT STUDIES
-  #' 
-  #' Args:
-  #' preference_df: Data frame with columns for Amino Acid, Codon_RNA, relative_adaptiveness
-  #' AA_family_col: Column name indicating the root amino acid family (e.g., "Leu" for "Leu_2" and "Leu_4")
-  #' 
-  #' ___________________________________________________________________________
-  
-  condensed_preferences <- preference_df |>
-    dplyr::group_by(!!sym(AA_family_col)) |>
-    dplyr::arrange(!!sym(AA_family_col), 
-                   dplyr::desc(relative_adaptiveness)) |>
-    dplyr::slice(1) |>
-    dplyr::ungroup() |>
-    dplyr::select(Amino_Acid = !!sym(AA_family_col), 
-                  Codon_RNA, relative_adaptiveness)
-  
-  return(condensed_preferences)
-}
-
-preferred_codons_mg <- merge_2_and_4_to_6_fold(
-  preferred_codons_comparative,
-  "AA_root"
-)
-
-cat(sprintf("Found %d preferred codons for M. guttatus\n\n", 
-            nrow(preferred_codons_mg)))
-
-# Add M. guttatus to the global plant comparison table
-mg_prefs <- preferred_codons_mg |>
-  dplyr::select(Amino_Acid, Mimulus_guttatus = Codon_RNA)
-
-plant_codons_extended <- model_plants_PC |>
-  left_join(mg_prefs, by = "Amino_Acid") |>
-  na.omit()
-
-# Reorder columns
-plant_codons_extended <- plant_codons_extended |>
-  dplyr::select(Group, Amino_Acid, Arabidopsis_thaliana, Populus_trichocarpa, 
-                Mimulus_guttatus, Physcomitrella_patens, Synonymous_Codons)
-
-# Save extended table
-write.csv(plant_codons_extended, "./results/plant_preferred_codons_comparison.csv", 
-          row.names = FALSE, quote = FALSE)
-
-cat("Extended comparison table saved: ./results/plant_preferred_codons_comparison.csv\n\n")
-
-# Print summary
-cat("=== M. guttatus Preferred Codons ===\n")
-print(preferred_codons_mg |> dplyr::select(Amino_Acid, Codon = Codon_RNA, Weight = relative_adaptiveness))
-
-# Calculate codon preference similarity between species
-cat("\n\n=== Cross-Species Codon Preference Analysis ===\n\n")
-
-# Get all sense codons from global genetic_code_dna_long (excluding stops)
-all_codons_rna <- gsub("T", "U", names(genetic_code_dna_long)[!genetic_code_dna_long %in% c("STOP", "Trp", "Met")])
-
-# Initialize matrix
-species <- c("Arabidopsis_thaliana", "Populus_trichocarpa", "Mimulus_guttatus", "Physcomitrella_patens")
-codon_matrix <- matrix(0, nrow = length(species), ncol = length(all_codons_rna))
-rownames(codon_matrix) <- species
-colnames(codon_matrix) <- all_codons_rna
-
-# Fill matrix
-for (sp_idx in 1:length(species)) {
-  sp_name <- species[sp_idx]
-  if (sp_name == "Mimulus_guttatus") {
-    preferred <- preferred_codons_mg$Codon_RNA
-  } else {
-    preferred <- plant_codons_extended[[sp_name]]
-  }
-  
-  # Mark preferred codons as 1
-  for (codon in preferred) {
-    # Handle multiple codons separated by /
-    codons_split <- unlist(strsplit(codon, "/"))
-    for (c in codons_split) {
-      if (c %in% all_codons_rna) {
-        codon_matrix[sp_name, c] <- 1
-      }
-    }
-  }
-}
-
-# Build similarity matrix
-n_species <- length(species)
-similarity_matrix <- matrix(0, nrow = n_species, ncol = n_species)
-rownames(similarity_matrix) <- species
-colnames(similarity_matrix) <- species
-
-for (i in 1:n_species) {
-  for (j in 1:n_species) {
-    similarity_matrix[i, j] <- jaccard_similarity(codon_matrix[i, ], codon_matrix[j, ])
-  }
-}
-
-cat("Jaccard Similarity Matrix (codon preference overlap):\n")
-print(round(similarity_matrix, 3))
-cat("\n")
-
-# Convert to distance matrix
-distance_matrix <- as.dist(1 - similarity_matrix)
-
-# Hierarchical clustering
-hc <- hclust(distance_matrix, method = "average")
-
-# Save dendrogram
-pdf("./results/plant_codon_preference_dendrogram.pdf", width = 10, height = 7)
-par(mar = c(5, 4, 4, 2))
-plot(hc, main = "Plant Species Clustering by Codon Preference Similarity",
-     xlab = "Species", ylab = "Distance (1 - Jaccard Similarity)",
-     sub = paste("Based on preferred codon usage in", length(all_codons_rna), "sense codons"),
-     cex.main = 1.3)
-dev.off()
-
-cat("Dendrogram saved: ./results/plant_codon_preference_dendrogram.pdf\n\n")
-
-# Create unrooted phylogram using ape package
-tree <- as.phylo(hc)
-
-# Save unrooted tree
-pdf("./results/plant_codon_preference_unrooted.pdf", width = 10, height = 10)
-par(mar = c(1, 1, 3, 1))
-plot(tree, type = "unrooted", main = "Unrooted Tree: Codon Preference Similarity",
-     cex = 1.2, lab4ut = "axial", edge.width = 2)
-dev.off()
-
-cat("Unrooted tree saved: ./results/plant_codon_preference_unrooted.pdf\n\n")
-
-# Create heatmap of codon preferences
-cat("Creating codon preference heatmap...\n")
-
-# Prepare data for heatmap
-codon_df <- as.data.frame(t(codon_matrix))
-codon_df$Codon <- rownames(codon_df)
-codon_df$AA <- genetic_code_dna_long[gsub("U", "T", codon_df$Codon)]
-
-# Reshape for ggplot
-codon_long <- codon_df |>
-  pivot_longer(cols = all_of(species), names_to = "Species", values_to = "Preferred") |>
-  dplyr::mutate(Species = gsub("_", " ", Species),
-                Species = factor(Species, levels = gsub("_", " ", species)))
-
-# Create heatmap
-p_heatmap <- ggplot(codon_long, aes(x = Species, y = Codon, fill = factor(Preferred))) +
-  geom_tile(color = "white", size = 0.5) +
-  scale_fill_manual(values = c("0" = "gray90", "1" = "#E41A1C"),
-                    labels = c("Not Preferred", "Preferred")) +
-  facet_grid(AA ~ ., scales = "free_y", space = "free_y") +
-  labs(title = "Preferred Codon Usage Across Plant Species",
-       subtitle = "Based on highest expression genes",
-       x = "", y = "Codon", fill = "") +
-  theme_minimal(base_size = 11) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
-        strip.text.y = element_text(angle = 0, hjust = 0),
-        panel.spacing = unit(0.3, "lines"),
-        legend.position = "bottom")
-
-ggsave("./results/plant_codon_preference_heatmap.pdf", p_heatmap, 
-       width = 10, height = 18)
-
-cat("Heatmap saved: ./results/plant_codon_preference_heatmap.pdf\n\n")
-
-# Create color-coded comparison plot showing M. guttatus sharing patterns
-
-cat("Creating color-coded codon preference comparison plot...\n")
-
-# Create a data frame for the plot
-plot_data <- data.frame()
-
-# Species order: Arabidopsis, Populus, Physcomitrella, then Mimulus
-species_order <- c("Arabidopsis_thaliana", "Populus_trichocarpa", 
-                   "Physcomitrella_patens", "Mimulus_guttatus")
-species_labels <- c("A. thaliana", "P. trichocarpa", "P. patens", "M. guttatus")
-
-for (aa in sort(unique(plant_codons_extended$Amino_Acid))) {
-  # Determine chemistry group
-  aa_group <- "Other"
-  for (grp in names(aa_chemistry)) {
-    if (aa %in% aa_chemistry[[grp]]) {
-      aa_group <- gsub("_", " ", grp)  # Convert underscores to spaces here
-      break
-    }
-  }
-  
-  aa_data <- plant_codons_extended |> dplyr::filter(Amino_Acid == aa)
-  
-  # Get preferred codons for each species
-  codons_list <- list()
-  for (sp in species_order) {
-    if (sp %in% colnames(plant_codons_extended)) {
-      codon_str <- aa_data[[sp]][1]
-      if (!is.na(codon_str) && codon_str != "") {
-        codons_list[[sp]] <- unique(unlist(strsplit(codon_str, "/")))
-      } else {
-        codons_list[[sp]] <- character(0)
-      }
-    }
-  }
-  
-  # For each species, add their preferred codons
-  for (i in 1:length(species_order)) {
-    sp <- species_order[i]
-    sp_label <- species_labels[i]
-    
-    if (length(codons_list[[sp]]) > 0) {
-      codon_text <- paste(codons_list[[sp]], collapse = "/")
-      
-      # Determine color for M. guttatus column
-      if (sp == "Mimulus_guttatus") {
-        # Check which species M. guttatus shares with
-        mg_codons <- codons_list[["Mimulus_guttatus"]]
-        at_codons <- codons_list[["Arabidopsis_thaliana"]]
-        pt_codons <- codons_list[["Populus_trichocarpa"]]
-        pp_codons <- codons_list[["Physcomitrella_patens"]]
-        
-        shares_with <- c()
-        if (length(intersect(mg_codons, at_codons)) > 0) shares_with <- c(shares_with, "Arabidopsis")
-        if (length(intersect(mg_codons, pt_codons)) > 0) shares_with <- c(shares_with, "Populus")
-        if (length(intersect(mg_codons, pp_codons)) > 0) shares_with <- c(shares_with, "Physcomitrella")
-        
-        # Assign color based on sharing pattern
-        if (length(shares_with) == 0) {
-          codon_color <- "Unique"
-        } else if (length(shares_with) == 3) {
-          codon_color <- "All_three"
-        } else if (length(shares_with) == 2) {
-          codon_color <- "Two_species"
-        } else {
-          # Shares with only one species
-          if ("Arabidopsis" %in% shares_with) {
-            codon_color <- "Only_Arabidopsis"
-          } else if ("Populus" %in% shares_with) {
-            codon_color <- "Only_Populus"
-          } else {
-            codon_color <- "Only_Physcomitrella"
-          }
-        }
-      } else {
-        # For other species, use their own color
-        codon_color <- sp_label
-      }
-      
-      plot_data <- rbind(plot_data,
-                         data.frame(
-                           Amino_Acid = aa,
-                           Chemistry = aa_group,  # Already converted above
-                           Species = sp_label,
-                           Codon = codon_text,
-                           Color_Category = codon_color,
-                           stringsAsFactors = FALSE
-                         ))
-    }
-  }
-}
-
-# Set factor levels for proper ordering
-plot_data$Species <- factor(plot_data$Species, levels = species_labels)
-plot_data$Chemistry <- factor(plot_data$Chemistry, 
-                              levels = c("Nonpolar Aliphatic", "Aromatic", 
-                                         "Polar Uncharged", "Positively Charged", 
-                                         "Negatively Charged", "Other"))
-
-# Define colors
-color_palette <- c(
-  "A. thaliana" = "#E41A1C",           # Red for Arabidopsis
-  "P. trichocarpa" = "#377EB8",        # Blue for Populus
-  "P. patens" = "#4DAF4A",             # Green for Physcomitrella
-  "Only_Arabidopsis" = "#E41A1C",      # Red - shares only with Arabidopsis
-  "Only_Populus" = "#377EB8",          # Blue - shares only with Populus
-  "Only_Physcomitrella" = "#4DAF4A",   # Green - shares only with Physcomitrella
-  "Two_species" = "#FF7F00",           # Orange - shares with two species
-  "All_three" = "#984EA3",             # Purple - shares with all three
-  "Unique" = "#999999"                 # Gray - unique to M. guttatus
-)
-
-# Create the plot
-p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon)) +
-  geom_tile(aes(fill = Color_Category), color = "white", size = 1, alpha = 0.3) +
-  geom_text(size = 3, fontface = "bold") +
-  scale_fill_manual(values = color_palette,
-                    labels = c("A. thaliana" = "A. thaliana",
-                               "P. trichocarpa" = "P. trichocarpa",
-                               "P. patens" = "P. patens",
-                               "Only_Arabidopsis" = "M.g. shares with Arabidopsis only",
-                               "Only_Populus" = "M.g. shares with Populus only",
-                               "Only_Physcomitrella" = "M.g. shares with Physcomitrella only",
-                               "Two_species" = "M.g. shares with two species",
-                               "All_three" = "M.g. shares with all three",
-                               "Unique" = "M.g. unique preference"),
-                    name = "") +
-  facet_grid(Chemistry ~ ., scales = "free_y", space = "free_y") +
-  labs(title = "Preferred Codon Usage Across Plant Species",
-       subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
-       x = "", y = "") +
-  theme_minimal(base_size = 12) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
-        axis.text.y = element_text(size = 10),
-        strip.text.y = element_text(angle = 0, hjust = 0, face = "bold", size = 11),
-        panel.spacing = unit(0.5, "lines"),
-        legend.position = "bottom",
-        legend.text = element_text(size = 9),
-        panel.grid = element_blank())
-
-ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
-       width = 12, height = 16)
-
-cat("✓ Color-coded comparison plot saved: ./results/plant_codon_preference_comparison_colored.pdf\n\n")
-
-# Print summary of M. guttatus sharing patterns
-cat("=== M. guttatus Codon Preference Sharing Patterns ===\n\n")
-
-mg_summary <- plot_data |> 
-  dplyr::filter(Species == "M. guttatus") |>
-  dplyr::count(Color_Category) |>
-  dplyr::arrange(dplyr::desc(n))
-
-total_aa <- nrow(mg_summary |> dplyr::summarise(total = sum(n)))
-
-for (i in 1:nrow(mg_summary)) {
-  cat_name <- mg_summary$Color_Category[i]
-  count <- mg_summary$n[i]
-  pct <- 100 * count / sum(mg_summary$n)
-  
-  cat_label <- switch(cat_name,
-                      "All_three" = "Shares with all three species",
-                      "Two_species" = "Shares with two species",
-                      "Only_Arabidopsis" = "Shares only with A. thaliana",
-                      "Only_Populus" = "Shares only with P. trichocarpa",
-                      "Only_Physcomitrella" = "Shares only with P. patens",
-                      "Unique" = "Unique to M. guttatus",
-                      cat_name)
-  
-  cat(sprintf("  %-40s: %2d amino acids (%.1f%%)\n", cat_label, count, pct))
-}
-
-cat("\n")
+enriched_codons_mg <- enriched_codons_corrected
 
 ## *****************************************************************************
-## 8) Binomial/Multinomial modeling ----
-## _____________________________________________________________________________
-
-integrated_data <- as.data.table(integrated_data)
-
-# 1. Get all unique, synonymous amino acid families from your genetic code
-all_families <- unique(genetic_code_dna_long[!(genetic_code_dna_long %in% c("STOP", "Met", "Trp"))])
-# [1] "Phe" "Leu_2" "Ser_4" "Tyr" "Cys" "Leu_4" "Pro" "His" ...
-
-# 2. Run the model for every family
-#    This will take some time to run
-all_results_list <- lapply(all_families, function(fam) {
-  cat("Fitting model for family:", fam, "\n")
-  tryCatch(
-    fit_bi_multinom_family_model(
-      family_name = fam,
-      genetic_code = genetic_code_dna_long,
-      usage_dt = codon_usage,
-      meta_dt = integrated_data,
-      preferred_codons_df = preferred_codons_mg
-    ),
-    error = function(e) {
-      cat("ERROR fitting", fam, ":", e$message, "\n")
-      return(NULL)
-    }
-  )
-})
-
-names(all_results_list) <- all_families
-
-# Example
-Ala_data <- integrated_data |>
-  dplyr::select(Gene_name, GC3s, CDS_length_nt, High_exp_log2)
-
-Ala_data <- Ala_data |>
-  left_join(codon_usage[, c("Gene_name", "GCT", "GCC", "GCA", "GCG")])
-
-Ala_data_clean <- Ala_data |>
-  filter(
-    !is.na(GCT) & !is.na(GCC) & !is.na(GCA) & !is.na(GCG) &
-      !is.na(High_exp_log2) & !is.na(GC3s) & !is.na(CDS_length_nt)
-  ) |>
-  mutate(
-    total_Ala = GCT + GCC + GCA + GCG
-  ) |>
-  filter(total_Ala > 0)  # Remove genes with no Ala codons
-
-cat("Original rows:", nrow(Ala_data), "\n")
-cat("After cleaning:", nrow(Ala_data_clean), "\n")
-cat("Removed:", nrow(Ala_data) - nrow(Ala_data_clean), "rows\n\n")
-
-# Calculate proportions for each codon
-Ala_data_clean <- Ala_data_clean |>
-  mutate(
-    prop_GCT = GCT / total_Ala,
-    prop_GCC = GCC / total_Ala,
-    prop_GCA = GCA / total_Ala,
-    prop_GCG = GCG / total_Ala
-  )
-
-# Use cleaned data for analysis
-Ala_data <- Ala_data_clean
-
-# Visualize: How do codon proportions change with expression?
-plot_data <- Ala_data |>
-  dplyr::select(High_exp_log2, prop_GCT, prop_GCC, prop_GCA, prop_GCG) |>
-  pivot_longer(cols = starts_with("prop_"), 
-               names_to = "Codon", 
-               values_to = "Proportion") |>
-  dplyr::mutate(Codon = gsub("prop_", "", Codon))
-
-ggplot(plot_data, aes(x = High_exp_log2, y = Proportion, color = Codon)) +
-  geom_smooth(method = "loess", se = TRUE) +
-  labs(
-    title = "Alanine Codon Usage vs Expression",
-    subtitle = "Do certain codons increase in frequency at high expression?",
-    x = "Gene Expression (log2)",
-    y = "Proportion of Alanine Codons"
-  ) +
-  theme_custom()
-
-cat("Fitting multinomial GAM...\n")
-
-# Try with explicit na.action
-model_ala <- vgam(
-  cbind(GCT, GCC, GCA, GCG) ~ High_exp_log2 + s(GC3s, df = 4) + s(CDS_length_nt, df = 4),
-  family = multinomial(refLevel = 1),  # GCT is reference
-  data = Ala_data,
-  weights = total_Ala,
-  na.action = na.exclude
-)
-
-plotvgam(model_ala)
-
-
-cat("Model fitted successfully!\n\n")
-
-# View summary
-summary(model_ala)
-
-# Method 2: Get standard errors from the vcov matrix
-coef_est <- coef(model_ala)
-se <- sqrt(diag(vcov(model_ala)))
-
-# Create a coefficient table manually
-coef_table <- data.frame(
-  Estimate = coef_est,
-  Std_Error = se,
-  z_value = coef_est / se,
-  p_value = 2 * pnorm(-abs(coef_est / se))
-)
-
-# Show just the High_exp_log2 terms (selection effects)
-coef_table[grep("High_exp_log2", rownames(coef_table)), ]
-
-## *****************************************************************************
-## 8.1) Pairwise Binomial Regression Analysis ----
-## _____________________________________________________________________________
-
-cat("\n\n===============================================================\n")
-cat("SECTION 8.1: PAIRWISE BINOMIAL REGRESSION ANALYSIS\n")
-cat("===============================================================\n\n")
-
-cat("This section fits pairwise binomial regressions for each amino acid family\n")
-cat("to model codon choice as a function of expression level (selection),\n")
-cat("while controlling for confounding effects of gene length and GC content.\n\n")
-
-cat("Two parallel approaches are implemented:\n")
-cat("  1. GAM approach: Uses smoothers s() for non-linear confounders\n")
-cat("  2. GLM approach: Uses Box-Cox transformed confounders for interpretability\n\n")
-
-# Source the necessary functions
-source("./src/fit_pairwise_binomial_models.R")
-source("./src/plot_scurves.R")
-source("./src/check_concordance.R")
-
-# Get all synonymous amino acid families (exclude Met, Trp, STOP)
-all_families <- unique(genetic_code_dna_long[
-  !(genetic_code_dna_long %in% c("STOP", "Met", "Trp"))
-])
-
-cat(sprintf("Analyzing %d amino acid families with synonymous codons\n\n", 
-            length(all_families)))
-
-cat("Using existing preferred codons as baseline for interpretability.\n")
-cat("This ensures all non-preferred codons get negative slopes.\n\n")
-
-# 8.1.1) GAM-based approach ----
-
-cat("=== 8.1.1: GAM Approach (Smoothers for Confounders) ===\n\n")
-
-all_gam_results <- lapply(all_families, function(fam) {
-  cat(sprintf("Fitting GAM models for family: %s\n", fam))
-  tryCatch(
-    fit_pairwise_gams(
-      family_name = fam,
-      genetic_code = genetic_code_dna_long,
-      usage_dt = codon_usage,
-      meta_dt = integrated_data,
-      preferred_codons_df = preferred_codons_mg  # Use existing preferred codons
-    ),
-    error = function(e) {
-      cat(sprintf("  ERROR: %s\n", e$message))
-      return(NULL)
-    }
-  )
-})
-
-names(all_gam_results) <- all_families
-
-# Remove NULL results
-all_gam_results <- all_gam_results[!sapply(all_gam_results, is.null)]
-
-cat(sprintf("\n✓ Successfully fitted models for %d families\n\n", 
-            length(all_gam_results)))
-
-# Aggregate coefficient tables
-master_gam_table <- data.table::rbindlist(
-  lapply(all_gam_results, function(x) x$coefficients)
-)
-
-# Save results
-write.csv(master_gam_table, 
-          "./results/section_8.1_GAM_selection_coefficients.csv",
-          row.names = FALSE)
-
-cat("✓ GAM coefficients saved: ./results/section_8.1_GAM_selection_coefficients.csv\n\n")
-
-# Find data-driven preferred codons (highest selection slope per family)
-gam_preferred_codons <- master_gam_table |>
-  dplyr::group_by(Family) |>
-  dplyr::filter(Selection_Slope == max(Selection_Slope)) |>
-  dplyr::slice(1) |>
-  dplyr::ungroup() |>
-  dplyr::select(Family, Codon, Selection_Slope, p_value)
-
-cat("=== Data-Driven Preferred Codons (GAM approach) ===\n")
-print(gam_preferred_codons, n = Inf)
-cat("\n")
-
-write.csv(gam_preferred_codons,
-          "./results/section_8.1_GAM_preferred_codons.csv",
-          row.names = FALSE)
-
-cat("Note: GAM results saved for comparison, but GLM is the gold standard\n\n")
-
-# 8.1.2) GLM approach with Box-Cox transformation ----
-
-cat("\n=== 8.1.2: GLM Approach (Box-Cox Transformed Confounders) ===\n\n")
-cat("This approach transforms confounders to achieve linearity,\n")
-cat("avoiding the need for GAM smoothers and improving interpretability.\n\n")
-
-all_glm_results <- lapply(all_families, function(fam) {
-  cat(sprintf("Fitting GLM models with Box-Cox for family: %s\n", fam))
-  tryCatch(
-    fit_pairwise_glms(
-      family_name = fam,
-      genetic_code = genetic_code_dna_long,
-      usage_dt = codon_usage,
-      meta_dt = integrated_data,
-      boxcox_confounders = TRUE,
-      preferred_codons_df = preferred_codons_mg  # Use existing preferred codons
-    ),
-    error = function(e) {
-      cat(sprintf("  ERROR: %s\n", e$message))
-      return(NULL)
-    }
-  )
-})
-
-names(all_glm_results) <- all_families
-
-# Remove NULL results
-all_glm_results <- all_glm_results[!sapply(all_glm_results, is.null)]
-
-cat(sprintf("\n✓ Successfully fitted GLM models for %d families\n\n", 
-            length(all_glm_results)))
-
-# Aggregate coefficient tables
-master_glm_table <- data.table::rbindlist(
-  lapply(all_glm_results, function(x) x$coefficients)
-)
-
-# Save results
-write.csv(master_glm_table, 
-          "./results/section_8.1_GLM_BoxCox_selection_coefficients.csv",
-          row.names = FALSE)
-
-cat("✓ GLM coefficients saved: ./results/section_8.1_GLM_BoxCox_selection_coefficients.csv\n\n")
-
-# Find data-driven preferred codons (GLM approach)
-glm_preferred_codons <- master_glm_table |>
-  dplyr::group_by(Family) |>
-  dplyr::filter(Selection_Slope == max(Selection_Slope)) |>
-  dplyr::slice(1) |>
-  dplyr::ungroup() |>
-  dplyr::select(Family, Codon, Selection_Slope, p_value)
-
-cat("=== Data-Driven Preferred Codons (GLM Box-Cox approach) ===\n")
-print(glm_preferred_codons, n = Inf)
-cat("\n")
-
-write.csv(glm_preferred_codons,
-          "./results/section_8.1_GLM_preferred_codons.csv",
-          row.names = FALSE)
-
-cat("Note: GLM detected 3 additional significant cases vs GAM - using as gold standard\n\n")
-
-# 8.1.2.1) Update preferred codons based on GLM results (Gold Standard) ----
-
-cat("\n=== 8.1.2.1: Updating Preferred Codons Based on GLM Significance Patterns ===\n\n")
-cat("GLM models are used as gold standard (detected 3 additional significant cases vs GAM)\n")
-cat("This analysis identifies:\n")
-cat("  - Families with single clear preference\n")
-cat("  - Families with multiple co-optimal codons\n")
-cat("  - Families with no clear preference (all non-significant)\n\n")
-
-source("./src/update_preferred_codons.R")
-
-# Update preferences based on GLM significance patterns
-preferences_updated_glm <- update_preferred_codons_from_models(
-  model_results = all_glm_results,
-  existing_preferred_codons = preferred_codons_mg
-)
-
-# Save updated preferences
-write.csv(preferences_updated_glm,
-          "./results/section_8.1_GLM_updated_preferences_patterns.csv",
-          row.names = FALSE)
-
-cat("✓ Updated preference patterns saved\n\n")
-
-# Create formatted table for downstream use
-preferred_codons_updated <- create_preferred_codons_table(preferences_updated_glm)
-
-write.csv(preferred_codons_updated,
-          "./results/section_8.1_GLM_preferred_codons_updated.csv",
-          row.names = FALSE)
-
-cat("✓ Updated preferred codons table saved: ./results/section_8.1_GLM_preferred_codons_updated.csv\n\n")
-
-# Show summary
-cat("Summary of preference patterns:\n")
-summary_table <- preferences_updated_glm |>
-  dplyr::group_by(Preference_Pattern) |>
-  dplyr::summarise(Count = n(), .groups = "drop")
-print(summary_table)
-cat("\n")
-
-# 8.1.3) Compare GAM vs GLM approaches ----
-
-cat("\n=== 8.1.3: Comparing GAM vs GLM Approaches ===\n\n")
-
-comparison_df <- compare_gam_vs_glm(
-  gam_results = all_gam_results,
-  glm_results = all_glm_results,
-  output_file = "./results/section_8.1_GAM_vs_GLM_comparison.pdf"
-)
-
-# Save comparison table
-write.csv(comparison_df,
-          "./results/section_8.1_GAM_vs_GLM_comparison_table.csv",
-          row.names = FALSE)
-
-cat("✓ Comparison table saved: ./results/section_8.1_GAM_vs_GLM_comparison_table.csv\n\n")
-
-# 8.1.4) Visualize S-curves using GLM models (Gold Standard) ----
-
-cat("\n=== 8.1.4: Creating S-Curve Visualizations (GLM Models) ===\n\n")
-cat("Using GLM models as gold standard (more sensitive, detected 3 additional cases)\n")
-cat("Visualizations reflect updated preference patterns:\n")
-cat("  - ★ marks preferred codon(s)\n")
-cat("  - Multiple ★ for co-optimal codons\n")
-cat("  - No ★ for families without clear preference\n")
-cat("  - Solid lines = significant, Dashed lines = non-significant\n\n")
-
-# Create individual plots for interesting families
-selected_families <- c("Ala", "Leu_4", "Ser_4", "Arg_4", "Gly", "Val", "Asp")
-
-cat("Creating individual S-curve plots for selected families...\n")
-for (fam in selected_families) {
-  if (fam %in% names(all_glm_results)) {
-    plot_family_scurves(
-      model_result = all_glm_results[[fam]],
-      meta_dt = integrated_data,
-      output_file = sprintf("./results/section_8.1_scurve_GLM_%s.pdf", fam),
-      alpha_significance = 0.05,
-      preferred_codons_updated = preferences_updated_glm,
-      n_points = 10000
-    )
-  }
-}
-
-cat("\n")
-
-# Create multi-panel plot with all families
-cat("Creating multi-panel plot with all families...\n")
-plot_all_families_panel(
-  all_model_results = all_glm_results,
-  meta_dt = integrated_data,
-  output_file = "./results/section_8.1_all_families_scurves_GLM.pdf",
-  ncol = 4,
-  preferred_codons_updated = preferences_updated_glm
-)
-
-cat("\n")
-
-# 8.1.5) Statistical summary ----
-
-cat("\n=== 8.1.5: Statistical Summary ===\n\n")
-
-# How many codons show significant selection (using FDR-corrected p-values)?
-gam_significant <- master_gam_table |>
-  dplyr::filter(Codon != Baseline, 
-                !is.na(p_adj),
-                p_adj < 0.05)
-
-glm_significant <- master_glm_table |>
-  dplyr::filter(Codon != Baseline, 
-                !is.na(p_adj),
-                p_adj < 0.05)
-
-cat(sprintf("GAM approach: %d / %d codons show significant selection (p < 0.05)\n",
-            nrow(gam_significant), 
-            nrow(master_gam_table |> dplyr::filter(Codon != Baseline))))
-
-cat(sprintf("GLM approach: %d / %d codons show significant selection (p < 0.05)\n\n",
-            nrow(glm_significant),
-            nrow(master_glm_table |> dplyr::filter(Codon != Baseline))))
-
-# Direction of selection (positive = increases with expression)
-cat("Direction of selection:\n")
-cat(sprintf("  GAM: %d positive, %d negative\n",
-            sum(gam_significant$Selection_Slope > 0),
-            sum(gam_significant$Selection_Slope < 0)))
-cat(sprintf("  GLM: %d positive, %d negative\n\n",
-            sum(glm_significant$Selection_Slope > 0),
-            sum(glm_significant$Selection_Slope < 0)))
-
-# Families with strongest selection signal
-cat("Families with strongest selection signal (GAM approach):\n")
-family_summary_gam <- master_gam_table |>
-  dplyr::filter(Codon != Baseline) |>
-  dplyr::group_by(Family) |>
-  dplyr::summarise(
-    Max_Slope = max(Selection_Slope),
-    Min_p = min(p_value),
-    N_Significant = sum(p_value < 0.05)
-  ) |>
-  dplyr::arrange(dplyr::desc(N_Significant), Min_p)
-
-print(family_summary_gam, n = 10)
-cat("\n")
-
-# Compare with previous CAI-based preferred codons
-cat("=== Comparing with CAI-Based Preferred Codons ===\n\n")
-
-# Merge GAM preferred with CAI preferred
-cai_vs_gam <- preferred_codons_corrected |>
-  dplyr::select(Family = AA, CAI_Preferred = Codon) |>
-  dplyr::left_join(
-    gam_preferred_codons |> dplyr::select(Family, GAM_Preferred = Codon),
-    by = "Family"
-  ) |>
-  dplyr::mutate(Agreement = (CAI_Preferred == GAM_Preferred))
-
-cat(sprintf("Agreement between CAI and GAM preferred codons: %d / %d (%.1f%%)\n\n",
-            sum(cai_vs_gam$Agreement, na.rm = TRUE),
-            nrow(cai_vs_gam),
-            100 * mean(cai_vs_gam$Agreement, na.rm = TRUE)))
-
-# Show disagreements
-disagreements <- cai_vs_gam |> dplyr::filter(!Agreement)
-if (nrow(disagreements) > 0) {
-  cat("Families where CAI and GAM disagree:\n")
-  print(disagreements)
-  cat("\n")
-}
-
-write.csv(cai_vs_gam,
-          "./results/section_8.1_CAI_vs_GAM_comparison.csv",
-          row.names = FALSE)
-
-# Get preferred codons for export
-preferred_codons <- preferred_codons_updated |>
-  dplyr::filter(Preference_Pattern != "Neutral_Family") |>
-  dplyr::select(Codon)
-
-write.table(x = preferred_codons, file = 'results/preferred_codons.txt', 
-            col.names = F, row.names = F, quote = F)
-
-## *****************************************************************************
-## 9) Correspondence analysis over counts and PCA over RSCU ----
+## 8) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
 
 # 9.1) CA analysis ---- 
@@ -2478,7 +1354,7 @@ ca_loading_analysis <- analyze_codon_loading_patterns(
   ordination_result = ca_for_biplot,
   codon_test_results = codon_test_results,
   dims = c(1, 2),
-  preferred_codons = preferred_codons_corrected
+  preferred_codons = enriched_codons
 )
 
 write.csv(ca_loading_analysis, 
@@ -2675,7 +1551,7 @@ pca_loading_analysis <- analyze_codon_loading_patterns(
   ordination_result = rscu_PCA,
   codon_test_results = codon_test_results,
   dims = c(1, 2),
-  preferred_codons = preferred_codons_corrected
+  preferred_codons = enriched_codons
 )
 
 write.csv(pca_loading_analysis, 
@@ -2769,7 +1645,7 @@ pca_3d_animation <- create_3d_pca_animation(
   pca_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  preferred_codons = preferred_codons_corrected,
+  preferred_codons = enriched_codons,
   dims = c(1, 2, 3),
   color_by = "expression",
   show_loadings = TRUE,
@@ -2790,7 +1666,7 @@ if (requireNamespace("magick", quietly = TRUE)) {
     pca_result = rscu_PCA,
     gene_data = gene_data_pca,
     codon_test_results = codon_test_results,
-    preferred_codons = preferred_codons_corrected,
+    preferred_codons = enriched_codons,
     dims = c(1, 2, 3),
     color_by = "expression",
     show_loadings = TRUE,
@@ -2991,7 +1867,7 @@ preferences_updated_glm <- preferences_updated_glm |>
 pairing_analysis_expression <- classify_pairing_with_expression_preferred(
   tRNA_data = tRNA_data,
   codon_supply = codon_supply,
-  preferred_codons_corrected = preferences_updated_glm,
+  enriched_codons = preferences_updated_glm,
   output_dir = "./results/tRNA_analysis_pairing_expression",
   save_results = TRUE
 )
@@ -3741,4 +2617,374 @@ run_dirs <- c(
   "./results/MCMC_results/results_dM_fixed_with_phi/run_3"
 )
 
+
+
+
+
+
+
+
+
+## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
+
+# Use w_table from CAI analysis (already calculated preferred codons)
+cat("Using optimal codons from corrected reference set...\n")
+
+# Get preferred codons (those with relative_adaptiveness == 1.0)
+preferred_codons_comparative <- preferred_codons_mg |>
+  dplyr::mutate(Codon_RNA = gsub("T", "U", Codon)) |>
+  dplyr::select(Amino_Acid = AA, Codon_RNA, relative_adaptiveness)
+
+# Collapse amino acids with six codons back into six, based on relative adaptiveness
+
+preferred_codons_comparative <- preferred_codons_comparative |>
+  dplyr::mutate(AA_root = sapply(preferred_codons_comparative$Amino_Acid, 
+                                 function(x) 
+                                 {
+                                   unlist(strsplit(x, "_"))[1]
+                                 }))
+
+merge_2_and_4_to_6_fold <- function(preference_df, AA_family_col)
+{
+  #' This function will condense together the 4 and 2 fold families from a 6-fold
+  #' aminoacid family back to the one preferred codon per amino acid. It will take
+  #' the aminoacid with the greater adaptiveness.
+  #' 
+  #' FOR COMPATIBILITY WITH OTHER PLANT STUDIES
+  #' 
+  #' Args:
+  #' preference_df: Data frame with columns for Amino Acid, Codon_RNA, relative_adaptiveness
+  #' AA_family_col: Column name indicating the root amino acid family (e.g., "Leu" for "Leu_2" and "Leu_4")
+  #' 
+  #' ___________________________________________________________________________
+  
+  condensed_preferences <- preference_df |>
+    dplyr::group_by(!!sym(AA_family_col)) |>
+    dplyr::arrange(!!sym(AA_family_col), 
+                   dplyr::desc(relative_adaptiveness)) |>
+    dplyr::slice(1) |>
+    dplyr::ungroup() |>
+    dplyr::select(Amino_Acid = !!sym(AA_family_col), 
+                  Codon_RNA, relative_adaptiveness)
+  
+  return(condensed_preferences)
+}
+
+preferred_codons_mg <- merge_2_and_4_to_6_fold(
+  preferred_codons_comparative,
+  "AA_root"
+)
+
+cat(sprintf("Found %d preferred codons for M. guttatus\n\n", 
+            nrow(preferred_codons_mg)))
+
+# Add M. guttatus to the global plant comparison table
+mg_prefs <- preferred_codons_mg |>
+  dplyr::select(Amino_Acid, Mimulus_guttatus = Codon_RNA)
+
+plant_codons_extended <- model_plants_PC |>
+  left_join(mg_prefs, by = "Amino_Acid") |>
+  na.omit()
+
+# Reorder columns
+plant_codons_extended <- plant_codons_extended |>
+  dplyr::select(Group, Amino_Acid, Arabidopsis_thaliana, Populus_trichocarpa, 
+                Mimulus_guttatus, Physcomitrella_patens, Synonymous_Codons)
+
+# Save extended table
+write.csv(plant_codons_extended, "./results/plant_preferred_codons_comparison.csv", 
+          row.names = FALSE, quote = FALSE)
+
+cat("Extended comparison table saved: ./results/plant_preferred_codons_comparison.csv\n\n")
+
+# Print summary
+cat("=== M. guttatus Preferred Codons ===\n")
+print(preferred_codons_mg |> dplyr::select(Amino_Acid, Codon = Codon_RNA, Weight = relative_adaptiveness))
+
+# Calculate codon preference similarity between species
+cat("\n\n=== Cross-Species Codon Preference Analysis ===\n\n")
+
+# Get all sense codons from global genetic_code_dna_long (excluding stops)
+all_codons_rna <- gsub("T", "U", names(genetic_code_dna_long)[!genetic_code_dna_long %in% c("STOP", "Trp", "Met")])
+
+# Initialize matrix
+species <- c("Arabidopsis_thaliana", "Populus_trichocarpa", "Mimulus_guttatus", "Physcomitrella_patens")
+codon_matrix <- matrix(0, nrow = length(species), ncol = length(all_codons_rna))
+rownames(codon_matrix) <- species
+colnames(codon_matrix) <- all_codons_rna
+
+# Fill matrix
+for (sp_idx in 1:length(species)) {
+  sp_name <- species[sp_idx]
+  if (sp_name == "Mimulus_guttatus") {
+    preferred <- preferred_codons_mg$Codon_RNA
+  } else {
+    preferred <- plant_codons_extended[[sp_name]]
+  }
+  
+  # Mark preferred codons as 1
+  for (codon in preferred) {
+    # Handle multiple codons separated by /
+    codons_split <- unlist(strsplit(codon, "/"))
+    for (c in codons_split) {
+      if (c %in% all_codons_rna) {
+        codon_matrix[sp_name, c] <- 1
+      }
+    }
+  }
+}
+
+# Build similarity matrix
+n_species <- length(species)
+similarity_matrix <- matrix(0, nrow = n_species, ncol = n_species)
+rownames(similarity_matrix) <- species
+colnames(similarity_matrix) <- species
+
+for (i in 1:n_species) {
+  for (j in 1:n_species) {
+    similarity_matrix[i, j] <- jaccard_similarity(codon_matrix[i, ], codon_matrix[j, ])
+  }
+}
+
+cat("Jaccard Similarity Matrix (codon preference overlap):\n")
+print(round(similarity_matrix, 3))
+cat("\n")
+
+# Convert to distance matrix
+distance_matrix <- as.dist(1 - similarity_matrix)
+
+# Hierarchical clustering
+hc <- hclust(distance_matrix, method = "average")
+
+# Save dendrogram
+pdf("./results/plant_codon_preference_dendrogram.pdf", width = 10, height = 7)
+par(mar = c(5, 4, 4, 2))
+plot(hc, main = "Plant Species Clustering by Codon Preference Similarity",
+     xlab = "Species", ylab = "Distance (1 - Jaccard Similarity)",
+     sub = paste("Based on preferred codon usage in", length(all_codons_rna), "sense codons"),
+     cex.main = 1.3)
+dev.off()
+
+cat("Dendrogram saved: ./results/plant_codon_preference_dendrogram.pdf\n\n")
+
+# Create unrooted phylogram using ape package
+tree <- as.phylo(hc)
+
+# Save unrooted tree
+pdf("./results/plant_codon_preference_unrooted.pdf", width = 10, height = 10)
+par(mar = c(1, 1, 3, 1))
+plot(tree, type = "unrooted", main = "Unrooted Tree: Codon Preference Similarity",
+     cex = 1.2, lab4ut = "axial", edge.width = 2)
+dev.off()
+
+cat("Unrooted tree saved: ./results/plant_codon_preference_unrooted.pdf\n\n")
+
+# Create heatmap of codon preferences
+cat("Creating codon preference heatmap...\n")
+
+# Prepare data for heatmap
+codon_df <- as.data.frame(t(codon_matrix))
+codon_df$Codon <- rownames(codon_df)
+codon_df$AA <- genetic_code_dna_long[gsub("U", "T", codon_df$Codon)]
+
+# Reshape for ggplot
+codon_long <- codon_df |>
+  pivot_longer(cols = all_of(species), names_to = "Species", values_to = "Preferred") |>
+  dplyr::mutate(Species = gsub("_", " ", Species),
+                Species = factor(Species, levels = gsub("_", " ", species)))
+
+# Create heatmap
+p_heatmap <- ggplot(codon_long, aes(x = Species, y = Codon, fill = factor(Preferred))) +
+  geom_tile(color = "white", size = 0.5) +
+  scale_fill_manual(values = c("0" = "gray90", "1" = "#E41A1C"),
+                    labels = c("Not Preferred", "Preferred")) +
+  facet_grid(AA ~ ., scales = "free_y", space = "free_y") +
+  labs(title = "Preferred Codon Usage Across Plant Species",
+       subtitle = "Based on highest expression genes",
+       x = "", y = "Codon", fill = "") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        strip.text.y = element_text(angle = 0, hjust = 0),
+        panel.spacing = unit(0.3, "lines"),
+        legend.position = "bottom")
+
+ggsave("./results/plant_codon_preference_heatmap.pdf", p_heatmap, 
+       width = 10, height = 18)
+
+cat("Heatmap saved: ./results/plant_codon_preference_heatmap.pdf\n\n")
+
+# Create color-coded comparison plot showing M. guttatus sharing patterns
+
+cat("Creating color-coded codon preference comparison plot...\n")
+
+# Create a data frame for the plot
+plot_data <- data.frame()
+
+# Species order: Arabidopsis, Populus, Physcomitrella, then Mimulus
+species_order <- c("Arabidopsis_thaliana", "Populus_trichocarpa", 
+                   "Physcomitrella_patens", "Mimulus_guttatus")
+species_labels <- c("A. thaliana", "P. trichocarpa", "P. patens", "M. guttatus")
+
+for (aa in sort(unique(plant_codons_extended$Amino_Acid))) {
+  # Determine chemistry group
+  aa_group <- "Other"
+  for (grp in names(aa_chemistry)) {
+    if (aa %in% aa_chemistry[[grp]]) {
+      aa_group <- gsub("_", " ", grp)  # Convert underscores to spaces here
+      break
+    }
+  }
+  
+  aa_data <- plant_codons_extended |> dplyr::filter(Amino_Acid == aa)
+  
+  # Get preferred codons for each species
+  codons_list <- list()
+  for (sp in species_order) {
+    if (sp %in% colnames(plant_codons_extended)) {
+      codon_str <- aa_data[[sp]][1]
+      if (!is.na(codon_str) && codon_str != "") {
+        codons_list[[sp]] <- unique(unlist(strsplit(codon_str, "/")))
+      } else {
+        codons_list[[sp]] <- character(0)
+      }
+    }
+  }
+  
+  # For each species, add their preferred codons
+  for (i in 1:length(species_order)) {
+    sp <- species_order[i]
+    sp_label <- species_labels[i]
+    
+    if (length(codons_list[[sp]]) > 0) {
+      codon_text <- paste(codons_list[[sp]], collapse = "/")
+      
+      # Determine color for M. guttatus column
+      if (sp == "Mimulus_guttatus") {
+        # Check which species M. guttatus shares with
+        mg_codons <- codons_list[["Mimulus_guttatus"]]
+        at_codons <- codons_list[["Arabidopsis_thaliana"]]
+        pt_codons <- codons_list[["Populus_trichocarpa"]]
+        pp_codons <- codons_list[["Physcomitrella_patens"]]
+        
+        shares_with <- c()
+        if (length(intersect(mg_codons, at_codons)) > 0) shares_with <- c(shares_with, "Arabidopsis")
+        if (length(intersect(mg_codons, pt_codons)) > 0) shares_with <- c(shares_with, "Populus")
+        if (length(intersect(mg_codons, pp_codons)) > 0) shares_with <- c(shares_with, "Physcomitrella")
+        
+        # Assign color based on sharing pattern
+        if (length(shares_with) == 0) {
+          codon_color <- "Unique"
+        } else if (length(shares_with) == 3) {
+          codon_color <- "All_three"
+        } else if (length(shares_with) == 2) {
+          codon_color <- "Two_species"
+        } else {
+          # Shares with only one species
+          if ("Arabidopsis" %in% shares_with) {
+            codon_color <- "Only_Arabidopsis"
+          } else if ("Populus" %in% shares_with) {
+            codon_color <- "Only_Populus"
+          } else {
+            codon_color <- "Only_Physcomitrella"
+          }
+        }
+      } else {
+        # For other species, use their own color
+        codon_color <- sp_label
+      }
+      
+      plot_data <- rbind(plot_data,
+                         data.frame(
+                           Amino_Acid = aa,
+                           Chemistry = aa_group,  # Already converted above
+                           Species = sp_label,
+                           Codon = codon_text,
+                           Color_Category = codon_color,
+                           stringsAsFactors = FALSE
+                         ))
+    }
+  }
+}
+
+# Set factor levels for proper ordering
+plot_data$Species <- factor(plot_data$Species, levels = species_labels)
+plot_data$Chemistry <- factor(plot_data$Chemistry, 
+                              levels = c("Nonpolar Aliphatic", "Aromatic", 
+                                         "Polar Uncharged", "Positively Charged", 
+                                         "Negatively Charged", "Other"))
+
+# Define colors
+color_palette <- c(
+  "A. thaliana" = "#E41A1C",           # Red for Arabidopsis
+  "P. trichocarpa" = "#377EB8",        # Blue for Populus
+  "P. patens" = "#4DAF4A",             # Green for Physcomitrella
+  "Only_Arabidopsis" = "#E41A1C",      # Red - shares only with Arabidopsis
+  "Only_Populus" = "#377EB8",          # Blue - shares only with Populus
+  "Only_Physcomitrella" = "#4DAF4A",   # Green - shares only with Physcomitrella
+  "Two_species" = "#FF7F00",           # Orange - shares with two species
+  "All_three" = "#984EA3",             # Purple - shares with all three
+  "Unique" = "#999999"                 # Gray - unique to M. guttatus
+)
+
+# Create the plot
+p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon)) +
+  geom_tile(aes(fill = Color_Category), color = "white", size = 1, alpha = 0.3) +
+  geom_text(size = 3, fontface = "bold") +
+  scale_fill_manual(values = color_palette,
+                    labels = c("A. thaliana" = "A. thaliana",
+                               "P. trichocarpa" = "P. trichocarpa",
+                               "P. patens" = "P. patens",
+                               "Only_Arabidopsis" = "M.g. shares with Arabidopsis only",
+                               "Only_Populus" = "M.g. shares with Populus only",
+                               "Only_Physcomitrella" = "M.g. shares with Physcomitrella only",
+                               "Two_species" = "M.g. shares with two species",
+                               "All_three" = "M.g. shares with all three",
+                               "Unique" = "M.g. unique preference"),
+                    name = "") +
+  facet_grid(Chemistry ~ ., scales = "free_y", space = "free_y") +
+  labs(title = "Preferred Codon Usage Across Plant Species",
+       subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
+       x = "", y = "") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
+        axis.text.y = element_text(size = 10),
+        strip.text.y = element_text(angle = 0, hjust = 0, face = "bold", size = 11),
+        panel.spacing = unit(0.5, "lines"),
+        legend.position = "bottom",
+        legend.text = element_text(size = 9),
+        panel.grid = element_blank())
+
+ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
+       width = 12, height = 16)
+
+cat("✓ Color-coded comparison plot saved: ./results/plant_codon_preference_comparison_colored.pdf\n\n")
+
+# Print summary of M. guttatus sharing patterns
+cat("=== M. guttatus Codon Preference Sharing Patterns ===\n\n")
+
+mg_summary <- plot_data |> 
+  dplyr::filter(Species == "M. guttatus") |>
+  dplyr::count(Color_Category) |>
+  dplyr::arrange(dplyr::desc(n))
+
+total_aa <- nrow(mg_summary |> dplyr::summarise(total = sum(n)))
+
+for (i in 1:nrow(mg_summary)) {
+  cat_name <- mg_summary$Color_Category[i]
+  count <- mg_summary$n[i]
+  pct <- 100 * count / sum(mg_summary$n)
+  
+  cat_label <- switch(cat_name,
+                      "All_three" = "Shares with all three species",
+                      "Two_species" = "Shares with two species",
+                      "Only_Arabidopsis" = "Shares only with A. thaliana",
+                      "Only_Populus" = "Shares only with P. trichocarpa",
+                      "Only_Physcomitrella" = "Shares only with P. patens",
+                      "Unique" = "Unique to M. guttatus",
+                      cat_name)
+  
+  cat(sprintf("  %-40s: %2d amino acids (%.1f%%)\n", cat_label, count, pct))
+}
+
+cat("\n")
 dM_fixed_with_phi_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed
