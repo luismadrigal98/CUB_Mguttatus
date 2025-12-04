@@ -2594,10 +2594,10 @@ source("./src/roc_model_validation.R")
 cat("\n=== ROC Model: Codon Frequency Trajectories ===\n")
 
 # 1. Prepare codon frequency data from the codon_usage already in environment
-# codon_usage is a matrix with genes as rows and codons as columns
+# codon_usage is a data.table with Gene_name column and codon count columns
 codon_freq_long <- codon_usage |>
   as.data.frame() |>
-  tibble::rownames_to_column("Gene") |>
+  dplyr::rename(Gene = Gene_name) |>
   tidyr::pivot_longer(cols = -Gene, names_to = "Codon", values_to = "Count")
 
 # Map codons to amino acids
