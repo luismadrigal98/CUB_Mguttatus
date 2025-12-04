@@ -2559,16 +2559,28 @@ dM_fixed_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is
 # From now on, we will work with chain 1, given that all chains are statistically
 # equal.
 
-phi_hat <- read.csv(file = "results/MCMC_results/results_dM_fixed/run_1/Parameter_est/gene_expression.txt") |>
+phi_hat_dM_fixed <- read.csv(file = "results/MCMC_results/results_dM_fixed/run_1/Parameter_est/gene_expression.txt") |>
   dplyr::select(GeneID, Mean, Mean.log10) |>
   dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
 
-phi <- exp_complete |>
-  left_join(phi_hat, by = join_by("Gene" == "GeneID")) |>
+phi_dM_fixed <- exp_complete |>
+  left_join(phi_hat_dM_fixed, by = join_by("Gene" == "GeneID")) |>
   dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
   na.exclude()
 
-cor.test(phi$Mean.log10.Phi, phi$High_exp_log10)
+cor.test(phi_dM_fixed$Mean.log10.Phi, phi_dM_fixed$High_exp_log10)
+
+# Visualization
+
+ggplot(data = phi_dM_fixed, aes(x = Mean.log10.Phi,
+                                y = High_exp_log10)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  xlab("Estimated phi (log10)") +
+  ylab("Empirical Max Expresion (log10)")
+
+ggsave()
 
 # There is no good correspondence with empirical data
 # Next step is to pass expression data to the AnaCoDa
@@ -2617,13 +2629,138 @@ run_dirs <- c(
   "./results/MCMC_results/results_dM_fixed_with_phi/run_3"
 )
 
+dM_fixed_with_phi_conv <- GR_convergence(run_dirs, 
+                                         parameter = 'selection') # Mutation is fixed
 
+phi_hat_dM_fixed_with_phi <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/gene_expression.txt") |>
+  dplyr::select(GeneID, Mean, Mean.log10) |>
+  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
 
+phi_dM_fixed_with_phi <- exp_complete |>
+  left_join(phi_hat_dM_fixed_with_phi, by = join_by("Gene" == "GeneID")) |>
+  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
+  na.exclude()
 
+cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi, 
+         phi_dM_fixed_with_phi$High_exp_log10)
 
+# 14.3.2) Independent check of the multinomial model replacing phi values with empirical expression in log10 scale ----
 
+# This section validates the AnaCoDa ROC model by using EMPIRICAL expression
+# to predict codon frequencies via the multinomial likelihood:
+#
+#   P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
+#
+# where Z = sum over all codons in AA family of exp(-dM_j - dEta_j * phi)
 
+# Load validation functions
+source("./src/roc_model_validation.R")
 
+cat("\n=== ROC Model Validation with Empirical Expression ===\n")
+
+# 1. Load the CSP estimates from AnaCoDa (dM and dEta)
+csp_params <- load_csp_parameters(
+
+  mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Mutation.csv",
+  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv"
+)
+
+# 2. Get observed codon frequencies per gene
+cat("Loading CDS sequences...\n")
+cds_seqs <- Biostrings::readDNAStringSet("./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa")
+
+# Calculate observed codon frequencies
+codon_freq_all <- calculate_observed_codon_frequencies(cds_seqs)
+
+# 3. Prepare expression data
+expr_data <- read.csv("./data/observed_expression_multitissue.csv")
+expr_data <- expr_data |>
+  dplyr::mutate(
+    # Use max expression across tissues as phi proxy
+    Exp_max = pmax(Exp_leaf, Exp_bud),
+    # Log10 scale (adding small constant to avoid log(0))
+    Exp_log10 = log10(Exp_max + 1)
+  ) |>
+  dplyr::rename(Gene = GeneID)
+
+# 4. Merge codon frequencies with expression data
+codon_freq_with_expr <- codon_freq_all |>
+  dplyr::inner_join(expr_data, by = "Gene")
+
+cat(sprintf("Merged with expression: %d observations from %d genes\n", 
+            nrow(codon_freq_with_expr), length(unique(codon_freq_with_expr$Gene))))
+
+# 5. Get unique genes for prediction
+gene_expr <- codon_freq_with_expr |>
+  dplyr::select(Gene, Exp_log10) |>
+  dplyr::distinct()
+
+# 6. Calculate predicted frequencies for each gene using empirical expression
+predictions_all <- predict_codon_probs_batch(gene_expr, csp_params, phi_col = "Exp_log10")
+
+# 7. Validate model: merge predictions with observations
+validation_result <- validate_roc_model(codon_freq_with_expr, predictions_all, csp_params)
+print(validation_result)
+
+# 8. Create visualizations
+plot_pred_vs_obs(validation_result, "./results/ROC_validation_pred_vs_obs.pdf")
+plot_by_amino_acid(validation_result, "./results/ROC_validation_by_AA.pdf")
+plot_selection_vs_expression(validation_result, n_quantiles = 4, 
+                              "./results/ROC_validation_selection_vs_expression.pdf")
+
+# 9. Test biological prediction
+selection_test <- test_selection_expression_relationship(validation_result)
+
+# 10. Additional analysis: Correlation by expression group
+validation_data <- validation_result$data
+validation_data <- validation_data |>
+  dplyr::mutate(
+    Expression_Group = cut(Phi_empirical, 
+                           breaks = quantile(Phi_empirical, probs = c(0, 0.25, 0.5, 0.75, 1)),
+                           labels = c("Low", "Medium-Low", "Medium-High", "High"),
+                           include.lowest = TRUE)
+  )
+
+cor_by_expr <- validation_data |>
+  dplyr::group_by(Expression_Group) |>
+  dplyr::summarize(
+    r = cor(predicted_prob, Observed_freq, use = "complete.obs"),
+    n = dplyr::n(),
+    mean_phi = mean(Phi_empirical),
+    .groups = "drop"
+  )
+
+cat("\nCorrelation by expression group:\n")
+print(cor_by_expr)
+
+# 11. Model fit across expression gradient - error analysis
+error_by_expr <- validation_data |>
+  dplyr::mutate(
+    prediction_error = Observed_freq - predicted_prob,
+    abs_error = abs(prediction_error)
+  ) |>
+  dplyr::group_by(Expression_Group, AA_anacoda) |>
+  dplyr::summarize(
+    mean_error = mean(prediction_error),
+    mean_abs_error = mean(abs_error),
+    .groups = "drop"
+  )
+
+p_error_by_expr <- ggplot(error_by_expr, aes(x = Expression_Group, y = mean_error, fill = AA_anacoda)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    x = "Expression Group",
+    y = "Mean Prediction Error (Observed - Predicted)",
+    title = "ROC Model Bias Across Expression Levels"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+ggsave("./results/ROC_validation_error_by_expression.pdf", p_error_by_expr, width = 10, height = 6)
+cat("Saved: ./results/ROC_validation_error_by_expression.pdf\n")
+
+cat("\n✓ ROC model validation complete!\n")
 
 ## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
 
