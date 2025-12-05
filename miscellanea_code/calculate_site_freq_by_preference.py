@@ -68,6 +68,11 @@ def load_preferred_codons(preferred_file):
     
     return preferred
 
+def complement(base):
+    """Return complement of a DNA base."""
+    comp = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G', 'N': 'N'}
+    return comp.get(base.upper(), 'N')
+
 def load_annotated_sites(annotation_file, chrom):
     """
     Load position annotations from describe_gene_positions_by_degeneracy.py output.
@@ -79,20 +84,35 @@ def load_annotated_sites(annotation_file, chrom):
             'codon_pos': int,
             'degeneracy': str,
             'ref_codon': str,
-            'amino_acid': str
+            'amino_acid': str,
+            'strand': str
         }
     """
     sites = {}
     
     with open(annotation_file, 'r') as f:
-        header = f.readline()  # Skip header
+        header = f.readline().strip().split('\t')
+        
+        # Check if strand column exists (for backwards compatibility)
+        has_strand = 'Strand' in header
+        if not has_strand:
+            print("  WARNING: Annotation file lacks Strand column. Minus strand genes may be miscategorized.")
+            print("           Re-run describe_gene_positions_by_degeneracy.py to regenerate annotations.")
         
         for line in f:
             cols = line.strip().split('\t')
             if len(cols) < 8:
                 continue
             
-            chr_name, gene_id, pos, base, codon_pos, degeneracy, ref_codon, amino_acid = cols
+            chr_name = cols[0]
+            gene_id = cols[1]
+            pos = cols[2]
+            base = cols[3]
+            codon_pos = cols[4]
+            degeneracy = cols[5]
+            ref_codon = cols[6]
+            amino_acid = cols[7]
+            strand = cols[8] if len(cols) > 8 else '+'  # Default to + if missing
             
             if chr_name == chrom:
                 sites[int(pos)] = {
@@ -101,7 +121,8 @@ def load_annotated_sites(annotation_file, chrom):
                     'codon_pos': int(codon_pos),
                     'degeneracy': degeneracy,
                     'ref_codon': ref_codon,
-                    'amino_acid': amino_acid
+                    'amino_acid': amino_acid,
+                    'strand': strand
                 }
     
     return sites
@@ -130,15 +151,27 @@ def categorize_variant(site_info, ref_base, alt_base, preferred_codons):
     """
     Categorize a variant as preferred→non-preferred or vice versa.
     
+    IMPORTANT: VCF reports variants on reference strand, but ref_codon is in
+    gene orientation (5'→3'). For minus strand genes, we must complement the
+    alt_base before substituting into the codon.
+    
     Returns:
         str: 'pref_to_nonpref', 'nonpref_to_pref', 'pref_to_pref', 'nonpref_to_nonpref', or 'non_synonymous'
     """
     ref_codon = site_info['ref_codon']
     codon_pos = site_info['codon_pos'] - 1  # Convert to 0-indexed
     amino_acid = site_info['amino_acid']
+    strand = site_info.get('strand', '+')
     
-    # Create alternate codon
-    alt_codon = change_base_in_codon(ref_codon, codon_pos, alt_base)
+    # CRITICAL: Convert alt_base from reference strand to gene orientation
+    # VCF always reports on + strand; for minus strand genes, complement the base
+    if strand == '-':
+        alt_base_gene = complement(alt_base)
+    else:
+        alt_base_gene = alt_base
+    
+    # Create alternate codon (now both are in gene orientation)
+    alt_codon = change_base_in_codon(ref_codon, codon_pos, alt_base_gene)
     
     # Check if synonymous
     if alt_codon not in GENETIC_CODE:

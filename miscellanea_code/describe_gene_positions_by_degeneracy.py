@@ -475,7 +475,7 @@ def annotate_positions(chrom, genes, genome_seq, cds_seqs):
             codon_position_label = codon_pos + 1
             
             annotations.append((chrom, gene_id, genomic_pos, genomic_base, 
-                              codon_position_label, degeneracy, codon, amino_acid))
+                              codon_position_label, degeneracy, codon, amino_acid, strand))
     
     return annotations
 
@@ -541,9 +541,9 @@ def main():
     print(f"Writing to {output_file}...")
     
     with open(output_file, 'w') as out:
-        out.write("Chr\tGene\tPosition\tBase\tCodon_Position\tDegeneracy\tRef_Codon\tAmino_Acid\n")
-        for chr_name, gene_id, pos, base, codon_pos, degeneracy, ref_codon, amino_acid in sorted(annotations, key=lambda x: x[2]):
-            out.write(f"{chr_name}\t{gene_id}\t{pos}\t{base}\t{codon_pos}\t{degeneracy}\t{ref_codon}\t{amino_acid}\n")
+        out.write("Chr\tGene\tPosition\tBase\tCodon_Position\tDegeneracy\tRef_Codon\tAmino_Acid\tStrand\n")
+        for chr_name, gene_id, pos, base, codon_pos, degeneracy, ref_codon, amino_acid, strand in sorted(annotations, key=lambda x: x[2]):
+            out.write(f"{chr_name}\t{gene_id}\t{pos}\t{base}\t{codon_pos}\t{degeneracy}\t{ref_codon}\t{amino_acid}\t{strand}\n")
     
     print(f"Done! Annotated {len(annotations)} positions for {len(genes)} genes.")
 

@@ -34,15 +34,24 @@ def load_annotated_sites(annotation_file, chrom):
     gsites = {}
     
     with open(annotation_file, 'r') as f:
-        header = f.readline()  # Skip header: Chr Gene Position Base Codon_Position Degeneracy Ref_Codon Amino_Acid
+        header = f.readline()  # Skip header: Chr Gene Position Base Codon_Position Degeneracy Ref_Codon Amino_Acid [Strand]
         
         for line in f:
             cols = line.strip().split('\t')
-            # Chr_06	06G000100	29638	A	1	0-fold	ATG	M
+            # Format: Chr_06	06G000100	29638	A	1	0-fold	ATG	M	[+/-]
             if len(cols) < 8:
                 continue
             
-            chr_name, gene_id, pos, base, codon_pos, degeneracy, ref_codon, amino_acid = cols
+            # Use indexing for compatibility with both old (8-col) and new (9-col) formats
+            chr_name = cols[0]
+            gene_id = cols[1]
+            pos = cols[2]
+            base = cols[3]
+            # codon_pos = cols[4]  # Not used in this script
+            degeneracy = cols[5]
+            ref_codon = cols[6]
+            amino_acid = cols[7]
+            # strand = cols[8] if len(cols) > 8 else '+'  # Not used in this script
             
             if chr_name == chrom:
                 gsites[int(pos)] = [gene_id, base, degeneracy, ref_codon, amino_acid]
