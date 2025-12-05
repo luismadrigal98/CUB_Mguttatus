@@ -20,6 +20,13 @@ set_environment <- function(required_pckgs,
   #' @param parallel_backend A logical value to set the parallel backend. Default
   #' set to FALSE.
   #' 
+  #' @param n_cores An integer to set the number of cores to be used for the
+  #' parallel backend. Default set to NULL, which will use all the available
+  #' cores minus one.
+  #' 
+  #' @param src_dir A character string with the path to the source directory
+  #' containing the required functions. Default set to './src'.
+  #' 
   #' @return invisible
   #' ___________________________________________________________________________
   

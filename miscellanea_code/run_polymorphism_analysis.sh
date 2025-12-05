@@ -111,12 +111,6 @@ if [ ! -f "$PREFERRED_CODONS" ]; then
     echo ""
     if [ $PARALLEL_MODE -eq 0 ]; then
         echo "Please create this file first from your R analysis:"
-        echo ""
-        echo "  preferred_codons <- cai_results\$w_table %>%"
-        echo "    filter(relative_adaptiveness == 1.0) %>%"
-        echo "    pull(codon)"
-        echo "  writeLines(preferred_codons, \"$PREFERRED_CODONS\")"
-        echo ""
     fi
     echo "Continuing without steps 3, 3b, 3c (codon frequency analysis)..."
     SKIP_STEP3=1

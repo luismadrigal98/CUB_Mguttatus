@@ -30,7 +30,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'admisc')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
-                parallel_backend = T, n_cores = 10)
+                parallel_backend = T)
 
 # 1.1) Definition of globals ----
 # Look-up table
@@ -2419,7 +2419,7 @@ dM_fixed_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is
 
 # Convergence was achieved for dM_fixed
 
-# 14.2) Checking the correlation between estimates of phi and the expression data ----
+# 14.1.2.1) Checking the correlation between estimates of phi and the expression data ----
 
 # From now on, we will work with chain 1, given that all chains are statistically
 # equal.
@@ -2450,7 +2450,7 @@ ggsave()
 # There is no good correspondence with empirical data
 # Next step is to pass expression data to the AnaCoDa
 
-# 14.3) Preparing the expression data ----
+# 14.1.3) Preparing the expression data ----
 
 # 1. Filter for complete cases (Intersection of Leaf and Bud)
 # We strictly remove genes with 0 counts in either tissue
@@ -2485,7 +2485,7 @@ write.table(
   quote = FALSE 
 )
 
-# 14.3.1) dM-fixed-with_phi ----
+# 14.1.3.1) dM-fixed-with_phi ----
 
 # Setup paths for the 3 runs
 run_dirs <- c(
@@ -2509,7 +2509,7 @@ phi_dM_fixed_with_phi <- exp_complete |>
 cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi, 
          phi_dM_fixed_with_phi$High_exp_log10)
 
-# 14.3.2) Codon frequency trajectories across expression levels ----
+# 14.1.3.2) Codon frequency trajectories across expression levels ----
 
 # This section visualizes whether the ROC multinomial model:
 #   P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
@@ -2570,6 +2570,58 @@ trajectory_results <- run_trajectory_analysis(
 
 cat("\n✓ Codon trajectory analysis complete!\n")
 cat("  Plot saved to: ./results/ROC_codon_trajectories.pdf\n")
+
+# 14.1.4) dM-fixed-intergenic ----
+
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_dM_fixed_intergenic/run_1",
+  "./results/MCMC_results/results_dM_fixed_intergenic/run_2"#,
+  #"./results/MCMC_results/results_dM_fixed_intergenic/run_3"
+)
+
+dM_fixed_intergenic <- GR_convergence(run_dirs, 
+                                       parameter = 'selection') # Mutation is fixed
+
+# Poor convergence (intergenic-based mutation bias is not adequate)
+
+# 14.1.5) dM-fixed-with-phi-intergenic ----
+
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_1",
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_2",
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_3"
+)
+
+dM_fixed_with_phi_intergenic <- GR_convergence(run_dirs, 
+                                       parameter = 'selection') # Mutation is fixed
+
+# Poor convergence (intergenic-based mutation bias is not adequate)
+
+# 14.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
+
+# Using chain 1 results (independent chains are indistinguishable)
+
+eta_estimates <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv")
+
+preferred_codons <- sapply(unique(eta_estimates$AA), function(x) {
+  AA <- x
+  aa_subset <- eta_estimates[eta_estimates$AA == AA, ]
+  preferred <- aa_subset[which.min(aa_subset$Mean), "Codon"]
+  preferred
+})
+
+preferred_codons <- data.frame(AA = sapply(preferred_codons, 
+                                           function(x) genetic_code_dna_long[[x]]),
+  aa = names(preferred_codons),
+  Codon = preferred_codons)
+
+# Exporting preferred codons for polymorphism-based analysis ----
+
+write.table(x = preferred_codons$Codon, 
+            file = './results/preferred_codons.txt', 
+            quote = F, row.names = F, col.names = F)
 
 ## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
 
