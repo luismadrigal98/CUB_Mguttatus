@@ -1154,6 +1154,709 @@ cat("\n")
 enriched_codons_mg <- enriched_codons_corrected
 
 ## *****************************************************************************
+## Estimate mutation rates ----
+## _____________________________________________________________________________
+
+# Use the wrapper function to generate dM files from both introns and intergenic regions
+# This replaces ~130 lines of duplicated code with a single function call
+
+dM_results <- estimate_dM_from_neutral_regions(
+ fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.hardmasked.fa",
+  ann_file = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
+  output_dir = "./data",
+  output_prefix = "Mguttatus",
+  source = "both",  # Generate dM from BOTH introns and intergenic regions
+  window_size = 100000,
+  min_bp = 1000,
+  max_N_freq = 0.25,
+  organism = "Mimulus guttatus",
+  return_intermediates = TRUE  # Keep intermediate data for further analysis if needed
+)
+
+# Access results:
+# - dM_results$dM_introns          : dM data frame from introns
+# - dM_results$dM_intergenic       : dM data frame from intergenic
+# - dM_results$global_stats_introns: Nucleotide frequencies from introns
+# - dM_results$global_stats_intergenic: Nucleotide frequencies from intergenic
+# - dM_results$output_files        : Paths to generated CSV files
+# - dM_results$intermediates       : Raw data (seq_data, nuc_composition, etc.)
+
+# Optional: Additional analysis on the intermediate data
+# For example, cluster genomic windows by mutational spectrum
+if (!is.null(dM_results$intermediates$introns$nuc_filtered) &
+    !is.null(dM_results$intermediates$intergenic$nuc_filtered)) {
+  
+  # Prepare window data for clustering (optional advanced analysis)
+  window_data_introns <- dM_results$intermediates$introns$nuc_filtered |>
+    dplyr::select(window_idx, pi_A, pi_C, pi_G, pi_T)
+  
+  window_data_intergenic <- dM_results$intermediates$intergenic$nuc_filtered |>
+    dplyr::select(window_idx, pi_A, pi_C, pi_G, pi_T)
+  
+  # PCA summary
+  pca_introns <- prcomp(
+    x = as.matrix(window_data_introns[, c("pi_A", "pi_C", "pi_G", "pi_T")]),
+    center = TRUE,
+    scale. = TRUE
+  )
+  
+  pca_intergenic <- prcomp(
+    x = as.matrix(window_data_intergenic[, c("pi_A", "pi_C", "pi_G", "pi_T")]),
+    center = TRUE,
+    scale. = TRUE
+  )
+  
+  cat("\nPCA of nucleotide composition (introns):\n")
+  print(summary(pca_introns))
+  
+  cat("\nPCA of nucleotide composition (intergenic):\n")
+  print(summary(pca_intergenic))
+  
+  # GMM clustering (optional - may find no evidence for multiple clusters)
+  clusters_localM_introns <- make_clusters(data = window_data_introns[, -1], G = 1:10)
+  clusters_localM_intergenic <- make_clusters(data = window_data_intergenic[, -1], G = 1:10)
+}
+
+# No evidence for more than one cluster (genome-wide mutational pressure)
+
+## *****************************************************************************
+## 8) AnaCoDa-based analysis ----
+## _____________________________________________________________________________
+
+## Results from AnaCoDa framework can be obtained by running:
+
+# Rscript R_scripts_remotes/AnaCoDa_pipeline.R \
+# -i ./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnlyClean.fa \
+# -o ./MCMC_results/results_dM_fixed \
+# -s 10000 \
+# --est_csp \
+# --est_phi \
+# --est_hyp \
+# -n 10 \
+# -d 4000 \
+# -a 25 \
+# --max_num_runs 3 \
+# --fix_dM \
+# --dM ./data/Mguttatus_intron_derived_dM.csv
+# 
+# echo "Job finished on $(date)"
+
+# 8.1) Retrieving AnaCoDa results to analyze congruence between runs ----
+
+# 8.1.1) Naive model ----
+
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_naive_2/run_1",
+  "./results/MCMC_results/results_naive_2/run_2",
+  "./results/MCMC_results/results_naive_2/run_3"
+)
+
+Naive_conv <- GR_convergence(run_dirs)
+
+# 8.1.2) dM-fixed model ----
+
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_dM_fixed/run_1",
+  "./results/MCMC_results/results_dM_fixed/run_2",
+  "./results/MCMC_results/results_dM_fixed/run_3"
+)
+
+dM_fixed_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed
+
+# Convergence was achieved for dM_fixed
+
+# 8.1.2.1) Checking the correlation between estimates of phi and the expression data ----
+
+# From now on, we will work with chain 1, given that all chains are statistically
+# equal.
+
+phi_hat_dM_fixed <- read.csv(file = "results/MCMC_results/results_dM_fixed/run_1/Parameter_est/gene_expression.txt") |>
+  dplyr::select(GeneID, Mean, Mean.log10) |>
+  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
+
+phi_dM_fixed <- exp_complete |>
+  left_join(phi_hat_dM_fixed, by = join_by("Gene" == "GeneID")) |>
+  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
+  na.exclude()
+
+cor.test(phi_dM_fixed$Mean.log10.Phi, phi_dM_fixed$High_exp_log10)
+
+# Visualization
+
+ggplot(data = phi_dM_fixed, aes(x = Mean.log10.Phi,
+                                y = High_exp_log10)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  xlab("Estimated phi (log10)") +
+  ylab("Empirical Max Expresion (log10)")
+
+ggsave()
+
+# There is no good correspondence with empirical data
+# Next step is to pass expression data to the AnaCoDa
+
+# 8.1.3) Preparing the expression data ----
+
+# 1. Filter for complete cases (Intersection of Leaf and Bud)
+# We strictly remove genes with 0 counts in either tissue
+multi_tissue_phi <- exp_complete |>
+  dplyr::select(Gene, Exp_leaf, Exp_bud) |>
+  dplyr::filter(Exp_leaf > 0 & Exp_bud > 0) |>
+  dplyr::rename(GeneID = Gene) |> # AnaCoDa expects "GeneID" as first col
+  dplyr::filter(GeneID %in% names(trans)) # Ensures correspondence with transcriptome file
+  
+# 2. Calculate sphi (Global Prior)
+# We estimate the "True Phi" shape by taking the mean of the log-expressions
+# This gives the model the "width" of the overall distribution.
+log_means <- rowMeans(log(multi_tissue_phi[, c("Exp_leaf", "Exp_bud")]))
+sphi_init <- sd(log_means)
+
+# 3. Calculate sepsilon (Noise per tissue)
+# AnaCoDa needs a vector: c(noise_leaf, noise_bud)
+# A good heuristic for initialization is the SD of the log-expression for that tissue.
+# (The model will refine this during MCMC, but this puts it in the right ballpark)
+
+sepsilon_leaf <- sd(log(multi_tissue_phi$Exp_leaf))
+sepsilon_bud  <- sd(log(multi_tissue_phi$Exp_bud))
+
+sepsilon_init <- c(sepsilon_leaf, sepsilon_bud)
+
+# 4. Write empirical expression data
+write.table(
+  multi_tissue_phi, 
+  file = "./data/observed_expression_multitissue.csv", 
+  sep = ",", 
+  row.names = FALSE, 
+  quote = FALSE 
+)
+
+# 8.1.3.1) dM-fixed-with_phi ----
+
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_dM_fixed_with_phi/run_1",
+  "./results/MCMC_results/results_dM_fixed_with_phi/run_2",
+  "./results/MCMC_results/results_dM_fixed_with_phi/run_3"
+)
+
+dM_fixed_with_phi_conv <- GR_convergence(run_dirs, 
+                                         parameter = 'selection') # Mutation is fixed
+
+phi_hat_dM_fixed_with_phi <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/gene_expression.txt") |>
+  dplyr::select(GeneID, Mean, Mean.log10) |>
+  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
+
+phi_dM_fixed_with_phi <- exp_complete |>
+  left_join(phi_hat_dM_fixed_with_phi, by = join_by("Gene" == "GeneID")) |>
+  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
+  na.exclude()
+
+cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi, 
+         phi_dM_fixed_with_phi$High_exp_log10)
+
+# 8.1.3.2) Codon frequency trajectories across expression levels ----
+
+# This section visualizes whether the ROC multinomial model:
+#   P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
+# correctly predicts how codon frequencies change with expression.
+
+# Load validation functions
+source("./src/roc_model_validation.R")
+
+cat("\n=== ROC Model: Codon Frequency Trajectories ===\n")
+
+# 1. Prepare codon frequency data from the codon_usage already in environment
+# codon_usage is a data.table with Gene_name column and codon count columns
+codon_freq_long <- codon_usage |>
+  as.data.frame() |>
+  dplyr::rename(Gene = Gene_name) |>
+  tidyr::pivot_longer(cols = -Gene, names_to = "Codon", values_to = "Count")
+
+# Map codons to amino acids
+codon_to_aa <- Biostrings::GENETIC_CODE
+codon_to_aa_df <- data.frame(
+  Codon = names(codon_to_aa),
+  AA = as.character(codon_to_aa),
+  stringsAsFactors = FALSE
+)
+
+codon_freq_long <- codon_freq_long |>
+  dplyr::left_join(codon_to_aa_df, by = "Codon") |>
+  dplyr::filter(AA != "*")  # Remove stop codons
+
+# Calculate frequency within each gene's AA family
+codon_freq_long <- codon_freq_long |>
+  dplyr::group_by(Gene, AA) |>
+  dplyr::mutate(
+    AA_total = sum(Count, na.rm = TRUE),
+    Observed_freq = ifelse(AA_total > 0, Count / AA_total, NA_real_)
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::filter(!is.na(Observed_freq))
+
+cat(sprintf("Codon frequencies: %d gene-codon observations\n", nrow(codon_freq_long)))
+
+# 2. Prepare expression data from exp_complete already in environment
+expr_data <- exp_complete |>
+  dplyr::mutate(Exp_log10 = log10(High_exp + 1)) |>
+  dplyr::select(Gene, Exp_log10)
+
+cat(sprintf("Expression data: %d genes\n", nrow(expr_data)))
+
+# 3. Run the trajectory analysis using the convenience wrapper
+trajectory_results <- run_trajectory_analysis(
+  mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Mutation.csv",
+  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv",
+  codon_freq_df = codon_freq_long,
+  expression_df = expr_data,
+  output_file = "./results/ROC_codon_trajectories.pdf",
+  n_bins = 10
+)
+
+cat("\n✓ Codon trajectory analysis complete!\n")
+cat("  Plot saved to: ./results/ROC_codon_trajectories.pdf\n")
+
+# 8.1.4) dM-fixed-intergenic ----
+
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_dM_fixed_intergenic/run_1",
+  "./results/MCMC_results/results_dM_fixed_intergenic/run_2"#,
+  #"./results/MCMC_results/results_dM_fixed_intergenic/run_3"
+)
+
+dM_fixed_intergenic <- GR_convergence(run_dirs, 
+                                       parameter = 'selection') # Mutation is fixed
+
+# Poor convergence (intergenic-based mutation bias is not adequate)
+
+# 8.1.5) dM-fixed-with-phi-intergenic ----
+
+# Setup paths for the 3 runs
+run_dirs <- c(
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_1",
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_2",
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_3"
+)
+
+dM_fixed_with_phi_intergenic <- GR_convergence(run_dirs, 
+                                       parameter = 'selection') # Mutation is fixed
+
+# Poor convergence (intergenic-based mutation bias is not adequate)
+
+# 8.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
+
+# Using chain 1 results (independent chains are indistinguishable)
+
+eta_estimates <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv")
+
+preferred_codons <- sapply(unique(eta_estimates$AA), function(x) {
+  AA <- x
+  aa_subset <- eta_estimates[eta_estimates$AA == AA, ]
+  preferred <- aa_subset[which.min(aa_subset$Mean), "Codon"]
+  preferred
+})
+
+preferred_codons <- data.frame(AA = sapply(preferred_codons, 
+                                           function(x) genetic_code_dna_long[[x]]),
+  aa = names(preferred_codons),
+  Codon = preferred_codons)
+
+# Exporting preferred codons for polymorphism-based analysis ----
+
+write.table(x = preferred_codons$Codon, 
+            file = './results/preferred_codons.txt', 
+            quote = F, row.names = F, col.names = F)
+
+# 8.3) Extracting selection estimates from the best chain (dM-fixed-with_phi) ----
+
+genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa',
+                                 match.expression.by.id = TRUE,
+                                 observed.expression.file = 'data/observed_expression_multitissue.csv') 
+
+parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/R_objects/parameter.Rda")
+
+selection_coeff <- getSelectionCoefficients(genome = genome, 
+                                            parameter = parameter_object, 
+                                            samples = 1000)
+  
+# Get selection coefficients which extracted as log(s)
+
+selection_coeff <- getSelectionCoefficients(genome = genome, 
+                                            parameter = parameter_object, 
+                                            samples = 1000)
+
+# Translating back to s
+
+s_coeff <- exp(selection_coeff)
+
+## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
+
+# Use w_table from CAI analysis (already calculated preferred codons)
+cat("Using optimal codons from corrected reference set...\n")
+
+# Get preferred codons (those with relative_adaptiveness == 1.0)
+preferred_codons_comparative <- preferred_codons_mg |>
+  dplyr::mutate(Codon_RNA = gsub("T", "U", Codon)) |>
+  dplyr::select(Amino_Acid = AA, Codon_RNA, relative_adaptiveness)
+
+# Collapse amino acids with six codons back into six, based on relative adaptiveness
+
+preferred_codons_comparative <- preferred_codons_comparative |>
+  dplyr::mutate(AA_root = sapply(preferred_codons_comparative$Amino_Acid, 
+                                 function(x) 
+                                 {
+                                   unlist(strsplit(x, "_"))[1]
+                                 }))
+
+merge_2_and_4_to_6_fold <- function(preference_df, AA_family_col)
+{
+  #' This function will condense together the 4 and 2 fold families from a 6-fold
+  #' aminoacid family back to the one preferred codon per amino acid. It will take
+  #' the aminoacid with the greater adaptiveness.
+  #' 
+  #' FOR COMPATIBILITY WITH OTHER PLANT STUDIES
+  #' 
+  #' Args:
+  #' preference_df: Data frame with columns for Amino Acid, Codon_RNA, relative_adaptiveness
+  #' AA_family_col: Column name indicating the root amino acid family (e.g., "Leu" for "Leu_2" and "Leu_4")
+  #' 
+  #' ___________________________________________________________________________
+  
+  condensed_preferences <- preference_df |>
+    dplyr::group_by(!!sym(AA_family_col)) |>
+    dplyr::arrange(!!sym(AA_family_col), 
+                   dplyr::desc(relative_adaptiveness)) |>
+    dplyr::slice(1) |>
+    dplyr::ungroup() |>
+    dplyr::select(Amino_Acid = !!sym(AA_family_col), 
+                  Codon_RNA, relative_adaptiveness)
+  
+  return(condensed_preferences)
+}
+
+preferred_codons_mg <- merge_2_and_4_to_6_fold(
+  preferred_codons_comparative,
+  "AA_root"
+)
+
+cat(sprintf("Found %d preferred codons for M. guttatus\n\n", 
+            nrow(preferred_codons_mg)))
+
+# Add M. guttatus to the global plant comparison table
+mg_prefs <- preferred_codons_mg |>
+  dplyr::select(Amino_Acid, Mimulus_guttatus = Codon_RNA)
+
+plant_codons_extended <- model_plants_PC |>
+  left_join(mg_prefs, by = "Amino_Acid") |>
+  na.omit()
+
+# Reorder columns
+plant_codons_extended <- plant_codons_extended |>
+  dplyr::select(Group, Amino_Acid, Arabidopsis_thaliana, Populus_trichocarpa, 
+                Mimulus_guttatus, Physcomitrella_patens, Synonymous_Codons)
+
+# Save extended table
+write.csv(plant_codons_extended, "./results/plant_preferred_codons_comparison.csv", 
+          row.names = FALSE, quote = FALSE)
+
+cat("Extended comparison table saved: ./results/plant_preferred_codons_comparison.csv\n\n")
+
+# Print summary
+cat("=== M. guttatus Preferred Codons ===\n")
+print(preferred_codons_mg |> dplyr::select(Amino_Acid, Codon = Codon_RNA, Weight = relative_adaptiveness))
+
+# Calculate codon preference similarity between species
+cat("\n\n=== Cross-Species Codon Preference Analysis ===\n\n")
+
+# Get all sense codons from global genetic_code_dna_long (excluding stops)
+all_codons_rna <- gsub("T", "U", names(genetic_code_dna_long)[!genetic_code_dna_long %in% c("STOP", "Trp", "Met")])
+
+# Initialize matrix
+species <- c("Arabidopsis_thaliana", "Populus_trichocarpa", "Mimulus_guttatus", "Physcomitrella_patens")
+codon_matrix <- matrix(0, nrow = length(species), ncol = length(all_codons_rna))
+rownames(codon_matrix) <- species
+colnames(codon_matrix) <- all_codons_rna
+
+# Fill matrix
+for (sp_idx in 1:length(species)) {
+  sp_name <- species[sp_idx]
+  if (sp_name == "Mimulus_guttatus") {
+    preferred <- preferred_codons_mg$Codon_RNA
+  } else {
+    preferred <- plant_codons_extended[[sp_name]]
+  }
+  
+  # Mark preferred codons as 1
+  for (codon in preferred) {
+    # Handle multiple codons separated by /
+    codons_split <- unlist(strsplit(codon, "/"))
+    for (c in codons_split) {
+      if (c %in% all_codons_rna) {
+        codon_matrix[sp_name, c] <- 1
+      }
+    }
+  }
+}
+
+# Build similarity matrix
+n_species <- length(species)
+similarity_matrix <- matrix(0, nrow = n_species, ncol = n_species)
+rownames(similarity_matrix) <- species
+colnames(similarity_matrix) <- species
+
+for (i in 1:n_species) {
+  for (j in 1:n_species) {
+    similarity_matrix[i, j] <- jaccard_similarity(codon_matrix[i, ], codon_matrix[j, ])
+  }
+}
+
+cat("Jaccard Similarity Matrix (codon preference overlap):\n")
+print(round(similarity_matrix, 3))
+cat("\n")
+
+# Convert to distance matrix
+distance_matrix <- as.dist(1 - similarity_matrix)
+
+# Hierarchical clustering
+hc <- hclust(distance_matrix, method = "average")
+
+# Save dendrogram
+pdf("./results/plant_codon_preference_dendrogram.pdf", width = 10, height = 7)
+par(mar = c(5, 4, 4, 2))
+plot(hc, main = "Plant Species Clustering by Codon Preference Similarity",
+     xlab = "Species", ylab = "Distance (1 - Jaccard Similarity)",
+     sub = paste("Based on preferred codon usage in", length(all_codons_rna), "sense codons"),
+     cex.main = 1.3)
+dev.off()
+
+cat("Dendrogram saved: ./results/plant_codon_preference_dendrogram.pdf\n\n")
+
+# Create unrooted phylogram using ape package
+tree <- as.phylo(hc)
+
+# Save unrooted tree
+pdf("./results/plant_codon_preference_unrooted.pdf", width = 10, height = 10)
+par(mar = c(1, 1, 3, 1))
+plot(tree, type = "unrooted", main = "Unrooted Tree: Codon Preference Similarity",
+     cex = 1.2, lab4ut = "axial", edge.width = 2)
+dev.off()
+
+cat("Unrooted tree saved: ./results/plant_codon_preference_unrooted.pdf\n\n")
+
+# Create heatmap of codon preferences
+cat("Creating codon preference heatmap...\n")
+
+# Prepare data for heatmap
+codon_df <- as.data.frame(t(codon_matrix))
+codon_df$Codon <- rownames(codon_df)
+codon_df$AA <- genetic_code_dna_long[gsub("U", "T", codon_df$Codon)]
+
+# Reshape for ggplot
+codon_long <- codon_df |>
+  pivot_longer(cols = all_of(species), names_to = "Species", values_to = "Preferred") |>
+  dplyr::mutate(Species = gsub("_", " ", Species),
+                Species = factor(Species, levels = gsub("_", " ", species)))
+
+# Create heatmap
+p_heatmap <- ggplot(codon_long, aes(x = Species, y = Codon, fill = factor(Preferred))) +
+  geom_tile(color = "white", size = 0.5) +
+  scale_fill_manual(values = c("0" = "gray90", "1" = "#E41A1C"),
+                    labels = c("Not Preferred", "Preferred")) +
+  facet_grid(AA ~ ., scales = "free_y", space = "free_y") +
+  labs(title = "Preferred Codon Usage Across Plant Species",
+       subtitle = "Based on highest expression genes",
+       x = "", y = "Codon", fill = "") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        strip.text.y = element_text(angle = 0, hjust = 0),
+        panel.spacing = unit(0.3, "lines"),
+        legend.position = "bottom")
+
+ggsave("./results/plant_codon_preference_heatmap.pdf", p_heatmap, 
+       width = 10, height = 18)
+
+cat("Heatmap saved: ./results/plant_codon_preference_heatmap.pdf\n\n")
+
+# Create color-coded comparison plot showing M. guttatus sharing patterns
+
+cat("Creating color-coded codon preference comparison plot...\n")
+
+# Create a data frame for the plot
+plot_data <- data.frame()
+
+# Species order: Arabidopsis, Populus, Physcomitrella, then Mimulus
+species_order <- c("Arabidopsis_thaliana", "Populus_trichocarpa", 
+                   "Physcomitrella_patens", "Mimulus_guttatus")
+species_labels <- c("A. thaliana", "P. trichocarpa", "P. patens", "M. guttatus")
+
+for (aa in sort(unique(plant_codons_extended$Amino_Acid))) {
+  # Determine chemistry group
+  aa_group <- "Other"
+  for (grp in names(aa_chemistry)) {
+    if (aa %in% aa_chemistry[[grp]]) {
+      aa_group <- gsub("_", " ", grp)  # Convert underscores to spaces here
+      break
+    }
+  }
+  
+  aa_data <- plant_codons_extended |> dplyr::filter(Amino_Acid == aa)
+  
+  # Get preferred codons for each species
+  codons_list <- list()
+  for (sp in species_order) {
+    if (sp %in% colnames(plant_codons_extended)) {
+      codon_str <- aa_data[[sp]][1]
+      if (!is.na(codon_str) && codon_str != "") {
+        codons_list[[sp]] <- unique(unlist(strsplit(codon_str, "/")))
+      } else {
+        codons_list[[sp]] <- character(0)
+      }
+    }
+  }
+  
+  # For each species, add their preferred codons
+  for (i in 1:length(species_order)) {
+    sp <- species_order[i]
+    sp_label <- species_labels[i]
+    
+    if (length(codons_list[[sp]]) > 0) {
+      codon_text <- paste(codons_list[[sp]], collapse = "/")
+      
+      # Determine color for M. guttatus column
+      if (sp == "Mimulus_guttatus") {
+        # Check which species M. guttatus shares with
+        mg_codons <- codons_list[["Mimulus_guttatus"]]
+        at_codons <- codons_list[["Arabidopsis_thaliana"]]
+        pt_codons <- codons_list[["Populus_trichocarpa"]]
+        pp_codons <- codons_list[["Physcomitrella_patens"]]
+        
+        shares_with <- c()
+        if (length(intersect(mg_codons, at_codons)) > 0) shares_with <- c(shares_with, "Arabidopsis")
+        if (length(intersect(mg_codons, pt_codons)) > 0) shares_with <- c(shares_with, "Populus")
+        if (length(intersect(mg_codons, pp_codons)) > 0) shares_with <- c(shares_with, "Physcomitrella")
+        
+        # Assign color based on sharing pattern
+        if (length(shares_with) == 0) {
+          codon_color <- "Unique"
+        } else if (length(shares_with) == 3) {
+          codon_color <- "All_three"
+        } else if (length(shares_with) == 2) {
+          codon_color <- "Two_species"
+        } else {
+          # Shares with only one species
+          if ("Arabidopsis" %in% shares_with) {
+            codon_color <- "Only_Arabidopsis"
+          } else if ("Populus" %in% shares_with) {
+            codon_color <- "Only_Populus"
+          } else {
+            codon_color <- "Only_Physcomitrella"
+          }
+        }
+      } else {
+        # For other species, use their own color
+        codon_color <- sp_label
+      }
+      
+      plot_data <- rbind(plot_data,
+                         data.frame(
+                           Amino_Acid = aa,
+                           Chemistry = aa_group,  # Already converted above
+                           Species = sp_label,
+                           Codon = codon_text,
+                           Color_Category = codon_color,
+                           stringsAsFactors = FALSE
+                         ))
+    }
+  }
+}
+
+# Set factor levels for proper ordering
+plot_data$Species <- factor(plot_data$Species, levels = species_labels)
+plot_data$Chemistry <- factor(plot_data$Chemistry, 
+                              levels = c("Nonpolar Aliphatic", "Aromatic", 
+                                         "Polar Uncharged", "Positively Charged", 
+                                         "Negatively Charged", "Other"))
+
+# Define colors
+color_palette <- c(
+  "A. thaliana" = "#E41A1C",           # Red for Arabidopsis
+  "P. trichocarpa" = "#377EB8",        # Blue for Populus
+  "P. patens" = "#4DAF4A",             # Green for Physcomitrella
+  "Only_Arabidopsis" = "#E41A1C",      # Red - shares only with Arabidopsis
+  "Only_Populus" = "#377EB8",          # Blue - shares only with Populus
+  "Only_Physcomitrella" = "#4DAF4A",   # Green - shares only with Physcomitrella
+  "Two_species" = "#FF7F00",           # Orange - shares with two species
+  "All_three" = "#984EA3",             # Purple - shares with all three
+  "Unique" = "#999999"                 # Gray - unique to M. guttatus
+)
+
+# Create the plot
+p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon)) +
+  geom_tile(aes(fill = Color_Category), color = "white", size = 1, alpha = 0.3) +
+  geom_text(size = 3, fontface = "bold") +
+  scale_fill_manual(values = color_palette,
+                    labels = c("A. thaliana" = "A. thaliana",
+                               "P. trichocarpa" = "P. trichocarpa",
+                               "P. patens" = "P. patens",
+                               "Only_Arabidopsis" = "M.g. shares with Arabidopsis only",
+                               "Only_Populus" = "M.g. shares with Populus only",
+                               "Only_Physcomitrella" = "M.g. shares with Physcomitrella only",
+                               "Two_species" = "M.g. shares with two species",
+                               "All_three" = "M.g. shares with all three",
+                               "Unique" = "M.g. unique preference"),
+                    name = "") +
+  facet_grid(Chemistry ~ ., scales = "free_y", space = "free_y") +
+  labs(title = "Preferred Codon Usage Across Plant Species",
+       subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
+       x = "", y = "") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
+        axis.text.y = element_text(size = 10),
+        strip.text.y = element_text(angle = 0, hjust = 0, face = "bold", size = 11),
+        panel.spacing = unit(0.5, "lines"),
+        legend.position = "bottom",
+        legend.text = element_text(size = 9),
+        panel.grid = element_blank())
+
+ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
+       width = 12, height = 16)
+
+cat("✓ Color-coded comparison plot saved: ./results/plant_codon_preference_comparison_colored.pdf\n\n")
+
+# Print summary of M. guttatus sharing patterns
+cat("=== M. guttatus Codon Preference Sharing Patterns ===\n\n")
+
+mg_summary <- plot_data |> 
+  dplyr::filter(Species == "M. guttatus") |>
+  dplyr::count(Color_Category) |>
+  dplyr::arrange(dplyr::desc(n))
+
+total_aa <- nrow(mg_summary |> dplyr::summarise(total = sum(n)))
+
+for (i in 1:nrow(mg_summary)) {
+  cat_name <- mg_summary$Color_Category[i]
+  count <- mg_summary$n[i]
+  pct <- 100 * count / sum(mg_summary$n)
+  
+  cat_label <- switch(cat_name,
+                      "All_three" = "Shares with all three species",
+                      "Two_species" = "Shares with two species",
+                      "Only_Arabidopsis" = "Shares only with A. thaliana",
+                      "Only_Populus" = "Shares only with P. trichocarpa",
+                      "Only_Physcomitrella" = "Shares only with P. patens",
+                      "Unique" = "Unique to M. guttatus",
+                      cat_name)
+  
+  cat(sprintf("  %-40s: %2d amino acids (%.1f%%)\n", cat_label, count, pct))
+}
+
+cat("\n")
+
+## *****************************************************************************
 ## 8) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
 
@@ -1918,8 +2621,8 @@ integrated_data$Expression_Group <- factor(
 )
 
 detrending_pi_4fold <- residuals(gam(Pi_mean_4fold ~ s(GC3) + s(CDS_length_nt),
-                               data = integrated_data,
-                               na.action = na.exclude))
+                                     data = integrated_data,
+                                     na.action = na.exclude))
 
 integrated_data$Pi_4fold_detrended <- detrending_pi_4fold
 
@@ -1969,7 +2672,7 @@ ggsave("./results/pi_4fold_by_expression_mean_ci.pdf", p_pi_mean_ci, width = 8, 
 # Exploring the relationship between diversity (4-fold) and ENC
 
 plot(x = integrated_data$Pi_mean_4fold, 
-           y = integrated_data$High_exp_log2)
+     y = integrated_data$High_exp_log2)
 lm(High_exp_log2 ~ Pi_mean_4fold, data = integrated_data)
 plot(x = integrated_data$Pi_mean_all, 
      y = integrated_data$High_exp_log2)
@@ -2033,12 +2736,12 @@ summary(model_cdc_tajima)
 # 12.2) TajimaD vs expression
 
 model_expression_tajima <- gam(TajimaD_4fold ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
-                        data = integrated_data)
+                               data = integrated_data)
 
 summary(model_expression_tajima)
 
 plot_tajimaD <- data.frame(detrended_TajimaD = residuals(gam(TajimaD_4fold ~ s(CDS_length_nt) + s(GC3s),
-                                                              data = integrated_data,
+                                                             data = integrated_data,
                                                              na.action = 'na.exclude')))
 plot_tajimaD$High_exp_log2 <- integrated_data$High_exp_log2
 
@@ -2155,7 +2858,7 @@ all_codon_data <- all_codon_data |>
   dplyr::group_by(Gene_name) |>
   dplyr::mutate(
     Codon_Pos_Rel = Codon_Pos / max(Codon_Pos)
-    ) |>
+  ) |>
   dplyr::ungroup()
 
 n <- nrow(all_codon_data)
@@ -2191,798 +2894,3 @@ p_pos_trend <- ggplot(all_codon_data, aes(x = Codon_Pos_Rel, y = Preferred_Freq)
   theme_bw()
 
 ggsave(filename = "results/FPvsPosition.pdf", plot = p_pos_trend)
-
-## *****************************************************************************
-## 13) Selection Coefficient Analysis (Mutation-Selection-Drift Balance) ----
-## _____________________________________________________________________________
-
-cat("\n=== SELECTION COEFFICIENT ANALYSIS ===\n")
-cat("Estimating population-scaled selection (S = 4Nes) using Hershberg & Petrov model\n\n")
-
-# Load selection coefficient functions
-source("./src/selection_coefficient_analysis.R")
-
-# Get preferred codons from CAI analysis (w = 1.0)
-preferred_codons <- preferences_updated_glm |>
-  pull(Codon)
-
-cat(sprintf("Using %d optimal codons as 'preferred' codons:\n", length(preferred_codons)))
-cat(paste(preferred_codons, collapse = ", "), "\n")
-
-# Prepare expression data (using High_exp from bud tissue as primary metric)
-expression_df <- integrated_data |>
-  dplyr::select(Gene_name, Expression = High_exp_log2)
-
-# Calculate selection coefficients for all genes
-selection_results <- run_selection_analysis(
-  codon_usage = codon_usage,
-  expression_data = expression_df,
-  preferred_codons = preferred_codons,
-  genetic_code = genetic_code_dna_long,
-  low_expr_quantile = 0.10,  # Use bottom 10% to estimate mutation bias
-  run_diagnostics = TRUE
-)
-
-selection_results_long <- selection_results |>
-  pivot_longer(cols = c("P_preferred", "S"), names_to = "Metric",
-               values_to = "Values")
-
-ggplot(data = selection_results_long, mapping = aes(x = Expression,
-                                                    y = Values,
-                                                    color = Metric,
-                                                    fill = Metric)) +
-  geom_smooth() +
-  theme_custom()
-
-# Sensitivity analysis: How does s vary with different Ne values?
-# Literature estimates for M. guttatus Ne: ~200,000 - 500,000
-Ne_sensitivity <- analyze_Ne_sensitivity(
-  selection_results,
-  Ne_values = c(1e5, 2e5, 3e5, 5e5, 1e6)
-)
-
-# Create visualizations
-cat("\nGenerating plots...\n")
-plot_S_vs_expression(selection_results, "./results/S_vs_expression.pdf")
-plot_S_distribution(selection_results, "./results/S_distribution.pdf")
-
-# Compare S between expression groups
-selection_with_groups <- selection_results |>
-  left_join(integrated_data |> 
-              dplyr::select(Gene_name, Expression_Group), by = "Gene_name")
-
-cat("\n=== S by Expression Group ===\n")
-S_by_group <- selection_with_groups |>
-  group_by(Expression_Group) |>
-  summarize(
-    n = n(),
-    mean_S = mean(S, na.rm = TRUE),
-    median_S = median(S, na.rm = TRUE),
-    sd_S = sd(S, na.rm = TRUE)
-  )
-print(S_by_group)
-
-# Statistical test
-kw_S <- kruskal.test(S ~ Expression_Group, data = selection_with_groups)
-cat("\nKruskal-Wallis test for S across expression groups:\n")
-print(kw_S)
-
-# Key biological interpretation
-cat("\n=== BIOLOGICAL INTERPRETATION ===\n")
-M <- attr(selection_results, "mutation_bias")
-cat(sprintf("Mutation bias (M = μ_p/μ_u): %.4f\n", M))
-if (M > 1) {
-  cat("  → Mutation pressure OPPOSES preferred codons (selection maintains them)\n")
-} else {
-  cat("  → Mutation pressure FAVORS preferred codons (selection reinforced by mutation)\n")
-}
-
-median_S <- median(selection_results$S, na.rm = TRUE)
-cat(sprintf("\nMedian S = 4Nes: %.4f\n", median_S))
-
-# For Ne = 300,000 (midpoint estimate)
-Ne_midpoint <- 3e5
-s_midpoint <- calculate_s_from_S(median_S, Ne_midpoint)
-cat(sprintf("\nAssuming Ne = %s:\n", format(Ne_midpoint, scientific = FALSE)))
-cat(sprintf("  Median s = %.2e\n", s_midpoint))
-cat(sprintf("  s·Ne = %.2f\n", s_midpoint * Ne_midpoint))
-
-if (abs(s_midpoint * Ne_midpoint) < 2) {
-  cat("\n✓ This confirms WEAK SELECTION regime (s·Ne ~ 1)\n")
-  cat("  → Selection and drift are of comparable magnitude\n")
-  cat("  → Consistent with intermediate codon bias patterns\n")
-} else {
-  cat("\n  Selection is relatively strong (s·Ne >> 1)\n")
-}
-
-# Save results
-write.table(selection_results, 
-            "./results/selection_coefficients.csv",
-            sep = "\t", row.names = FALSE, quote = FALSE)
-
-write.table(Ne_sensitivity,
-            "./results/Ne_sensitivity_analysis.csv", 
-            sep = "\t", row.names = FALSE, quote = FALSE)
-
-cat("\n✓ Selection coefficient analysis complete!\n")
-cat("  Results saved to ./results/selection_coefficients.csv\n")
-
-## *****************************************************************************
-## Estimate mutation rates ----
-## _____________________________________________________________________________
-
-# Use the wrapper function to generate dM files from both introns and intergenic regions
-# This replaces ~130 lines of duplicated code with a single function call
-
-dM_results <- estimate_dM_from_neutral_regions(
- fasta_file = "./data/Mguttatusvar_IM767_887_v2.0.hardmasked.fa",
-  ann_file = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
-  output_dir = "./data",
-  output_prefix = "Mguttatus",
-  source = "both",  # Generate dM from BOTH introns and intergenic regions
-  window_size = 100000,
-  min_bp = 1000,
-  max_N_freq = 0.25,
-  organism = "Mimulus guttatus",
-  return_intermediates = TRUE  # Keep intermediate data for further analysis if needed
-)
-
-# Access results:
-# - dM_results$dM_introns          : dM data frame from introns
-# - dM_results$dM_intergenic       : dM data frame from intergenic
-# - dM_results$global_stats_introns: Nucleotide frequencies from introns
-# - dM_results$global_stats_intergenic: Nucleotide frequencies from intergenic
-# - dM_results$output_files        : Paths to generated CSV files
-# - dM_results$intermediates       : Raw data (seq_data, nuc_composition, etc.)
-
-# Optional: Additional analysis on the intermediate data
-# For example, cluster genomic windows by mutational spectrum
-if (!is.null(dM_results$intermediates$introns$nuc_filtered) &
-    !is.null(dM_results$intermediates$intergenic$nuc_filtered)) {
-  
-  # Prepare window data for clustering (optional advanced analysis)
-  window_data_introns <- dM_results$intermediates$introns$nuc_filtered |>
-    dplyr::select(window_idx, pi_A, pi_C, pi_G, pi_T)
-  
-  window_data_intergenic <- dM_results$intermediates$intergenic$nuc_filtered |>
-    dplyr::select(window_idx, pi_A, pi_C, pi_G, pi_T)
-  
-  # PCA summary
-  pca_introns <- prcomp(
-    x = as.matrix(window_data_introns[, c("pi_A", "pi_C", "pi_G", "pi_T")]),
-    center = TRUE,
-    scale. = TRUE
-  )
-  
-  pca_intergenic <- prcomp(
-    x = as.matrix(window_data_intergenic[, c("pi_A", "pi_C", "pi_G", "pi_T")]),
-    center = TRUE,
-    scale. = TRUE
-  )
-  
-  cat("\nPCA of nucleotide composition (introns):\n")
-  print(summary(pca_introns))
-  
-  cat("\nPCA of nucleotide composition (intergenic):\n")
-  print(summary(pca_intergenic))
-  
-  # GMM clustering (optional - may find no evidence for multiple clusters)
-  clusters_localM_introns <- make_clusters(data = window_data_introns[, -1], G = 1:10)
-  clusters_localM_intergenic <- make_clusters(data = window_data_intergenic[, -1], G = 1:10)
-}
-
-## *****************************************************************************
-## 14) AnaCoDa-based analysis ----
-## _____________________________________________________________________________
-
-## Results from AnaCoDa framework can be obtained by running:
-
-# Rscript R_scripts_remotes/AnaCoDa_pipeline.R \
-# -i ./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnlyClean.fa \
-# -o ./MCMC_results/results_dM_fixed \
-# -s 10000 \
-# --est_csp \
-# --est_phi \
-# --est_hyp \
-# -n 10 \
-# -d 4000 \
-# -a 25 \
-# --max_num_runs 3 \
-# --fix_dM \
-# --dM ./data/Mguttatus_intron_derived_dM.csv
-# 
-# echo "Job finished on $(date)"
-
-# 14.1) Retrieving AnaCoDa results to analyze congruence between runs ----
-
-# 14.1.1) Naive model ----
-
-# Setup paths for the 3 runs
-run_dirs <- c(
-  "./results/MCMC_results/results_naive_2/run_1",
-  "./results/MCMC_results/results_naive_2/run_2",
-  "./results/MCMC_results/results_naive_2/run_3"
-)
-
-Naive_conv <- GR_convergence(run_dirs)
-
-# 14.1.2) dM-fixed model ----
-
-# Setup paths for the 3 runs
-run_dirs <- c(
-  "./results/MCMC_results/results_dM_fixed/run_1",
-  "./results/MCMC_results/results_dM_fixed/run_2",
-  "./results/MCMC_results/results_dM_fixed/run_3"
-)
-
-dM_fixed_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed
-
-# Convergence was achieved for dM_fixed
-
-# 14.1.2.1) Checking the correlation between estimates of phi and the expression data ----
-
-# From now on, we will work with chain 1, given that all chains are statistically
-# equal.
-
-phi_hat_dM_fixed <- read.csv(file = "results/MCMC_results/results_dM_fixed/run_1/Parameter_est/gene_expression.txt") |>
-  dplyr::select(GeneID, Mean, Mean.log10) |>
-  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
-
-phi_dM_fixed <- exp_complete |>
-  left_join(phi_hat_dM_fixed, by = join_by("Gene" == "GeneID")) |>
-  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
-  na.exclude()
-
-cor.test(phi_dM_fixed$Mean.log10.Phi, phi_dM_fixed$High_exp_log10)
-
-# Visualization
-
-ggplot(data = phi_dM_fixed, aes(x = Mean.log10.Phi,
-                                y = High_exp_log10)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  theme_bw() +
-  xlab("Estimated phi (log10)") +
-  ylab("Empirical Max Expresion (log10)")
-
-ggsave()
-
-# There is no good correspondence with empirical data
-# Next step is to pass expression data to the AnaCoDa
-
-# 14.1.3) Preparing the expression data ----
-
-# 1. Filter for complete cases (Intersection of Leaf and Bud)
-# We strictly remove genes with 0 counts in either tissue
-multi_tissue_phi <- exp_complete |>
-  dplyr::select(Gene, Exp_leaf, Exp_bud) |>
-  dplyr::filter(Exp_leaf > 0 & Exp_bud > 0) |>
-  dplyr::rename(GeneID = Gene) |> # AnaCoDa expects "GeneID" as first col
-  dplyr::filter(GeneID %in% names(trans)) # Ensures correspondence with transcriptome file
-  
-# 2. Calculate sphi (Global Prior)
-# We estimate the "True Phi" shape by taking the mean of the log-expressions
-# This gives the model the "width" of the overall distribution.
-log_means <- rowMeans(log(multi_tissue_phi[, c("Exp_leaf", "Exp_bud")]))
-sphi_init <- sd(log_means)
-
-# 3. Calculate sepsilon (Noise per tissue)
-# AnaCoDa needs a vector: c(noise_leaf, noise_bud)
-# A good heuristic for initialization is the SD of the log-expression for that tissue.
-# (The model will refine this during MCMC, but this puts it in the right ballpark)
-
-sepsilon_leaf <- sd(log(multi_tissue_phi$Exp_leaf))
-sepsilon_bud  <- sd(log(multi_tissue_phi$Exp_bud))
-
-sepsilon_init <- c(sepsilon_leaf, sepsilon_bud)
-
-# 4. Write empirical expression data
-write.table(
-  multi_tissue_phi, 
-  file = "./data/observed_expression_multitissue.csv", 
-  sep = ",", 
-  row.names = FALSE, 
-  quote = FALSE 
-)
-
-# 14.1.3.1) dM-fixed-with_phi ----
-
-# Setup paths for the 3 runs
-run_dirs <- c(
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_1",
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_2",
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_3"
-)
-
-dM_fixed_with_phi_conv <- GR_convergence(run_dirs, 
-                                         parameter = 'selection') # Mutation is fixed
-
-phi_hat_dM_fixed_with_phi <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/gene_expression.txt") |>
-  dplyr::select(GeneID, Mean, Mean.log10) |>
-  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
-
-phi_dM_fixed_with_phi <- exp_complete |>
-  left_join(phi_hat_dM_fixed_with_phi, by = join_by("Gene" == "GeneID")) |>
-  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
-  na.exclude()
-
-cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi, 
-         phi_dM_fixed_with_phi$High_exp_log10)
-
-# 14.1.3.2) Codon frequency trajectories across expression levels ----
-
-# This section visualizes whether the ROC multinomial model:
-#   P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
-# correctly predicts how codon frequencies change with expression.
-
-# Load validation functions
-source("./src/roc_model_validation.R")
-
-cat("\n=== ROC Model: Codon Frequency Trajectories ===\n")
-
-# 1. Prepare codon frequency data from the codon_usage already in environment
-# codon_usage is a data.table with Gene_name column and codon count columns
-codon_freq_long <- codon_usage |>
-  as.data.frame() |>
-  dplyr::rename(Gene = Gene_name) |>
-  tidyr::pivot_longer(cols = -Gene, names_to = "Codon", values_to = "Count")
-
-# Map codons to amino acids
-codon_to_aa <- Biostrings::GENETIC_CODE
-codon_to_aa_df <- data.frame(
-  Codon = names(codon_to_aa),
-  AA = as.character(codon_to_aa),
-  stringsAsFactors = FALSE
-)
-
-codon_freq_long <- codon_freq_long |>
-  dplyr::left_join(codon_to_aa_df, by = "Codon") |>
-  dplyr::filter(AA != "*")  # Remove stop codons
-
-# Calculate frequency within each gene's AA family
-codon_freq_long <- codon_freq_long |>
-  dplyr::group_by(Gene, AA) |>
-  dplyr::mutate(
-    AA_total = sum(Count, na.rm = TRUE),
-    Observed_freq = ifelse(AA_total > 0, Count / AA_total, NA_real_)
-  ) |>
-  dplyr::ungroup() |>
-  dplyr::filter(!is.na(Observed_freq))
-
-cat(sprintf("Codon frequencies: %d gene-codon observations\n", nrow(codon_freq_long)))
-
-# 2. Prepare expression data from exp_complete already in environment
-expr_data <- exp_complete |>
-  dplyr::mutate(Exp_log10 = log10(High_exp + 1)) |>
-  dplyr::select(Gene, Exp_log10)
-
-cat(sprintf("Expression data: %d genes\n", nrow(expr_data)))
-
-# 3. Run the trajectory analysis using the convenience wrapper
-trajectory_results <- run_trajectory_analysis(
-  mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Mutation.csv",
-  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv",
-  codon_freq_df = codon_freq_long,
-  expression_df = expr_data,
-  output_file = "./results/ROC_codon_trajectories.pdf",
-  n_bins = 10
-)
-
-cat("\n✓ Codon trajectory analysis complete!\n")
-cat("  Plot saved to: ./results/ROC_codon_trajectories.pdf\n")
-
-# 14.1.4) dM-fixed-intergenic ----
-
-# Setup paths for the 3 runs
-run_dirs <- c(
-  "./results/MCMC_results/results_dM_fixed_intergenic/run_1",
-  "./results/MCMC_results/results_dM_fixed_intergenic/run_2"#,
-  #"./results/MCMC_results/results_dM_fixed_intergenic/run_3"
-)
-
-dM_fixed_intergenic <- GR_convergence(run_dirs, 
-                                       parameter = 'selection') # Mutation is fixed
-
-# Poor convergence (intergenic-based mutation bias is not adequate)
-
-# 14.1.5) dM-fixed-with-phi-intergenic ----
-
-# Setup paths for the 3 runs
-run_dirs <- c(
-  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_1",
-  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_2",
-  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_3"
-)
-
-dM_fixed_with_phi_intergenic <- GR_convergence(run_dirs, 
-                                       parameter = 'selection') # Mutation is fixed
-
-# Poor convergence (intergenic-based mutation bias is not adequate)
-
-# 14.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
-
-# Using chain 1 results (independent chains are indistinguishable)
-
-eta_estimates <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv")
-
-preferred_codons <- sapply(unique(eta_estimates$AA), function(x) {
-  AA <- x
-  aa_subset <- eta_estimates[eta_estimates$AA == AA, ]
-  preferred <- aa_subset[which.min(aa_subset$Mean), "Codon"]
-  preferred
-})
-
-preferred_codons <- data.frame(AA = sapply(preferred_codons, 
-                                           function(x) genetic_code_dna_long[[x]]),
-  aa = names(preferred_codons),
-  Codon = preferred_codons)
-
-# Exporting preferred codons for polymorphism-based analysis ----
-
-write.table(x = preferred_codons$Codon, 
-            file = './results/preferred_codons.txt', 
-            quote = F, row.names = F, col.names = F)
-
-## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
-
-# Use w_table from CAI analysis (already calculated preferred codons)
-cat("Using optimal codons from corrected reference set...\n")
-
-# Get preferred codons (those with relative_adaptiveness == 1.0)
-preferred_codons_comparative <- preferred_codons_mg |>
-  dplyr::mutate(Codon_RNA = gsub("T", "U", Codon)) |>
-  dplyr::select(Amino_Acid = AA, Codon_RNA, relative_adaptiveness)
-
-# Collapse amino acids with six codons back into six, based on relative adaptiveness
-
-preferred_codons_comparative <- preferred_codons_comparative |>
-  dplyr::mutate(AA_root = sapply(preferred_codons_comparative$Amino_Acid, 
-                                 function(x) 
-                                 {
-                                   unlist(strsplit(x, "_"))[1]
-                                 }))
-
-merge_2_and_4_to_6_fold <- function(preference_df, AA_family_col)
-{
-  #' This function will condense together the 4 and 2 fold families from a 6-fold
-  #' aminoacid family back to the one preferred codon per amino acid. It will take
-  #' the aminoacid with the greater adaptiveness.
-  #' 
-  #' FOR COMPATIBILITY WITH OTHER PLANT STUDIES
-  #' 
-  #' Args:
-  #' preference_df: Data frame with columns for Amino Acid, Codon_RNA, relative_adaptiveness
-  #' AA_family_col: Column name indicating the root amino acid family (e.g., "Leu" for "Leu_2" and "Leu_4")
-  #' 
-  #' ___________________________________________________________________________
-  
-  condensed_preferences <- preference_df |>
-    dplyr::group_by(!!sym(AA_family_col)) |>
-    dplyr::arrange(!!sym(AA_family_col), 
-                   dplyr::desc(relative_adaptiveness)) |>
-    dplyr::slice(1) |>
-    dplyr::ungroup() |>
-    dplyr::select(Amino_Acid = !!sym(AA_family_col), 
-                  Codon_RNA, relative_adaptiveness)
-  
-  return(condensed_preferences)
-}
-
-preferred_codons_mg <- merge_2_and_4_to_6_fold(
-  preferred_codons_comparative,
-  "AA_root"
-)
-
-cat(sprintf("Found %d preferred codons for M. guttatus\n\n", 
-            nrow(preferred_codons_mg)))
-
-# Add M. guttatus to the global plant comparison table
-mg_prefs <- preferred_codons_mg |>
-  dplyr::select(Amino_Acid, Mimulus_guttatus = Codon_RNA)
-
-plant_codons_extended <- model_plants_PC |>
-  left_join(mg_prefs, by = "Amino_Acid") |>
-  na.omit()
-
-# Reorder columns
-plant_codons_extended <- plant_codons_extended |>
-  dplyr::select(Group, Amino_Acid, Arabidopsis_thaliana, Populus_trichocarpa, 
-                Mimulus_guttatus, Physcomitrella_patens, Synonymous_Codons)
-
-# Save extended table
-write.csv(plant_codons_extended, "./results/plant_preferred_codons_comparison.csv", 
-          row.names = FALSE, quote = FALSE)
-
-cat("Extended comparison table saved: ./results/plant_preferred_codons_comparison.csv\n\n")
-
-# Print summary
-cat("=== M. guttatus Preferred Codons ===\n")
-print(preferred_codons_mg |> dplyr::select(Amino_Acid, Codon = Codon_RNA, Weight = relative_adaptiveness))
-
-# Calculate codon preference similarity between species
-cat("\n\n=== Cross-Species Codon Preference Analysis ===\n\n")
-
-# Get all sense codons from global genetic_code_dna_long (excluding stops)
-all_codons_rna <- gsub("T", "U", names(genetic_code_dna_long)[!genetic_code_dna_long %in% c("STOP", "Trp", "Met")])
-
-# Initialize matrix
-species <- c("Arabidopsis_thaliana", "Populus_trichocarpa", "Mimulus_guttatus", "Physcomitrella_patens")
-codon_matrix <- matrix(0, nrow = length(species), ncol = length(all_codons_rna))
-rownames(codon_matrix) <- species
-colnames(codon_matrix) <- all_codons_rna
-
-# Fill matrix
-for (sp_idx in 1:length(species)) {
-  sp_name <- species[sp_idx]
-  if (sp_name == "Mimulus_guttatus") {
-    preferred <- preferred_codons_mg$Codon_RNA
-  } else {
-    preferred <- plant_codons_extended[[sp_name]]
-  }
-  
-  # Mark preferred codons as 1
-  for (codon in preferred) {
-    # Handle multiple codons separated by /
-    codons_split <- unlist(strsplit(codon, "/"))
-    for (c in codons_split) {
-      if (c %in% all_codons_rna) {
-        codon_matrix[sp_name, c] <- 1
-      }
-    }
-  }
-}
-
-# Build similarity matrix
-n_species <- length(species)
-similarity_matrix <- matrix(0, nrow = n_species, ncol = n_species)
-rownames(similarity_matrix) <- species
-colnames(similarity_matrix) <- species
-
-for (i in 1:n_species) {
-  for (j in 1:n_species) {
-    similarity_matrix[i, j] <- jaccard_similarity(codon_matrix[i, ], codon_matrix[j, ])
-  }
-}
-
-cat("Jaccard Similarity Matrix (codon preference overlap):\n")
-print(round(similarity_matrix, 3))
-cat("\n")
-
-# Convert to distance matrix
-distance_matrix <- as.dist(1 - similarity_matrix)
-
-# Hierarchical clustering
-hc <- hclust(distance_matrix, method = "average")
-
-# Save dendrogram
-pdf("./results/plant_codon_preference_dendrogram.pdf", width = 10, height = 7)
-par(mar = c(5, 4, 4, 2))
-plot(hc, main = "Plant Species Clustering by Codon Preference Similarity",
-     xlab = "Species", ylab = "Distance (1 - Jaccard Similarity)",
-     sub = paste("Based on preferred codon usage in", length(all_codons_rna), "sense codons"),
-     cex.main = 1.3)
-dev.off()
-
-cat("Dendrogram saved: ./results/plant_codon_preference_dendrogram.pdf\n\n")
-
-# Create unrooted phylogram using ape package
-tree <- as.phylo(hc)
-
-# Save unrooted tree
-pdf("./results/plant_codon_preference_unrooted.pdf", width = 10, height = 10)
-par(mar = c(1, 1, 3, 1))
-plot(tree, type = "unrooted", main = "Unrooted Tree: Codon Preference Similarity",
-     cex = 1.2, lab4ut = "axial", edge.width = 2)
-dev.off()
-
-cat("Unrooted tree saved: ./results/plant_codon_preference_unrooted.pdf\n\n")
-
-# Create heatmap of codon preferences
-cat("Creating codon preference heatmap...\n")
-
-# Prepare data for heatmap
-codon_df <- as.data.frame(t(codon_matrix))
-codon_df$Codon <- rownames(codon_df)
-codon_df$AA <- genetic_code_dna_long[gsub("U", "T", codon_df$Codon)]
-
-# Reshape for ggplot
-codon_long <- codon_df |>
-  pivot_longer(cols = all_of(species), names_to = "Species", values_to = "Preferred") |>
-  dplyr::mutate(Species = gsub("_", " ", Species),
-                Species = factor(Species, levels = gsub("_", " ", species)))
-
-# Create heatmap
-p_heatmap <- ggplot(codon_long, aes(x = Species, y = Codon, fill = factor(Preferred))) +
-  geom_tile(color = "white", size = 0.5) +
-  scale_fill_manual(values = c("0" = "gray90", "1" = "#E41A1C"),
-                    labels = c("Not Preferred", "Preferred")) +
-  facet_grid(AA ~ ., scales = "free_y", space = "free_y") +
-  labs(title = "Preferred Codon Usage Across Plant Species",
-       subtitle = "Based on highest expression genes",
-       x = "", y = "Codon", fill = "") +
-  theme_minimal(base_size = 11) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
-        strip.text.y = element_text(angle = 0, hjust = 0),
-        panel.spacing = unit(0.3, "lines"),
-        legend.position = "bottom")
-
-ggsave("./results/plant_codon_preference_heatmap.pdf", p_heatmap, 
-       width = 10, height = 18)
-
-cat("Heatmap saved: ./results/plant_codon_preference_heatmap.pdf\n\n")
-
-# Create color-coded comparison plot showing M. guttatus sharing patterns
-
-cat("Creating color-coded codon preference comparison plot...\n")
-
-# Create a data frame for the plot
-plot_data <- data.frame()
-
-# Species order: Arabidopsis, Populus, Physcomitrella, then Mimulus
-species_order <- c("Arabidopsis_thaliana", "Populus_trichocarpa", 
-                   "Physcomitrella_patens", "Mimulus_guttatus")
-species_labels <- c("A. thaliana", "P. trichocarpa", "P. patens", "M. guttatus")
-
-for (aa in sort(unique(plant_codons_extended$Amino_Acid))) {
-  # Determine chemistry group
-  aa_group <- "Other"
-  for (grp in names(aa_chemistry)) {
-    if (aa %in% aa_chemistry[[grp]]) {
-      aa_group <- gsub("_", " ", grp)  # Convert underscores to spaces here
-      break
-    }
-  }
-  
-  aa_data <- plant_codons_extended |> dplyr::filter(Amino_Acid == aa)
-  
-  # Get preferred codons for each species
-  codons_list <- list()
-  for (sp in species_order) {
-    if (sp %in% colnames(plant_codons_extended)) {
-      codon_str <- aa_data[[sp]][1]
-      if (!is.na(codon_str) && codon_str != "") {
-        codons_list[[sp]] <- unique(unlist(strsplit(codon_str, "/")))
-      } else {
-        codons_list[[sp]] <- character(0)
-      }
-    }
-  }
-  
-  # For each species, add their preferred codons
-  for (i in 1:length(species_order)) {
-    sp <- species_order[i]
-    sp_label <- species_labels[i]
-    
-    if (length(codons_list[[sp]]) > 0) {
-      codon_text <- paste(codons_list[[sp]], collapse = "/")
-      
-      # Determine color for M. guttatus column
-      if (sp == "Mimulus_guttatus") {
-        # Check which species M. guttatus shares with
-        mg_codons <- codons_list[["Mimulus_guttatus"]]
-        at_codons <- codons_list[["Arabidopsis_thaliana"]]
-        pt_codons <- codons_list[["Populus_trichocarpa"]]
-        pp_codons <- codons_list[["Physcomitrella_patens"]]
-        
-        shares_with <- c()
-        if (length(intersect(mg_codons, at_codons)) > 0) shares_with <- c(shares_with, "Arabidopsis")
-        if (length(intersect(mg_codons, pt_codons)) > 0) shares_with <- c(shares_with, "Populus")
-        if (length(intersect(mg_codons, pp_codons)) > 0) shares_with <- c(shares_with, "Physcomitrella")
-        
-        # Assign color based on sharing pattern
-        if (length(shares_with) == 0) {
-          codon_color <- "Unique"
-        } else if (length(shares_with) == 3) {
-          codon_color <- "All_three"
-        } else if (length(shares_with) == 2) {
-          codon_color <- "Two_species"
-        } else {
-          # Shares with only one species
-          if ("Arabidopsis" %in% shares_with) {
-            codon_color <- "Only_Arabidopsis"
-          } else if ("Populus" %in% shares_with) {
-            codon_color <- "Only_Populus"
-          } else {
-            codon_color <- "Only_Physcomitrella"
-          }
-        }
-      } else {
-        # For other species, use their own color
-        codon_color <- sp_label
-      }
-      
-      plot_data <- rbind(plot_data,
-                         data.frame(
-                           Amino_Acid = aa,
-                           Chemistry = aa_group,  # Already converted above
-                           Species = sp_label,
-                           Codon = codon_text,
-                           Color_Category = codon_color,
-                           stringsAsFactors = FALSE
-                         ))
-    }
-  }
-}
-
-# Set factor levels for proper ordering
-plot_data$Species <- factor(plot_data$Species, levels = species_labels)
-plot_data$Chemistry <- factor(plot_data$Chemistry, 
-                              levels = c("Nonpolar Aliphatic", "Aromatic", 
-                                         "Polar Uncharged", "Positively Charged", 
-                                         "Negatively Charged", "Other"))
-
-# Define colors
-color_palette <- c(
-  "A. thaliana" = "#E41A1C",           # Red for Arabidopsis
-  "P. trichocarpa" = "#377EB8",        # Blue for Populus
-  "P. patens" = "#4DAF4A",             # Green for Physcomitrella
-  "Only_Arabidopsis" = "#E41A1C",      # Red - shares only with Arabidopsis
-  "Only_Populus" = "#377EB8",          # Blue - shares only with Populus
-  "Only_Physcomitrella" = "#4DAF4A",   # Green - shares only with Physcomitrella
-  "Two_species" = "#FF7F00",           # Orange - shares with two species
-  "All_three" = "#984EA3",             # Purple - shares with all three
-  "Unique" = "#999999"                 # Gray - unique to M. guttatus
-)
-
-# Create the plot
-p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon)) +
-  geom_tile(aes(fill = Color_Category), color = "white", size = 1, alpha = 0.3) +
-  geom_text(size = 3, fontface = "bold") +
-  scale_fill_manual(values = color_palette,
-                    labels = c("A. thaliana" = "A. thaliana",
-                               "P. trichocarpa" = "P. trichocarpa",
-                               "P. patens" = "P. patens",
-                               "Only_Arabidopsis" = "M.g. shares with Arabidopsis only",
-                               "Only_Populus" = "M.g. shares with Populus only",
-                               "Only_Physcomitrella" = "M.g. shares with Physcomitrella only",
-                               "Two_species" = "M.g. shares with two species",
-                               "All_three" = "M.g. shares with all three",
-                               "Unique" = "M.g. unique preference"),
-                    name = "") +
-  facet_grid(Chemistry ~ ., scales = "free_y", space = "free_y") +
-  labs(title = "Preferred Codon Usage Across Plant Species",
-       subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
-       x = "", y = "") +
-  theme_minimal(base_size = 12) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
-        axis.text.y = element_text(size = 10),
-        strip.text.y = element_text(angle = 0, hjust = 0, face = "bold", size = 11),
-        panel.spacing = unit(0.5, "lines"),
-        legend.position = "bottom",
-        legend.text = element_text(size = 9),
-        panel.grid = element_blank())
-
-ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
-       width = 12, height = 16)
-
-cat("✓ Color-coded comparison plot saved: ./results/plant_codon_preference_comparison_colored.pdf\n\n")
-
-# Print summary of M. guttatus sharing patterns
-cat("=== M. guttatus Codon Preference Sharing Patterns ===\n\n")
-
-mg_summary <- plot_data |> 
-  dplyr::filter(Species == "M. guttatus") |>
-  dplyr::count(Color_Category) |>
-  dplyr::arrange(dplyr::desc(n))
-
-total_aa <- nrow(mg_summary |> dplyr::summarise(total = sum(n)))
-
-for (i in 1:nrow(mg_summary)) {
-  cat_name <- mg_summary$Color_Category[i]
-  count <- mg_summary$n[i]
-  pct <- 100 * count / sum(mg_summary$n)
-  
-  cat_label <- switch(cat_name,
-                      "All_three" = "Shares with all three species",
-                      "Two_species" = "Shares with two species",
-                      "Only_Arabidopsis" = "Shares only with A. thaliana",
-                      "Only_Populus" = "Shares only with P. trichocarpa",
-                      "Only_Physcomitrella" = "Shares only with P. patens",
-                      "Unique" = "Unique to M. guttatus",
-                      cat_name)
-  
-  cat(sprintf("  %-40s: %2d amino acids (%.1f%%)\n", cat_label, count, pct))
-}
-
-cat("\n")
-dM_fixed_with_phi_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed

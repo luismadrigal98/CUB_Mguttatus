@@ -465,7 +465,7 @@ if [ $SKIP_STEP3 -eq 0 ]; then
     echo ""
     echo "Creating all_chromosomes.codon_analysis.* files..."
     
-    for suffix in aa_summary freq_distribution raw_frequencies family_summary; do
+    for suffix in aa_summary freq_distribution full_distribution plot_data raw_frequencies family_summary family_plot_data; do
         FIRST=1
         for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
             CODON_FILE="${OUTPUT_DIR}/${CHR}.codon_analysis.${suffix}.txt"

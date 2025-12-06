@@ -346,7 +346,7 @@ def write_output(preferred_freq_data, output_prefix):
             out.write(f"{prop_fixed_pref:.4f}\n")
     
     # ==========================================================================
-    # 2. Binned frequency distribution per amino acid
+    # 2. Binned frequency distribution per amino acid (polymorphic only)
     # ==========================================================================
     freq_dist_file = f"{output_prefix}.freq_distribution.txt"
     print(f"Writing frequency distribution to {freq_dist_file}...", file=sys.stderr)
@@ -372,6 +372,87 @@ def write_output(preferred_freq_data, output_prefix):
             
             out.write(f"{aa}\t{family}\t")
             out.write("\t".join(map(str, counts)) + "\n")
+    
+    # ==========================================================================
+    # 2b. FULL distribution including fixed sites (for suspension bridge plot)
+    # ==========================================================================
+    full_dist_file = f"{output_prefix}.full_distribution.txt"
+    print(f"Writing full distribution (with fixed sites) to {full_dist_file}...", file=sys.stderr)
+    
+    with open(full_dist_file, 'w') as out:
+        # Header with explanation
+        out.write("# Full Preferred Codon Frequency Distribution\n")
+        out.write("# Includes FIXED sites as Bin_0 (freq=0) and Bin_11 (freq=1)\n")
+        out.write("# This creates the 'suspension bridge' pattern for visualization\n")
+        out.write("# \n")
+        out.write("# Bin_0:  Fixed for NON-PREFERRED codon (pref_freq = 0)\n")
+        out.write("# Bin_1-10: Polymorphic sites (pref_freq = 0.001-0.999)\n")
+        out.write("# Bin_11: Fixed for PREFERRED codon (pref_freq = 1)\n")
+        out.write("# \n")
+        
+        # Column headers: 12 bins total
+        out.write("Amino_Acid\tFamily\t")
+        out.write("Bin_0_Fixed_NonPref\t")
+        bin_headers = [f"Bin_{i+1}_({i/n_bins:.1f}-{(i+1)/n_bins:.1f})" for i in range(n_bins)]
+        out.write("\t".join(bin_headers))
+        out.write("\tBin_11_Fixed_Pref\n")
+        
+        for aa in sorted(preferred_freq_data.keys()):
+            data = preferred_freq_data[aa]
+            family = AA_TO_FAMILY.get(aa, 'unknown')
+            
+            # Get polymorphic bin counts
+            poly_counts, _ = bin_preferred_frequencies(data['preferred_freqs'], n_bins)
+            
+            # Build full distribution: [fixed_nonpref, poly_bins..., fixed_pref]
+            full_counts = [data['n_invariant_nonpref']] + poly_counts + [data['n_invariant_pref']]
+            
+            out.write(f"{aa}\t{family}\t")
+            out.write("\t".join(map(str, full_counts)) + "\n")
+    
+    # ==========================================================================
+    # 2c. Long-format for easy R plotting (ggplot2 friendly)
+    # ==========================================================================
+    plot_file = f"{output_prefix}.plot_data.txt"
+    print(f"Writing plot-ready data to {plot_file}...", file=sys.stderr)
+    
+    with open(plot_file, 'w') as out:
+        out.write("# Long-format data for ggplot2 visualization\n")
+        out.write("# Use: ggplot(data, aes(x=Bin_Midpoint, y=Count)) + geom_col()\n")
+        out.write("# Or for density: aes(x=Bin_Midpoint, y=Density)\n")
+        out.write("# \n")
+        out.write("Amino_Acid\tFamily\tBin\tBin_Midpoint\tCount\tDensity\tSite_Type\n")
+        
+        for aa in sorted(preferred_freq_data.keys()):
+            data = preferred_freq_data[aa]
+            family = AA_TO_FAMILY.get(aa, 'unknown')
+            
+            # Get polymorphic bin counts
+            poly_counts, _ = bin_preferred_frequencies(data['preferred_freqs'], n_bins)
+            
+            # Total sites for density calculation
+            total_sites = (data['n_invariant_nonpref'] + 
+                          sum(poly_counts) + 
+                          data['n_invariant_pref'])
+            
+            if total_sites == 0:
+                continue
+            
+            # Bin 0: Fixed non-preferred (freq = 0)
+            count = data['n_invariant_nonpref']
+            density = count / total_sites
+            out.write(f"{aa}\t{family}\t0\t0.00\t{count}\t{density:.6f}\tFixed_NonPref\n")
+            
+            # Bins 1-10: Polymorphic
+            for i, count in enumerate(poly_counts):
+                midpoint = (i + 0.5) / n_bins
+                density = count / total_sites
+                out.write(f"{aa}\t{family}\t{i+1}\t{midpoint:.2f}\t{count}\t{density:.6f}\tPolymorphic\n")
+            
+            # Bin 11: Fixed preferred (freq = 1)
+            count = data['n_invariant_pref']
+            density = count / total_sites
+            out.write(f"{aa}\t{family}\t11\t1.00\t{count}\t{density:.6f}\tFixed_Pref\n")
     
     # ==========================================================================
     # 3. Raw frequencies for R analysis
@@ -464,6 +545,48 @@ def write_output(preferred_freq_data, output_prefix):
                 out.write("NA\tNA\tNA\tNA\tNA\tNA\t")
             
             out.write(f"{prop_fixed_pref:.4f}\n")
+    
+    # ==========================================================================
+    # 5. Family-level plot data (for suspension bridge by degeneracy)
+    # ==========================================================================
+    family_plot_file = f"{output_prefix}.family_plot_data.txt"
+    print(f"Writing family-level plot data to {family_plot_file}...", file=sys.stderr)
+    
+    with open(family_plot_file, 'w') as out:
+        out.write("# Long-format data for ggplot2 visualization BY DEGENERACY FAMILY\n")
+        out.write("# Use: ggplot(data, aes(x=Bin_Midpoint, y=Density, color=Family)) + geom_line()\n")
+        out.write("# \n")
+        out.write("Family\tBin\tBin_Midpoint\tCount\tDensity\tSite_Type\n")
+        
+        for family in ['2-fold', '3-fold', '4-fold', '6-fold']:
+            data = family_data[family]
+            
+            # Get polymorphic bin counts
+            poly_counts, _ = bin_preferred_frequencies(data['preferred_freqs'], n_bins)
+            
+            # Total sites for density calculation
+            total_sites = (data['n_invariant_nonpref'] + 
+                          sum(poly_counts) + 
+                          data['n_invariant_pref'])
+            
+            if total_sites == 0:
+                continue
+            
+            # Bin 0: Fixed non-preferred (freq = 0)
+            count = data['n_invariant_nonpref']
+            density = count / total_sites
+            out.write(f"{family}\t0\t0.00\t{count}\t{density:.6f}\tFixed_NonPref\n")
+            
+            # Bins 1-10: Polymorphic
+            for i, count in enumerate(poly_counts):
+                midpoint = (i + 0.5) / n_bins
+                density = count / total_sites
+                out.write(f"{family}\t{i+1}\t{midpoint:.2f}\t{count}\t{density:.6f}\tPolymorphic\n")
+            
+            # Bin 11: Fixed preferred (freq = 1)
+            count = data['n_invariant_pref']
+            density = count / total_sites
+            out.write(f"{family}\t11\t1.00\t{count}\t{density:.6f}\tFixed_Pref\n")
 
 
 def print_summary(preferred_freq_data):
@@ -579,10 +702,15 @@ def main():
         print("  Codon_Variants, Frequencies, Preferred_Freq, Non_Preferred_Freq")
         print()
         print("Output files:")
-        print("  <prefix>.aa_summary.txt       - Per-amino-acid summary statistics")
-        print("  <prefix>.freq_distribution.txt - Binned frequency distribution")
-        print("  <prefix>.raw_frequencies.txt  - Raw frequencies for R analysis")
-        print("  <prefix>.family_summary.txt   - Summary by degeneracy family")
+        print("  <prefix>.aa_summary.txt         - Per-amino-acid summary statistics")
+        print("  <prefix>.freq_distribution.txt  - Binned frequency (polymorphic only)")
+        print("  <prefix>.full_distribution.txt  - Full distribution with fixed sites")
+        print("  <prefix>.plot_data.txt          - Long-format for ggplot2 (per AA)")
+        print("  <prefix>.raw_frequencies.txt    - Raw frequencies for R analysis")
+        print("  <prefix>.family_summary.txt     - Summary by degeneracy family")
+        print("  <prefix>.family_plot_data.txt   - Long-format for ggplot2 (per family)")
+        print()
+        print("For 'suspension bridge' plots, use the .plot_data.txt or .family_plot_data.txt files.")
         print()
         print("IMPORTANT: This analysis provides DESCRIPTIVE statistics only.")
         print("See output files for caveats and limitations.")
