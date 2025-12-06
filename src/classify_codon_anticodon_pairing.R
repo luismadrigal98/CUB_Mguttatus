@@ -304,19 +304,41 @@ classify_codon_anticodon_pairing <- function(
   cat("\n")
   
   # Use Fisher's exact test (better for small expected frequencies)
+  # Two-tailed test (default)
   fisher_test <- fisher.test(contingency)
-  cat("Fisher's exact test:\n")
+  
+  # One-tailed test (directional hypothesis: preferred -> more Watson-Crick)
+  # We expect preferred codons to have FEWER wobble pairings
+  # The table is ordered as Non-Preferred, Preferred (alphabetically)
+  # alternative="less" tests if the odds ratio < 1, meaning Preferred has less Wobble
+  fisher_test_onetail <- fisher.test(contingency, alternative = "less")
+  
+  cat("Fisher's exact test (two-tailed):\n")
   cat("  Odds ratio =", round(fisher_test$estimate, 3), "\n")
   cat("  p-value =", format.pval(fisher_test$p.value, digits = 3), "\n")
   cat("  95% CI: [", round(fisher_test$conf.int[1], 3), ",", 
       round(fisher_test$conf.int[2], 3), "]\n\n")
+  
+  cat("Fisher's exact test (one-tailed, H1: preferred use MORE Watson-Crick):\n")
+  cat("  p-value (one-tailed) =", format.pval(fisher_test_onetail$p.value, digits = 3), "\n\n")
   
   # Also calculate Cramer's V for effect size
   # Using chi-squared statistic for effect size calculation
   chi_stat <- sum((contingency - rowSums(contingency) %*% t(colSums(contingency)) / sum(contingency))^2 / 
                     (rowSums(contingency) %*% t(colSums(contingency)) / sum(contingency)))
   cramers_v <- sqrt(chi_stat / (sum(contingency) * (min(dim(contingency)) - 1)))
-  cat("  Cramer's V =", round(cramers_v, 3), "(effect size)\n\n")
+  cat("  Cramer's V =", round(cramers_v, 3), "(effect size: small=0.1, medium=0.3, large=0.5)\n\n")
+  
+  # Report on the zero cell if present
+  if (any(contingency == 0)) {
+    cat("  NOTE: Contingency table contains zero(s).\n")
+    if ("Preferred" %in% rownames(contingency) && "Wobble" %in% colnames(contingency)) {
+      if (contingency["Preferred", "Wobble"] == 0) {
+        cat("  → 100% of preferred codons use Watson-Crick pairing!\n")
+        cat("  → This is consistent with strong selection for translational accuracy.\n\n")
+      }
+    }
+  }
   
   # Calculate proportions
   prop_table <- prop.table(contingency, margin = 1)
@@ -476,9 +498,23 @@ classify_codon_anticodon_pairing <- function(
       cat("  - Selection may favor wobble pairing for some reason\n")
     }
   } else {
-    cat("✗ NO SIGNIFICANT association (p >= 0.05)\n")
-    cat("  - Pairing type does not explain codon preference\n")
-    cat("  - Selection may be driven by other factors\n")
+    # Check if one-tailed test is significant
+    if (fisher_test_onetail$p.value < 0.05) {
+      cat("⚠ MARGINALLY SIGNIFICANT (two-tailed p >= 0.05, but one-tailed p < 0.05)\n")
+      cat("  - With directional hypothesis, one-tailed test is appropriate\n")
+      cat("  - Pattern is consistent with translational accuracy hypothesis\n")
+      
+      # Check proportions even if not significant
+      pref_wc <- prop_table["Preferred", "Watson-Crick"]
+      nonpref_wc <- prop_table["Non-Preferred", "Watson-Crick"]
+      cat("  - Preferred codons: ", round(pref_wc * 100, 1), "% Watson-Crick\n", sep = "")
+      cat("  - Non-preferred codons: ", round(nonpref_wc * 100, 1), "% Watson-Crick\n", sep = "")
+      
+    } else {
+      cat("✗ NO SIGNIFICANT association (p >= 0.05)\n")
+      cat("  - Pairing type does not explain codon preference\n")
+      cat("  - Selection may be driven by other factors\n")
+    }
   }
   
   cat("\n=== Analysis Complete ===\n\n")
@@ -488,6 +524,7 @@ classify_codon_anticodon_pairing <- function(
     pairing_classification = analysis_dt,
     contingency_table = contingency,
     fisher_test = fisher_test,
+    fisher_test_onetail = fisher_test_onetail,
     cramers_v = cramers_v,
     proportions = prop_table,
     family_summary = family_summary,

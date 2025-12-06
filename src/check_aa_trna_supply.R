@@ -91,7 +91,8 @@ check_aa_frequency_vs_tRNA_supply <- function(codon_usage,
   
   cor_spearman <- cor.test(aa_trna_data$AA_Frequency, 
                            aa_trna_data$tRNA_gene_count,
-                           method = "spearman")
+                           method = "spearman",
+                           exact = F)
   
   # Print results
   cat("=== Correlation Results ===\n")

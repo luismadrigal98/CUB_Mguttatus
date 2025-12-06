@@ -1,405 +1,302 @@
-##' Create enhanced CA/PCA biplot with codon classification coloring
-##' 
-##' @description Creates biplots showing gene clouds and codon vectors
-##' with coloring based on codon classification (selection, preference, AT/GC)
-##' 
-##' @param ordination_result CA or PCA result object
-##' @param gene_data Data frame with gene scores and expression groups
-##' @param codon_test_results Output from test_codon_proportions()
-##' @param preferred_codons Data frame withc columens Preferred_Codons and Family
-##' @param dims Dimensions to plot (default: c(1,2))
-##' @param color_by How to color codons: "selection", "preference", "ending", "combined"
-##' @param show_only_significant Show only significant codons? (default: FALSE)
-##' @param arrow_scale Scaling factor for codon vectors
-##' @param title Plot title
-##' @param output_file Path to save plot
-##' 
-##' @return ggplot object
-##' 
-##' @author Luis J. Madrigal-Roca
-##' @date November 12, 2025
+# Enhanced biplot functions for CA/PCA analysis
+# Simplified version: shows preferred vs non-preferred codons
+# =============================================================================
 
-create_enhanced_biplot <- function(ordination_result,
-                                   gene_data,
-                                   codon_test_results,
-                                   preferred_codons,
-                                   dims = c(1, 2),
-                                   color_by = "combined",
-                                   show_only_significant = FALSE,
-                                   arrow_scale = 1.0,
-                                   title = "Enhanced Biplot",
-                                   output_file = NULL) {
+create_preference_biplot <- function(
+    ordination_result,
+    gene_data,
+    preferred_codons,
+    dims = c(1, 2),
+    arrow_scale = 1.0,
+    title = "Codon Usage Biplot",
+    subtitle = NULL,
+    output_file = NULL
+) {
+  #' Create a clean biplot showing preferred vs non-preferred codons
+
+  #' 
+  #' @param ordination_result CA or PCA result object from FactoMineR
+
+  #' @param gene_data data.frame with Gene_name and expression_group columns
+
+  #' @param preferred_codons data.frame with Preferred_Codons column (from ROC)
+  #' @param dims numeric vector of length 2, which dimensions to plot
+  #' @param arrow_scale numeric, scaling factor for codon arrows
+  #' @param title character, plot title
+  #' @param subtitle character, optional subtitle
+  #' @param output_file character, path to save PDF (NULL = no save)
+  #' @return ggplot object
   
   require(ggplot2)
   require(dplyr)
-  require(data.table)
+  require(ggnewscale)
   
-  cat(sprintf("\n=== Creating Enhanced Biplot ===\n"))
-  cat(sprintf("Ordination type: %s\n", class(ordination_result)[1]))
-  cat(sprintf("Dimensions: %d vs %d\n", dims[1], dims[2]))
-  cat(sprintf("Color scheme: %s\n", color_by))
-  
-  # Extract ordination type
-  is_ca <- inherits(ordination_result, "coa")
-  is_pca <- inherits(ordination_result, c("prcomp", "princomp"))
-  is_factominer_pca <- inherits(ordination_result, "PCA")
-  
-  # Get gene scores
-  if (is_ca) {
-    gene_scores <- as.data.frame(ordination_result$li)
-    codon_loadings <- as.data.frame(ordination_result$co)
-    variance_explained <- ordination_result$eig / sum(ordination_result$eig) * 100
-  } else if (is_factominer_pca) {
-    # FactoMineR::PCA object
-    gene_scores <- as.data.frame(ordination_result$ind$coord)
-    codon_loadings <- as.data.frame(ordination_result$var$coord)
-    variance_explained <- ordination_result$eig[, "percentage of variance"]
-  } else if (is_pca) {
-    gene_scores <- as.data.frame(ordination_result$x)
-    codon_loadings <- as.data.frame(ordination_result$rotation)
-    variance_explained <- (ordination_result$sdev^2) / sum(ordination_result$sdev^2) * 100
+  # Detect analysis type and extract coordinates
+  if (inherits(ordination_result, "PCA")) {
+    # PCA from FactoMineR
+    gene_scores <- as.data.frame(ordination_result$ind$coord[, dims])
+    codon_loadings <- as.data.frame(ordination_result$var$coord[, dims])
+    var_explained <- ordination_result$eig[dims, 2]
+    analysis_type <- "PCA"
+  } else if (inherits(ordination_result, "CA")) {
+    # CA from FactoMineR
+    gene_scores <- as.data.frame(ordination_result$row$coord[, dims])
+    codon_loadings <- as.data.frame(ordination_result$col$coord[, dims])
+    var_explained <- ordination_result$eig[dims, 2]
+    analysis_type <- "CA"
+  } else if (inherits(ordination_result, "coa") || "li" %in% names(ordination_result)) {
+    # ade4 style or converted CA object
+    gene_scores <- as.data.frame(ordination_result$li[, dims])
+    codon_loadings <- as.data.frame(ordination_result$co[, dims])
+    if ("eig" %in% names(ordination_result) && is.matrix(ordination_result$eig)) {
+      var_explained <- ordination_result$eig[dims, 2]
+    } else if ("eig" %in% names(ordination_result)) {
+      total <- sum(ordination_result$eig)
+      var_explained <- ordination_result$eig[dims] / total * 100
+    } else {
+      var_explained <- c(NA, NA)
+    }
+    analysis_type <- "CA"
   } else {
-    stop("Ordination result must be from CA (ade4::dudi.coa), PCA (prcomp), or PCA (FactoMineR::PCA)")
+    stop("Unsupported ordination result type")
   }
+  
+  # Standardize column names
+  names(gene_scores) <- c("Dim1", "Dim2")
+  names(codon_loadings) <- c("Dim1", "Dim2")
   
   # Add gene names
-  gene_scores$Gene_name <- rownames(gene_scores)
+  gene_scores$Gene_name <- sub("\\.1$", "", rownames(gene_scores))
   codon_loadings$Codon <- rownames(codon_loadings)
   
-  # Merge with gene expression groups
-  gene_plot_data <- gene_scores %>%
-    left_join(gene_data %>% dplyr::select(Gene_name, expression_group), 
-              by = "Gene_name")
+  # Merge with gene data (expression groups)
+  gene_scores <- gene_scores |>
+    dplyr::left_join(gene_data, by = "Gene_name") |>
+    dplyr::filter(!is.na(expression_group))
   
-  # Merge codon loadings with test results and w values
-  codon_plot_data <- codon_loadings %>%
-    left_join(codon_test_results %>% 
-                dplyr::select(Codon, Classification, Significant, 
-                       Difference, Ending, Amino_Acid),
-              by = "Codon") %>%
+  # Classify codons as preferred vs non-preferred
+  # Handle different column name formats
+  if ("Preferred_Codons" %in% names(preferred_codons)) {
+    preferred_list <- preferred_codons$Preferred_Codons
+  } else if ("codon" %in% names(preferred_codons)) {
+    preferred_list <- preferred_codons$codon
+  } else if ("Codon" %in% names(preferred_codons)) {
+    preferred_list <- preferred_codons$Codon
+  } else {
+    preferred_list <- preferred_codons[[1]]
+  }
+  
+  codon_loadings <- codon_loadings |>
     dplyr::mutate(
-      Preferred = Codon %in% preferred_codons$Preferred_Codons,
-      # Use corrected classification if available
-      Category = case_when(
-          !Significant ~ "Neutral",
-          Difference > 0 & Preferred ~ "Selection + Preferred (w = 1)",
-          Difference > 0 & !Preferred ~ "Enriched (not pref)",
-          Difference < 0 & Preferred ~ "Depleted (preferred)",
-          Difference < 0 ~ "Depleted",
-          TRUE ~ "Neutral"
-        )
+      Preference = ifelse(Codon %in% preferred_list, "Preferred", "Non-preferred")
     )
   
-  # Filter to significant only if requested
-  if (show_only_significant) {
-    codon_plot_data <- codon_plot_data %>% dplyr::filter(Significant)
-    cat(sprintf("Showing only significant codons: %d\n", nrow(codon_plot_data)))
-  }
-  
-  # Select dimensions
-  dim_names <- colnames(gene_scores)[dims]
-  x_var <- variance_explained[dims[1]]
-  y_var <- variance_explained[dims[2]]
-  
-  # Create column name mapping
-  gene_plot_data$x <- gene_plot_data[[dim_names[1]]]
-  gene_plot_data$y <- gene_plot_data[[dim_names[2]]]
-  codon_plot_data$x <- codon_plot_data[[dim_names[1]]] * arrow_scale
-  codon_plot_data$y <- codon_plot_data[[dim_names[2]]] * arrow_scale
-  
-  # Define color schemes
-  if (color_by == "selection") {
-    # Color by selection status only
-    colors <- c(
-      "Enriched + Preferred (w = 1)" = "#d73027",
-      "Enriched (not pref)" = "#fc8d59",
-      "Avoided in High Expr" = "#4575b4",
-      "Neutral" = "gray70"
-    )
-    codon_plot_data$Color_Variable <- codon_plot_data$Category
-    legend_title <- "Selection Status"
-    
-  } else if (color_by == "preference") {
-    # Color by CAI preference only
-    colors <- c("TRUE" = "#d73027", "FALSE" = "gray70")
-    codon_plot_data$Color_Variable <- codon_plot_data$Preferred
-    legend_title <- "Preferred (w=1)"
-    
-  } else if (color_by == "ending") {
-    # Color by AT vs GC ending
-    colors <- c("AT" = "#fdae61", "GC" = "#abd9e9")
-    codon_plot_data$Color_Variable <- codon_plot_data$Ending
-    legend_title <- "Codon Ending"
-    
-  } else {  # combined
-    # Combined classification
-    codon_plot_data <- codon_plot_data %>%
-      mutate(
-        Combined = case_when(
-          !Significant ~ "Neutral",
-          Preferred & Difference > 0 & Ending == "GC" ~ "Sel + Pref + GC",
-          Preferred & Difference > 0 & Ending == "AT" ~ "Sel + Pref + AT",
-          !Preferred & Difference > 0 & Ending == "GC" ~ "Sel (non-pref) + GC",
-          !Preferred & Difference > 0 & Ending == "AT" ~ "Sel (non-pref) + AT",
-          Difference < 0 ~ "Avoided",
-          TRUE ~ "Neutral"
-        )
-      )
-    colors <- c(
-      "Sel + Pref + GC" = "#d73027",
-      "Sel + Pref + AT" = "#fc8d59",
-      "Sel (non-pref) + GC" = "#fee090",
-      "Sel (non-pref) + AT" = "#ffffbf",
-      "Avoided" = "#4575b4",
-      "Neutral" = "gray80"
-    )
-    codon_plot_data$Color_Variable <- codon_plot_data$Combined
-    legend_title <- "Codon Classification"
-  }
-  
-  # Gene cloud colors
-  gene_colors <- c(
-    "Top 5%" = "#e41a1c",
-    "Bottom 5%" = "#377eb8",
-    "Middle 90%" = "gray60"
+  # Auto-scale arrows to be visible relative to gene score spread
+  # Calculate the range of gene scores to determine appropriate arrow scaling
+  gene_range <- max(
+    diff(range(gene_scores$Dim1, na.rm = TRUE)),
+    diff(range(gene_scores$Dim2, na.rm = TRUE))
+  )
+  codon_range <- max(
+    diff(range(codon_loadings$Dim1, na.rm = TRUE)),
+    diff(range(codon_loadings$Dim2, na.rm = TRUE))
   )
   
-  # Create plot
-  p <- ggplot() +
-    # Gene clouds
-    geom_point(data = gene_plot_data,
-               aes(x = x, y = y, color = expression_group),
-               alpha = 0.3, size = 1.5) +
-    scale_color_manual(values = gene_colors, name = "Expression Group") +
-    # Codon vectors
-    geom_segment(data = codon_plot_data,
-                 aes(x = 0, y = 0, xend = x, yend = y,
-                     color = Color_Variable),
-                 arrow = arrow(length = unit(0.02, "npc"), type = "closed"),
-                 alpha = 0.7, size = 0.5,
-                 inherit.aes = FALSE) +
-    geom_text(data = codon_plot_data,
-              aes(x = x * 1.1, y = y * 1.1, label = Codon),
-              size = 2.5, alpha = 0.8) +
-    # Styling
-    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.3) +
-    geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.3) +
-    labs(
-      title = title,
-      subtitle = sprintf("%d genes, %d codons | %s coloring",
-                        nrow(gene_plot_data),
-                        nrow(codon_plot_data),
-                        color_by),
-      x = sprintf("%s (%.1f%%)", dim_names[1], x_var),
-      y = sprintf("%s (%.1f%%)", dim_names[2], y_var)
-    ) +
-    theme_minimal(base_size = 11) +
-    theme(
-      plot.title = element_text(face = "bold", size = 13),
-      legend.position = "right",
-      panel.grid.minor = element_blank()
-    ) +
-    guides(
-      color = guide_legend(override.aes = list(size = 3, alpha = 1))
+  # Scale so arrows span ~40% of the gene score range
+  auto_scale <- (gene_range * 0.4) / codon_range
+  effective_scale <- arrow_scale * auto_scale
+  
+  # Scale arrows
+  codon_loadings <- codon_loadings |>
+    dplyr::mutate(
+      Dim1_scaled = Dim1 * effective_scale,
+      Dim2_scaled = Dim2 * effective_scale
     )
   
-  # Add second color scale for codons (using ggnewscale if available)
-  if (requireNamespace("ggnewscale", quietly = TRUE)) {
-    p <- p + 
-      ggnewscale::new_scale_color() +
-      geom_segment(data = codon_plot_data,
-                   aes(x = 0, y = 0, xend = x, yend = y,
-                       color = Color_Variable),
-                   arrow = arrow(length = unit(0.02, "npc"), type = "closed"),
-                   alpha = 0.7, size = 0.5) +
-      scale_color_manual(values = colors, name = legend_title)
+  # Define colors - Preferred = red (matches high expression/selection)
+  preference_colors <- c("Preferred" = "#E41A1C", "Non-preferred" = "#377EB8")
+  
+  # Build axis labels
+  if (!is.na(var_explained[1])) {
+    x_label <- sprintf("Dim %d (%.1f%%)", dims[1], var_explained[1])
+    y_label <- sprintf("Dim %d (%.1f%%)", dims[2], var_explained[2])
   } else {
-    cat("\nNote: Install 'ggnewscale' package for better legend handling\n")
+    x_label <- sprintf("Dim %d", dims[1])
+    y_label <- sprintf("Dim %d", dims[2])
   }
   
+  # Define ellipse colors (stronger for visibility)
+  ellipse_colors <- c(
+    "Top 5%" = "#E41A1C",
+    "Bottom 5%" = "#377EB8",
+    "High Selection (Top 5%)" = "#E41A1C",
+    "Low Selection (Bottom 5%)" = "#377EB8"
+  )
+  
+  # Create the plot
+  p <- ggplot() +
+    # Gene points with expression group colors (light, transparent)
+    geom_point(
+      data = gene_scores,
+      aes(x = Dim1, y = Dim2, fill = expression_group),
+      alpha = 0.25,
+      size = 1.5,
+      shape = 21,
+      color = NA
+    ) +
+    scale_fill_manual(
+      name = "Gene Group",
+      values = c("Top 5%" = "#FCBBA1", "Bottom 5%" = "#9ECAE1",
+                 "High Selection (Top 5%)" = "#FCBBA1", 
+                 "Low Selection (Bottom 5%)" = "#9ECAE1")
+    ) +
+    # Add new fill scale for points
+    ggnewscale::new_scale_fill() +
+    # Add confidence ellipses for each group (strong colors)
+    stat_ellipse(
+      data = gene_scores,
+      aes(x = Dim1, y = Dim2, color = expression_group),
+      level = 0.95,
+      linewidth = 1.2,
+      linetype = "solid"
+    ) +
+    # Codon arrows colored by preference (thicker, more visible)
+    geom_segment(
+      data = codon_loadings,
+      aes(x = 0, y = 0, xend = Dim1_scaled, yend = Dim2_scaled, 
+          color = Preference),
+      arrow = arrow(length = unit(0.2, "cm")),
+      linewidth = 1.0,
+      alpha = 1.0
+    ) +
+    # Codon labels (larger)
+    geom_text(
+      data = codon_loadings,
+      aes(x = Dim1_scaled * 1.08, y = Dim2_scaled * 1.08, 
+          label = Codon, color = Preference),
+      size = 3.0,
+      fontface = "bold",
+      show.legend = FALSE
+    ) +
+    # Combined color scale for ellipses and arrows
+    scale_color_manual(
+      name = "",
+      values = c(preference_colors, ellipse_colors),
+      breaks = c("Preferred", "Non-preferred", 
+                 names(ellipse_colors)[names(ellipse_colors) %in% unique(gene_scores$expression_group)])
+    ) +
+    # Axis labels
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = x_label,
+      y = y_label
+    ) +
+    # Reference lines
+    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.3) +
+    # Apply custom theme
+    theme_custom() +
+    theme(
+      axis.text.x = element_text(angle = 0, hjust = 0.5),
+      legend.position = "right"
+    )
+  
+  # Save if output file specified
   if (!is.null(output_file)) {
-    ggsave(output_file, p, width = 12, height = 10)
-    cat(sprintf("\n✓ Biplot saved: %s\n", output_file))
+    ggsave(output_file, p, width = 10, height = 8, dpi = 300)
+    cat(sprintf("✓ Saved: %s\n", output_file))
   }
   
   return(p)
 }
 
 
-##' Create panel of biplots with different codon coloring schemes
-##'
-##' @param ordination_result CA or PCA result
-##' @param gene_data Gene data with expression groups
-##' @param codon_test_results Codon test results
-##' @param preferred_codons Data frame with Preferred_Codons column (from ROC model)
-##' @param dims Dimensions to plot
-##' @param output_file Path to save
-##'
-##' @return Combined plot object
-
-create_biplot_panel <- function(ordination_result, gene_data, 
-                                codon_test_results, preferred_codons,
-                                dims = c(1, 2), output_file = NULL) {
+analyze_codon_loading_direction <- function(
+    ordination_result,
+    preferred_codons,
+    dim = 1
+) {
+  #' Analyze whether preferred codons load in a consistent direction
+  #' 
+  #' @param ordination_result CA or PCA result object
+  #' @param preferred_codons data.frame with preferred codon information
+  #' @param dim which dimension to analyze (default = 1)
+  #' @return list with test statistics and summary
   
-  require(cowplot)
-  
-  cat("\n=== Creating Biplot Panel ===\n")
-  
-  # Create plots with different color schemes
-  p1 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, preferred_codons,
-    dims = dims, color_by = "selection", show_only_significant = FALSE,
-    title = "A) Selection Status"
-  )
-  
-  p2 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, preferred_codons,
-    dims = dims, color_by = "preference", show_only_significant = FALSE,
-    title = "B) ROC Preference"
-  )
-  
-  p3 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, preferred_codons,
-    dims = dims, color_by = "ending", show_only_significant = FALSE,
-    title = "C) AT vs GC Ending"
-  )
-  
-  p4 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, preferred_codons,
-    dims = dims, color_by = "selection", show_only_significant = TRUE,
-    title = "D) Significant Codons Only"
-  )
-  
-  # Combine
-  combined <- plot_grid(p1, p2, p3, p4, ncol = 2, nrow = 2)
-  
-  if (!is.null(output_file)) {
-    ggsave(output_file, combined, width = 20, height = 18)
-    cat(sprintf("\n✓ Panel saved: %s\n", output_file))
-  }
-  
-  return(combined)
-}
-
-
-##' Analyze codon loading patterns in relation to gene groups
-##'
-##' @param ordination_result CA or PCA result
-##' @param codon_test_results Codon test results
-##' @param dims Dimensions to analyze
-##' @param preferred_codons Data frame with Codon and relative_adaptiveness columns (optional)
-##'
-##' @return Data frame with loading analysis
-
-analyze_codon_loading_patterns <- function(ordination_result, 
-                                           codon_test_results,
-                                           dims = c(1, 2),
-                                           preferred_codons = NULL) {
-  
-  cat("\n=== Analyzing Codon Loading Patterns ===\n")
-  
-  # Extract loadings
-  if (inherits(ordination_result, "coa")) {
-    loadings <- as.data.frame(ordination_result$co)
-  } else if (inherits(ordination_result, "PCA")) {
-    # FactoMineR::PCA object
-    loadings <- as.data.frame(ordination_result$var$coord)
+  # Extract codon loadings
+  if (inherits(ordination_result, "PCA")) {
+    loadings <- ordination_result$var$coord[, dim]
+  } else if (inherits(ordination_result, "CA")) {
+    loadings <- ordination_result$col$coord[, dim]
+  } else if ("co" %in% names(ordination_result)) {
+    loadings <- ordination_result$co[, dim]
   } else {
-    loadings <- as.data.frame(ordination_result$rotation)
+    stop("Unsupported ordination result type")
   }
   
-  loadings$Codon <- rownames(loadings)
+  codon_df <- data.frame(
+    Codon = names(loadings),
+    Loading = as.numeric(loadings)
+  )
   
-  # Merge with test results
-  analysis <- loadings %>%
-    left_join(codon_test_results, by = "Codon")
-  
-  # Merge with preferred codons if provided
-  if (!is.null(preferred_codons)) {
-    # Match column names - could be Codon, codon, or Preferred_Codons
-    codon_col <- if ("Preferred_Codons" %in% colnames(preferred_codons)) {
-      "Preferred_Codons"
-    } else if ("Codon" %in% colnames(preferred_codons)) {
-      "Codon"
-    } else if ("codon" %in% colnames(preferred_codons)) {
-      "codon"
-    } else {
-      NULL
-    }
-    
-    if (!is.null(codon_col)) {
-      # Check if relative_adaptiveness exists, if not create it
-      if (!"relative_adaptiveness" %in% colnames(preferred_codons)) {
-        preferred_codons$relative_adaptiveness <- 1
-      }
-      
-      # Create a simple lookup for preferred status
-      pref_lookup <- preferred_codons[[codon_col]]
-      analysis <- analysis %>%
-        dplyr::mutate(
-          Is_Preferred = Codon %in% pref_lookup,
-          relative_adaptiveness = ifelse(Codon %in% pref_lookup, 1, 0)
-        )
-    }
+  # Get preferred codon list
+  if ("Preferred_Codons" %in% names(preferred_codons)) {
+    preferred_list <- preferred_codons$Preferred_Codons
+  } else if ("codon" %in% names(preferred_codons)) {
+    preferred_list <- preferred_codons$codon
+  } else if ("Codon" %in% names(preferred_codons)) {
+    preferred_list <- preferred_codons$Codon
+  } else {
+    preferred_list <- preferred_codons[[1]]
   }
   
-  analysis <- analysis %>%
-    mutate(
-      Loading_Dim1 = .data[[colnames(loadings)[dims[1]]]],
-      Loading_Dim2 = .data[[colnames(loadings)[dims[2]]]],
-      Loading_Magnitude = sqrt(Loading_Dim1^2 + Loading_Dim2^2)
-    )
+  codon_df <- codon_df |>
+    dplyr::mutate(Preference = ifelse(Codon %in% preferred_list, "Preferred", "Non-preferred"))
   
   # Statistical tests
-  cat("\n--- Testing Loading Patterns ---\n")
+  # 1. Wilcoxon test: do preferred and non-preferred codons differ in loading?
+  wtest <- wilcox.test(Loading ~ Preference, data = codon_df)
   
-  # Test 1: Do significant codons have higher loadings?
-  sig_loadings <- analysis$Loading_Magnitude[analysis$Significant]
-  nonsig_loadings <- analysis$Loading_Magnitude[!analysis$Significant]
-  wilcox_test <- wilcox.test(sig_loadings, nonsig_loadings)
+  # 2. Sign test: do preferred codons consistently load in one direction?
+  preferred_loadings <- codon_df$Loading[codon_df$Preference == "Preferred"]
+  n_positive <- sum(preferred_loadings > 0)
+  n_negative <- sum(preferred_loadings < 0)
+  sign_test <- binom.test(n_positive, n_positive + n_negative)
   
-  cat(sprintf("Significant vs non-significant loading magnitude:\n"))
-  cat(sprintf("  Median (sig): %.3f\n", median(sig_loadings, na.rm = TRUE)))
-  cat(sprintf("  Median (non-sig): %.3f\n", median(nonsig_loadings, na.rm = TRUE)))
-  cat(sprintf("  Wilcoxon p-value: %.4f\n\n", wilcox_test$p.value))
+  # Summary statistics
+  summary_stats <- codon_df |>
+    dplyr::group_by(Preference) |>
+    dplyr::summarise(
+      Mean = mean(Loading),
+      Median = median(Loading),
+      SD = sd(Loading),
+      N_positive = sum(Loading > 0),
+      N_negative = sum(Loading < 0),
+      .groups = "drop"
+    )
   
-  # Test 2: Do preferred codons load in positive direction?
-  # Check if relative_adaptiveness column exists
-  if ("relative_adaptiveness" %in% colnames(analysis)) {
-    preferred_codons <- analysis %>% 
-      dplyr::filter(relative_adaptiveness == 1.0, Significant)
-  } else {
-    # Skip this test if column doesn't exist
-    preferred_codons <- data.frame()
+  result <- list(
+    dimension = dim,
+    wilcoxon_test = wtest,
+    sign_test = sign_test,
+    summary = summary_stats,
+    codon_data = codon_df
+  )
+  
+  # Print summary
+  cat(sprintf("\n=== Codon Loading Direction Analysis (Dim %d) ===\n", dim))
+  cat("\nSummary by preference group:\n")
+  print(as.data.frame(summary_stats))
+  cat(sprintf("\nWilcoxon test (preferred vs non-preferred): W = %.2f, p = %.4f\n",
+              wtest$statistic, wtest$p.value))
+  cat(sprintf("Sign test (preferred codons): %d positive, %d negative, p = %.4f\n",
+              n_positive, n_negative, sign_test$p.value))
+  
+  if (sign_test$p.value < 0.05) {
+    direction <- ifelse(n_positive > n_negative, "positive", "negative")
+    cat(sprintf("→ Preferred codons significantly load in the %s direction\n", direction))
   }
   
-  if (nrow(preferred_codons) > 0) {
-    cat(sprintf("Preferred + significant codons (n=%d):\n", nrow(preferred_codons)))
-    cat(sprintf("  Mean Dim1 loading: %.3f\n", 
-                mean(preferred_codons$Loading_Dim1, na.rm = TRUE)))
-    cat(sprintf("  Mean Dim2 loading: %.3f\n", 
-                mean(preferred_codons$Loading_Dim2, na.rm = TRUE)))
-    
-    # Test if mean loading on Dim1 is > 0
-    t_test <- t.test(preferred_codons$Loading_Dim1, mu = 0)
-    cat(sprintf("  t-test (Dim1 > 0): p = %.4f\n\n", t_test$p.value))
-  }
-  
-  # Test 3: AT vs GC ending patterns
-  at_loadings <- analysis %>% dplyr::filter(Ending == "AT", Significant)
-  gc_loadings <- analysis %>% dplyr::filter(Ending == "GC", Significant)
-  
-  if (nrow(at_loadings) > 0 & nrow(gc_loadings) > 0) {
-    cat("AT vs GC ending (significant codons):\n")
-    cat(sprintf("  AT mean Dim1: %.3f (n=%d)\n", 
-                mean(at_loadings$Loading_Dim1), nrow(at_loadings)))
-    cat(sprintf("  GC mean Dim1: %.3f (n=%d)\n", 
-                mean(gc_loadings$Loading_Dim1), nrow(gc_loadings)))
-    
-    wilcox_ending <- wilcox.test(at_loadings$Loading_Dim1, 
-                                  gc_loadings$Loading_Dim1)
-    cat(sprintf("  Wilcoxon p-value: %.4f\n", wilcox_ending$p.value))
-  }
-  
-  return(analysis)
+  return(result)
 }
