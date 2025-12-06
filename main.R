@@ -1489,6 +1489,15 @@ selection_coeff <- getSelectionCoefficients(genome = genome,
                                             parameter = parameter_object, 
                                             samples = 1000)
 
+# Get total inefficiency per gene
+
+selection_coeff_total <- selection_coeff |> rowSums()
+
+# Scale using expression to get total selective pressure
+# A gene with ~ 0 expression even if inefficient, is invisible for selection
+
+selection_pressure_total <- 
+
 # Translating back to s
 
 s_coeff <- exp(selection_coeff)
