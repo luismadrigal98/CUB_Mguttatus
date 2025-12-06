@@ -32,7 +32,7 @@ Output:
     - Frequency distributions for visualization
     - Raw data for additional statistical tests
 
-Author: Luis Javier Madrigal-Roca
+Author: Luis Javier Madrigal-Roca & John K. Kelly
 Date: 2025-12-05
 """
 

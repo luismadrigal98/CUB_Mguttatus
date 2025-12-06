@@ -29,7 +29,7 @@ Input:
     - <chrom>.genic_bases.annotated.txt (with Strand column)
     - preferred_codons.txt
 
-Author: Luis Javier Madrigal-Roca & GitHub Copilot
+Author: Luis Javier Madrigal-Roca & John K. Kelly
 Date: 2025-12-05
 """
 
