@@ -231,14 +231,14 @@ create_enhanced_biplot <- function(ordination_result,
 ##' @param ordination_result CA or PCA result
 ##' @param gene_data Gene data with expression groups
 ##' @param codon_test_results Codon test results
-##' @param w_table CAI weights
+##' @param preferred_codons Data frame with Preferred_Codons column (from ROC model)
 ##' @param dims Dimensions to plot
 ##' @param output_file Path to save
 ##'
 ##' @return Combined plot object
 
 create_biplot_panel <- function(ordination_result, gene_data, 
-                                codon_test_results, w_table,
+                                codon_test_results, preferred_codons,
                                 dims = c(1, 2), output_file = NULL) {
   
   require(cowplot)
@@ -247,25 +247,25 @@ create_biplot_panel <- function(ordination_result, gene_data,
   
   # Create plots with different color schemes
   p1 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, w_table,
+    ordination_result, gene_data, codon_test_results, preferred_codons,
     dims = dims, color_by = "selection", show_only_significant = FALSE,
     title = "A) Selection Status"
   )
   
   p2 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, w_table,
+    ordination_result, gene_data, codon_test_results, preferred_codons,
     dims = dims, color_by = "preference", show_only_significant = FALSE,
-    title = "B) CAI Preference (w=1)"
+    title = "B) ROC Preference"
   )
   
   p3 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, w_table,
+    ordination_result, gene_data, codon_test_results, preferred_codons,
     dims = dims, color_by = "ending", show_only_significant = FALSE,
     title = "C) AT vs GC Ending"
   )
   
   p4 <- create_enhanced_biplot(
-    ordination_result, gene_data, codon_test_results, w_table,
+    ordination_result, gene_data, codon_test_results, preferred_codons,
     dims = dims, color_by = "selection", show_only_significant = TRUE,
     title = "D) Significant Codons Only"
   )
@@ -316,11 +316,31 @@ analyze_codon_loading_patterns <- function(ordination_result,
   
   # Merge with preferred codons if provided
   if (!is.null(preferred_codons)) {
-    # Match column names - could be Codon or codon
-    codon_col <- if("Codon" %in% colnames(preferred_codons)) "Codon" else "codon"
-    analysis <- analysis %>%
-      left_join(preferred_codons %>% dplyr::select(!!sym(codon_col), relative_adaptiveness),
-                by = c("Codon" = codon_col))
+    # Match column names - could be Codon, codon, or Preferred_Codons
+    codon_col <- if ("Preferred_Codons" %in% colnames(preferred_codons)) {
+      "Preferred_Codons"
+    } else if ("Codon" %in% colnames(preferred_codons)) {
+      "Codon"
+    } else if ("codon" %in% colnames(preferred_codons)) {
+      "codon"
+    } else {
+      NULL
+    }
+    
+    if (!is.null(codon_col)) {
+      # Check if relative_adaptiveness exists, if not create it
+      if (!"relative_adaptiveness" %in% colnames(preferred_codons)) {
+        preferred_codons$relative_adaptiveness <- 1
+      }
+      
+      # Create a simple lookup for preferred status
+      pref_lookup <- preferred_codons[[codon_col]]
+      analysis <- analysis %>%
+        dplyr::mutate(
+          Is_Preferred = Codon %in% pref_lookup,
+          relative_adaptiveness = ifelse(Codon %in% pref_lookup, 1, 0)
+        )
+    }
   }
   
   analysis <- analysis %>%

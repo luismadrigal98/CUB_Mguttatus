@@ -27,7 +27,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'AnaCoDa', 'rtracklayer', 'tidyverse',
                         'txdbmaker', 'Rsamtools', 'purrr',
                         'abind', 'scales', 'mclust', 'coda',
-                        'admisc', 'corrr', 'patchwork', 'gprofiler2')
+                        'admisc', 'corrr', 'patchwork', 'gprofiler2',
+                        'ggnewscale')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -1471,6 +1472,16 @@ write.table(x = preferred_codons$Codon,
             file = './results/preferred_codons.txt', 
             quote = F, row.names = F, col.names = F)
 
+# Create unified preferred_codons_roc object for downstream analyses (CA/PCA biplots)
+# This format is compatible with create_enhanced_biplot() function
+preferred_codons_roc <- preferred_codons |>
+  dplyr::rename(Preferred_Codons = Codon,
+                Amino_Acid = AA,
+                Family = aa) |>
+  dplyr::mutate(Source = "ROC_SEMPPR")
+
+cat(sprintf("✓ Preferred codons from ROC model: %d amino acids\n", nrow(preferred_codons_roc)))
+
 # 8.3) Extracting selection estimates from the best chain (dM-fixed-with_phi) ----
 
 genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa',
@@ -1478,6 +1489,65 @@ genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscri
                                  observed.expression.file = 'data/observed_expression_multitissue.csv') 
 
 parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/R_objects/parameter.Rda")
+
+# Visualizing cost per codons and confidence intervals
+
+eta_data <- read.csv(file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv",
+                     header = T)
+
+plot_data <- eta_data |>
+  dplyr::mutate(
+    # Check if 0 is inside the credible interval
+    is_significant = (X2.5. > 0) | (X97.5. < 0),
+    
+    # Identify the Reference (Mean is exactly 0)
+    is_reference = (Mean == 0),
+    
+    # Create a clean category factor for coloring
+    Status = case_when(
+      is_reference ~ "Reference (Fixed)",
+      is_significant ~ "Significant Deviation",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+p <- ggplot(plot_data, aes(x = Codon, y = Mean, color = Status)) +
+  
+  # A. The Reference Line (The Baseline)
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", linewidth = 0.5) +
+  
+  # B. The Estimates with Error Bars
+  # geom_pointrange is perfect for Mean + Credible Intervals
+  geom_pointrange(aes(ymin = X2.5., ymax = X97.5.), size = 0.3) +
+  
+  # C. Organization: Facet by Amino Acid
+  # 'scales = "free_x"' ensures you only see relevant codons per AA panel
+  facet_wrap(~AA, scales = "free", ncol = 6) +
+  
+  # D. Custom Colors to highlight the story
+  scale_color_manual(values = c(
+    "Significant Deviation" = "#E41A1C", # Red for strong signal
+    "Not Significant" = "gray70",        # Faint gray for noise
+    "Reference (Fixed)" = "black"        # Black anchor for the reference
+  )) +
+  
+  # E. Aesthetics
+  labs(
+    title = "Codon Selection Inefficiency Estimates",
+    y = "Selection Coefficient (Mean ± 95% CI)",
+    x = NULL # Codon labels are self-explanatory
+  ) +
+  theme_custom() +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+    strip.background = element_rect(fill = "#f0f0f0"), # Light gray headers for AA
+    strip.text = element_text(face = "bold")
+  )
+
+ggsave(file = "./results/Codon_Selection_Inefficiency_Estimates.pdf",
+       plot = p, width = 12, 
+       height = 10)
 
 # Get selection coefficients which extracted as log(s)
 
@@ -1636,15 +1706,33 @@ subset_strongly_shaped_by_s <- selection_coeff_total |>
   dplyr::slice(1:10) |>
   dplyr::pull(Gene_name)
 
-## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
+detailed_annotation <- read.delim(
+  "data/Mguttatusvar_IM767_887_v2.1.annotation_info.txt",
+  header = TRUE,
+  sep = "\t",
+  comment.char = "",  # Don't treat # as comment
+  quote = "",         # No quote characters (deflines may have quotes)
+  fill = TRUE,        # Handle rows with varying numbers of fields
+  na.strings = ""     # Treat empty strings as NA
+) |>
+  dplyr::select(locusName, Best.hit.arabi.name, Best.hit.arabi.defline) |>
+  dplyr::filter(locusName %in% subset_strongly_shaped_by_s)
+
+# Export information about top 10 genes
+
+write.csv(x = detailed_annotation, 
+          file = "./results/Top10_genes_strong_selection_load.csv", 
+          quote = T, row.names = F)
+
+## 9) Comparing preferred codon of Mimulus guttatus to other plants ----
 
 # Use w_table from CAI analysis (already calculated preferred codons)
 cat("Using optimal codons from corrected reference set...\n")
 
 # Get preferred codons (those with relative_adaptiveness == 1.0)
-preferred_codons_comparative <- preferred_codons_mg |>
+preferred_codons_comparative <- preferred_codons |>
   dplyr::mutate(Codon_RNA = gsub("T", "U", Codon)) |>
-  dplyr::select(Amino_Acid = AA, Codon_RNA, relative_adaptiveness)
+  dplyr::select(Amino_Acid = AA, aa, Codon_RNA)
 
 # Collapse amino acids with six codons back into six, based on relative adaptiveness
 
@@ -1654,6 +1742,9 @@ preferred_codons_comparative <- preferred_codons_comparative |>
                                  {
                                    unlist(strsplit(x, "_"))[1]
                                  }))
+
+preferred_codons_comparative <- preferred_codons_comparative |>
+  left_join(eta_data |> dplyr::select(AA, Mean) |> dplyr::rename(aa = AA, eta = Mean))
 
 merge_2_and_4_to_6_fold <- function(preference_df, AA_family_col)
 {
@@ -1672,11 +1763,11 @@ merge_2_and_4_to_6_fold <- function(preference_df, AA_family_col)
   condensed_preferences <- preference_df |>
     dplyr::group_by(!!sym(AA_family_col)) |>
     dplyr::arrange(!!sym(AA_family_col), 
-                   dplyr::desc(relative_adaptiveness)) |>
+                   eta) |>
     dplyr::slice(1) |>
     dplyr::ungroup() |>
     dplyr::select(Amino_Acid = !!sym(AA_family_col), 
-                  Codon_RNA, relative_adaptiveness)
+                  Codon_RNA, eta)
   
   return(condensed_preferences)
 }
@@ -1710,7 +1801,7 @@ cat("Extended comparison table saved: ./results/plant_preferred_codons_compariso
 
 # Print summary
 cat("=== M. guttatus Preferred Codons ===\n")
-print(preferred_codons_mg |> dplyr::select(Amino_Acid, Codon = Codon_RNA, Weight = relative_adaptiveness))
+print(preferred_codons_mg |> dplyr::select(Amino_Acid, Codon = Codon_RNA, Weight = eta))
 
 # Calculate codon preference similarity between species
 cat("\n\n=== Cross-Species Codon Preference Analysis ===\n\n")
@@ -1813,7 +1904,7 @@ p_heatmap <- ggplot(codon_long, aes(x = Species, y = Codon, fill = factor(Prefer
   labs(title = "Preferred Codon Usage Across Plant Species",
        subtitle = "Based on highest expression genes",
        x = "", y = "Codon", fill = "") +
-  theme_custom(base_size = 11) +
+  theme_custom() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
         strip.text.y = element_text(angle = 0, hjust = 0),
         panel.spacing = unit(0.3, "lines"),
@@ -1956,7 +2047,7 @@ p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon
   labs(title = "Preferred Codon Usage Across Plant Species",
        subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
        x = "", y = "") +
-  theme_custom(base_size = 12) +
+  theme_custom() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
         axis.text.y = element_text(size = 10),
         strip.text.y = element_text(angle = 0, hjust = 0, face = "bold", size = 11),
@@ -2124,31 +2215,32 @@ gene_data_ca <- codon_usage_CA_coord_extremes |>
   dplyr::select(Gene_name, expression_group = Expression_Group)
 
 # Create enhanced biplots with different color schemes
+# Using preferred codons from ROC model (AnaCoDa)
 cat("\n1. Creating CA biplot colored by selection status...\n")
 p_ca_selection <- create_enhanced_biplot(
   ordination_result = ca_for_biplot,
   gene_data = gene_data_ca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "selection",
   show_only_significant = FALSE,
   arrow_scale = 1.0,
-  title = "CA Biplot: Codon Selection Status",
+  title = "CA Biplot: Codon Selection Status (ROC)",
   output_file = "./results/CA_enhanced_biplot_selection.pdf"
 )
 
-cat("\n2. Creating CA biplot colored by preference (w=1)...\n")
+cat("\n2. Creating CA biplot colored by ROC preference...\n")
 p_ca_preference <- create_enhanced_biplot(
   ordination_result = ca_for_biplot,
   gene_data = gene_data_ca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "preference",
   show_only_significant = FALSE,
   arrow_scale = 1.0,
-  title = "CA Biplot: CAI Preferred Codons (w=1)",
+  title = "CA Biplot: ROC Preferred Codons",
   output_file = "./results/CA_enhanced_biplot_preference.pdf"
 )
 
@@ -2157,7 +2249,7 @@ p_ca_ending <- create_enhanced_biplot(
   ordination_result = ca_for_biplot,
   gene_data = gene_data_ca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "ending",
   show_only_significant = FALSE,
@@ -2171,12 +2263,12 @@ p_ca_combined <- create_enhanced_biplot(
   ordination_result = ca_for_biplot,
   gene_data = gene_data_ca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "combined",
   show_only_significant = FALSE,
   arrow_scale = 1.0,
-  title = "CA Biplot: Combined Codon Classification",
+  title = "CA Biplot: Combined Codon Classification (ROC)",
   output_file = "./results/CA_enhanced_biplot_combined.pdf"
 )
 
@@ -2185,12 +2277,12 @@ p_ca_significant <- create_enhanced_biplot(
   ordination_result = ca_for_biplot,
   gene_data = gene_data_ca,
   codon_test_results = codon_test_results,
-  preferred_codons = preferences_updated_glm,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 3),
   color_by = "combined",
   show_only_significant = TRUE,
   arrow_scale = 1.0,
-  title = "CA Biplot: Significant Codons Only",
+  title = "CA Biplot: Significant Codons Only (ROC)",
   output_file = "./results/CA_enhanced_biplot_significant_only.pdf"
 )
 
@@ -2200,7 +2292,7 @@ ca_loading_analysis <- analyze_codon_loading_patterns(
   ordination_result = ca_for_biplot,
   codon_test_results = codon_test_results,
   dims = c(1, 2),
-  preferred_codons = enriched_codons
+  preferred_codons = preferred_codons_roc
 )
 
 write.csv(ca_loading_analysis, 
@@ -2321,31 +2413,32 @@ gene_data_pca <- rscu_PCA_coord_extremes |>
   dplyr::select(Gene_name, expression_group = Expression_Group)
 
 # Create enhanced PCA biplots with different color schemes
+# Using preferred codons from ROC model (AnaCoDa)
 cat("\n1. Creating PCA biplot colored by selection status...\n")
 p_pca_selection <- create_enhanced_biplot(
   ordination_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "selection",
   show_only_significant = FALSE,
   arrow_scale = 1.5,
-  title = "PCA Biplot: Codon Selection Status",
+  title = "PCA Biplot: Codon Selection Status (ROC)",
   output_file = "./results/PCA_enhanced_biplot_selection.pdf"
 )
 
-cat("\n2. Creating PCA biplot colored by preference (w=1)...\n")
+cat("\n2. Creating PCA biplot colored by ROC preference...\n")
 p_pca_preference <- create_enhanced_biplot(
   ordination_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "preference",
   show_only_significant = FALSE,
   arrow_scale = 1.5,
-  title = "PCA Biplot: CAI Preferred Codons (w=1)",
+  title = "PCA Biplot: ROC Preferred Codons",
   output_file = "./results/PCA_enhanced_biplot_preference.pdf"
 )
 
@@ -2354,7 +2447,7 @@ p_pca_ending <- create_enhanced_biplot(
   ordination_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "ending",
   show_only_significant = FALSE,
@@ -2368,12 +2461,12 @@ p_pca_combined <- create_enhanced_biplot(
   ordination_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "combined",
   show_only_significant = FALSE,
   arrow_scale = 1.5,
-  title = "PCA Biplot: Combined Codon Classification",
+  title = "PCA Biplot: Combined Codon Classification (ROC)",
   output_file = "./results/PCA_enhanced_biplot_combined.pdf"
 )
 
@@ -2382,12 +2475,12 @@ p_pca_significant <- create_enhanced_biplot(
   ordination_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   color_by = "combined",
   show_only_significant = TRUE,
   arrow_scale = 1.5,
-  title = "PCA Biplot: Significant Codons Only",
+  title = "PCA Biplot: Significant Codons Only (ROC)",
   output_file = "./results/PCA_enhanced_biplot_significant_only.pdf"
 )
 
@@ -2397,7 +2490,7 @@ pca_loading_analysis <- analyze_codon_loading_patterns(
   ordination_result = rscu_PCA,
   codon_test_results = codon_test_results,
   dims = c(1, 2),
-  preferred_codons = enriched_codons
+  preferred_codons = preferred_codons_roc
 )
 
 write.csv(pca_loading_analysis, 
@@ -2414,7 +2507,7 @@ create_biplot_panel(
   ordination_result = ca_for_biplot,
   gene_data = gene_data_ca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   output_file = "./results/CA_biplot_panel_4plots.pdf"
 )
@@ -2424,7 +2517,7 @@ create_biplot_panel(
   ordination_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  w_table = w_table,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   output_file = "./results/PCA_biplot_panel_4plots.pdf"
 )
@@ -2447,9 +2540,201 @@ for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
               ifelse(wtest$p.value < 0.05, "***", "")))
 }
 
-# 8.3) 3D visuals for PCA results ----
+# =============================================================================
+# 8.4) Selection Load (S_coeff) Based Grouping - CA/PCA Analysis ----
+# =============================================================================
+# Repeat the analysis using selection load groups instead of expression groups
+# This tests whether genes under strong vs weak selection show different codon usage
 
-cat("\n=== 8.3: Creating 3D PCA Visualizations ===\n")
+cat("\n")
+cat("## *****************************************************************************\n")
+cat("## 8.4) CA/PCA Analysis by Selection Load (S_coeff) Groups\n")
+cat("## *****************************************************************************\n")
+cat("\n")
+
+# Create selection load groups based on S_coeff from AnaCoDa analysis
+# Use selection_coeff_total which has S_coeff per gene
+
+# Check if selection_coeff_total exists
+if (exists("selection_coeff_total") && "S_coeff" %in% names(selection_coeff_total)) {
+  
+  cat("Creating selection load groups based on S_coeff...\n")
+  
+  # Calculate percentiles for S_coeff grouping
+  s_quantiles <- quantile(selection_coeff_total$S_coeff, 
+                          probs = c(0.05, 0.95), na.rm = TRUE)
+  
+  # Create S_Group variable
+  selection_groups <- selection_coeff_total |>
+    dplyr::mutate(
+      S_Group = dplyr::case_when(
+        S_coeff >= s_quantiles[2] ~ "High Selection (Top 5%)",
+        S_coeff <= s_quantiles[1] ~ "Low Selection (Bottom 5%)",
+        TRUE ~ "Intermediate Selection"
+      )
+    ) |>
+    dplyr::select(Gene_name, S_coeff, S_Group)
+  
+  # Count genes per group
+  cat("\nSelection Load Group Distribution:\n")
+  print(table(selection_groups$S_Group))
+  cat(sprintf("\nS_coeff thresholds: Bottom 5%% <= %.2f, Top 5%% >= %.2f\n",
+              s_quantiles[1], s_quantiles[2]))
+  
+  # Add S_Group to CA coordinate data
+  codon_usage_CA_coord_S <- codon_usage_CA_coord |>
+    dplyr::left_join(selection_groups, by = "Gene_name") |>
+    dplyr::filter(!is.na(S_Group))
+  
+  # Create extremes dataset (only high and low selection)
+  codon_usage_CA_coord_S_extremes <- codon_usage_CA_coord_S |>
+    dplyr::filter(S_Group %in% c("High Selection (Top 5%)", "Low Selection (Bottom 5%)")) |>
+    dplyr::mutate(S_Group = as.character(S_Group))
+  
+  cat(sprintf("Genes with S_coeff data for CA: %d (extremes: %d)\n", 
+              nrow(codon_usage_CA_coord_S), nrow(codon_usage_CA_coord_S_extremes)))
+  
+  # Define colors for S_Group
+  colors_selection <- c(
+    "High Selection (Top 5%)" = "#E41A1C",
+    "Low Selection (Bottom 5%)" = "#377EB8",
+    "Intermediate Selection" = "#CCCCCC"
+  )
+  
+  colors_selection_extremes <- c(
+    "High Selection (Top 5%)" = "#E41A1C",
+    "Low Selection (Bottom 5%)" = "#377EB8"
+  )
+  
+  # --- CA Analysis by Selection Load ---
+  cat("\n--- CA Analysis: Selection Load Groups ---\n")
+  
+  # Bivariate ellipse plot - Selection extremes (CA Dim 1 vs Dim 2)
+  plot_multivariate_analysis(codon_usage_CA_coord_S_extremes,
+                             dims = c("Dim.1", "Dim.2"),
+                             group_var = "S_Group",
+                             analysis_type = "CA",
+                             plot_type = "bivariate_ellipse",
+                             confidence_level = 0.95,
+                             colors = colors_selection_extremes,
+                             output_file = "./results/CA_selection_groups_D1_D2.pdf")
+  
+  # Prepare gene data for enhanced biplots
+  gene_data_ca_S <- codon_usage_CA_coord_S_extremes |>
+    dplyr::select(Gene_name, expression_group = S_Group)
+  
+  # Create enhanced biplot colored by selection status
+  cat("\nCreating CA biplot with selection load grouping...\n")
+  p_ca_S_combined <- create_enhanced_biplot(
+    ordination_result = ca_for_biplot,
+    gene_data = gene_data_ca_S,
+    codon_test_results = codon_test_results,
+    preferred_codons = preferred_codons_roc,
+    dims = c(1, 2),
+    color_by = "combined",
+    show_only_significant = FALSE,
+    arrow_scale = 1.0,
+    title = "CA Biplot: By Selection Load (S_coeff)",
+    output_file = "./results/CA_enhanced_biplot_by_S_coeff.pdf"
+  )
+  
+  # Statistical test for CA dimension separation by selection load
+  cat("\n=== Univariate Tests for CA Dimensions by Selection Load ===\n")
+  for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
+    wtest <- wilcox.test(as.formula(paste(dim, "~ S_Group")), 
+                         data = codon_usage_CA_coord_S_extremes)
+    cat(sprintf("%s: W = %.2f, p-value = %.4f %s\n", 
+                dim, wtest$statistic, wtest$p.value,
+                ifelse(wtest$p.value < 0.05, "***", "")))
+  }
+  
+  # --- PCA Analysis by Selection Load ---
+  cat("\n--- PCA Analysis: Selection Load Groups ---\n")
+  
+  # Add S_Group to PCA coordinate data
+  rscu_PCA_coord_S <- rscu_PCA_coord |>
+    dplyr::left_join(selection_groups, by = "Gene_name") |>
+    dplyr::filter(!is.na(S_Group))
+  
+  # Create extremes dataset
+  rscu_PCA_coord_S_extremes <- rscu_PCA_coord_S |>
+    dplyr::filter(S_Group %in% c("High Selection (Top 5%)", "Low Selection (Bottom 5%)")) |>
+    dplyr::mutate(S_Group = as.character(S_Group))
+  
+  cat(sprintf("Genes with S_coeff data for PCA: %d (extremes: %d)\n", 
+              nrow(rscu_PCA_coord_S), nrow(rscu_PCA_coord_S_extremes)))
+  
+  # Bivariate ellipse plot - Selection extremes (PC1 vs PC2)
+  plot_multivariate_analysis(rscu_PCA_coord_S_extremes,
+                             dims = c("Dim.1", "Dim.2"),
+                             group_var = "S_Group",
+                             analysis_type = "PCA",
+                             plot_type = "bivariate_ellipse",
+                             confidence_level = 0.95,
+                             colors = colors_selection_extremes,
+                             output_file = "./results/PCA_selection_groups_PC1_PC2.pdf")
+  
+  # Prepare gene data for enhanced biplots
+  gene_data_pca_S <- rscu_PCA_coord_S_extremes |>
+    dplyr::select(Gene_name, expression_group = S_Group)
+  
+  # Create enhanced biplot colored by selection status
+  cat("\nCreating PCA biplot with selection load grouping...\n")
+  p_pca_S_combined <- create_enhanced_biplot(
+    ordination_result = rscu_PCA,
+    gene_data = gene_data_pca_S,
+    codon_test_results = codon_test_results,
+    preferred_codons = preferred_codons_roc,
+    dims = c(1, 2),
+    color_by = "combined",
+    show_only_significant = FALSE,
+    arrow_scale = 1.5,
+    title = "PCA Biplot: By Selection Load (S_coeff)",
+    output_file = "./results/PCA_enhanced_biplot_by_S_coeff.pdf"
+  )
+  
+  # Statistical test for PCA dimension separation by selection load
+  cat("\n=== Univariate Tests for PCA Dimensions by Selection Load ===\n")
+  for (dim in c("Dim.1", "Dim.2", "Dim.3")) {
+    wtest <- wilcox.test(as.formula(paste(dim, "~ S_Group")), 
+                         data = rscu_PCA_coord_S_extremes)
+    cat(sprintf("%s: W = %.2f, p-value = %.4f %s\n", 
+                dim, wtest$statistic, wtest$p.value,
+                ifelse(wtest$p.value < 0.05, "***", "")))
+  }
+  
+  # Create 4-panel comparison for publication
+  cat("\n7. Creating combined biplot panels by selection load...\n")
+  
+  create_biplot_panel(
+    ordination_result = ca_for_biplot,
+    gene_data = gene_data_ca_S,
+    codon_test_results = codon_test_results,
+    preferred_codons = preferred_codons_roc,
+    dims = c(1, 2),
+    output_file = "./results/CA_biplot_panel_by_S_coeff.pdf"
+  )
+  
+  create_biplot_panel(
+    ordination_result = rscu_PCA,
+    gene_data = gene_data_pca_S,
+    codon_test_results = codon_test_results,
+    preferred_codons = preferred_codons_roc,
+    dims = c(1, 2),
+    output_file = "./results/PCA_biplot_panel_by_S_coeff.pdf"
+  )
+  
+  cat("\n✓ Selection load-based CA/PCA analysis complete!\n")
+  cat("  Outputs saved with '_by_S_coeff' suffix\n\n")
+  
+} else {
+  cat("\n⚠ selection_coeff_total not found - skipping S_coeff-based analysis\n")
+  cat("  Run AnaCoDa analysis first to generate selection coefficients\n\n")
+}
+
+# 8.5) 3D visuals for PCA results ----
+
+cat("\n=== 8.5: Creating 3D PCA Visualizations ===\n")
 
 source("./src/create_3d_pca_video.R")
 
@@ -2457,21 +2742,24 @@ source("./src/create_3d_pca_video.R")
 
 cat("\n8.3.1: Creating interactive 3D PCA plot...\n")
 
-preferences_updated_glm <- preferences_updated_glm |>
-  dplyr::mutate(Codon = Preferred_Codons) |>
-  dplyr::mutate(relative_adaptiveness = 1)
+# Ensure preferred_codons_roc has the required columns for 3D functions
+preferred_codons_roc <- preferred_codons_roc |>
+  dplyr::mutate(
+    Codon = Preferred_Codons,
+    relative_adaptiveness = 1
+  )
 
 # Create interactive 3D plot (HTML)
 pca_3d_interactive <- create_3d_pca_plot(
   pca_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  preferred_codons = preferences_updated_glm,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2, 3),
   color_by = "expression",
   show_loadings = TRUE,
   loading_scale = 5.0,
-  title = "3D PCA: RSCU Analysis with Codon Loadings"
+  title = "3D PCA: RSCU Analysis with Codon Loadings (ROC)"
 )
 
 # Save interactive plot
@@ -2491,12 +2779,12 @@ pca_3d_animation <- create_3d_pca_animation(
   pca_result = rscu_PCA,
   gene_data = gene_data_pca,
   codon_test_results = codon_test_results,
-  preferred_codons = enriched_codons,
+  preferred_codons = preferred_codons_roc,
   dims = c(1, 2, 3),
   color_by = "expression",
   show_loadings = TRUE,
   loading_scale = 5.0,
-  title = "3D PCA Animation - RSCU Analysis",
+  title = "3D PCA Animation - RSCU Analysis (ROC)",
   output_file = "./results/PCA_3D_animation.html",
   n_frames = 360,
   frame_duration = 50
@@ -2512,7 +2800,7 @@ if (requireNamespace("magick", quietly = TRUE)) {
     pca_result = rscu_PCA,
     gene_data = gene_data_pca,
     codon_test_results = codon_test_results,
-    preferred_codons = enriched_codons,
+    preferred_codons = preferred_codons_roc,
     dims = c(1, 2, 3),
     color_by = "expression",
     show_loadings = TRUE,
