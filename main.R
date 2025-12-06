@@ -2657,38 +2657,6 @@ pi_data <- pi_data |>
 
 # Analyzing the diversity of synonymous sites 
 
-integrated_data <- integrated_data |>
-  left_join(y = pi_data, by = "Gene_name")
-
-ggplot(integrated_data, aes(x = Expression_Group,
-                            y = Pi_mean_4fold)) +
-  geom_boxplot() +
-  theme_custom()
-
-kruskal.test(Pi_mean_4fold ~ Expression_Group, data = integrated_data)
-
-# Dunn test
-
-dunn_result_cdc <- dunn.test::dunn.test(
-  x = integrated_data$Pi_mean_4fold,
-  g = integrated_data$Expression_Group,
-  method = "bh",
-  kw = TRUE,
-  label = TRUE,
-  wrap = FALSE,
-  table = TRUE,
-  list = FALSE,
-  altp = TRUE
-)
-
-library(ggplot2)
-
-# Ensure 'Expression_Group' is a factor with the correct order
-integrated_data$Expression_Group <- factor(
-  integrated_data$Expression_Group, 
-  levels = c("Bottom 5%", "Middle 90%", "Top 5%")
-)
-
 detrending_pi_4fold <- residuals(gam(Pi_mean_4fold ~ s(GC3) + s(CDS_length_nt),
                                      data = integrated_data,
                                      na.action = na.exclude))
@@ -2733,10 +2701,9 @@ p_pi_mean_ci <- ggplot(integrated_data, aes(x = Expression_Group,
   theme_custom() + # Use your custom theme
   theme(legend.position = "none") # Hide the fill legend
 
-print(p_pi_mean_ci)
-
 # Save the plot
-ggsave("./results/pi_4fold_by_expression_mean_ci.pdf", p_pi_mean_ci, width = 8, height = 6)
+ggsave("./results/pi_4fold_by_expression_mean_ci.pdf", p_pi_mean_ci, 
+       width = 8, height = 6)
 
 # Exploring the relationship between diversity (4-fold) and ENC
 
@@ -2771,7 +2738,7 @@ overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)
 
 int_variables <- integrated_data |>
   dplyr::select("CDC", "CDC_detrended", "Pi_mean_0fold", "Pi_mean_2fold", "Pi_mean_3fold",
-                "Pi_mean_4fold", "Pi_mean_all", "p_adj", "ENC") |>
+                "Pi_mean_4fold", "Pi_mean_all", "ENC") |>
   as.matrix()
 
 int_cor <- corrr::correlate(x = int_variables)
@@ -2795,9 +2762,12 @@ ggplot(integrated_data, aes(x = High_exp_log2, y = TajimaD_all)) +
        x = "log2(Expression)") +
   ylim(c(0.25, -0.25))
 
+ggsave("./results/tajimaD_vs_expression.pdf",
+       width = 8, height = 6)
+
 # 10.2) TajimaD vs CDC ----
 
-model_cdc_tajima <- gam(TajimaD_Overall ~ CDC + s(CDS_length_nt) + s(GC3s),
+model_cdc_tajima <- gam(TajimaD_all ~ CDC + s(CDS_length_nt) + s(GC3s),
                         data = integrated_data)
 
 summary(model_cdc_tajima)
@@ -2866,7 +2836,7 @@ ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
   scale_color_viridis_c(name = "GC3s") +
   
   # Make it look clean
-  theme_custom(base_size = 14) +
+  theme_custom() +
   labs(
     title = "Nucleotide Diversity (π) vs. Gene Expression",
     subtitle = "Apparent positive trend (red) is a confound of GC3s (color)",
@@ -2874,6 +2844,9 @@ ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
     y = "π at 4-fold Synonymous Sites",
     caption = "Each point is one gene."
   )
+
+ggsave("./results/pi_vs_expression_with_GC3s.pdf",
+       width = 8, height = 6)
 
 # We'll create 5 quantile groups (quintiles) for GC3s
 integrated_data <- integrated_data |>
@@ -2905,61 +2878,3 @@ ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
     y = "π at 4-fold Synonymous Sites"
   )
 
-# 10.4) Loading the site specific data ----
-
-sfp_data <- fread("data/all_chromosomes.site_freq_by_preference.txt")
-
-# 10.5) Loading the codon specific data ----
-
-csf_data <- fread("data/all_chromosomes.codon_frequencies_preferred.txt")
-csf_data <- csf_data |>
-  dplyr::mutate(Gene_name = paste0("MgIM767.", Gene))
-
-# 10.5.1) F_preferred vs Expression ----
-
-all_codon_data <- integrated_data |>
-  left_join(csf_data, by = "Gene_name") |>
-  na.omit()
-
-# Standardizing the gene position from 0 to 1 per gene
-
-all_codon_data <- all_codon_data |>
-  dplyr::group_by(Gene_name) |>
-  dplyr::mutate(
-    Codon_Pos_Rel = Codon_Pos / max(Codon_Pos)
-  ) |>
-  dplyr::ungroup()
-
-n <- nrow(all_codon_data)
-all_codon_data$Preferred_Freq_beta <- (all_codon_data$Preferred_Freq * (n - 1) + 0.5) / n
-
-model_selection <- gam(
-  Preferred_Freq_beta ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
-  family = betar(link = "logit"),
-  data = all_codon_data
-)
-
-summary(model_selection)
-
-# 10.5.2) 5' towards 3' idea ----
-
-model_position <- gam(
-  Preferred_Freq_beta ~ s(Codon_Pos, k = 20),
-  family = betar(link = "logit"),
-  data = all_codon_data
-)
-
-summary(model_position)
-
-p_pos_trend <- ggplot(all_codon_data, aes(x = Codon_Pos_Rel, y = Preferred_Freq)) +
-  # geom_smooth() will draw the average trend line
-  geom_smooth(method = "lm", color = "red", se = FALSE) + 
-  geom_pointdensity() +
-  labs(
-    title = "Frequence of preferred codons vs position",
-    y = "Preferred freq",
-    x = "Codon position (relative)"
-  ) +
-  theme_bw()
-
-ggsave(filename = "results/FPvsPosition.pdf", plot = p_pos_trend)
