@@ -27,7 +27,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'AnaCoDa', 'rtracklayer', 'tidyverse',
                         'txdbmaker', 'Rsamtools', 'purrr',
                         'abind', 'scales', 'mclust', 'coda',
-                        'admisc')
+                        'admisc', 'corrr', 'patchwork', 'gprofiler2')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -377,7 +377,7 @@ integrated_data$predicted_CDC <- predict(CDC_vs_exp, type = "response")
 ggplot(integrated_data, aes(x = predicted_CDC, y = CDC)) +
   geom_point(alpha = 0.2) +
   geom_abline(slope = 1, intercept = 0, color = "red") +
-  theme_minimal() +
+  theme_custom() +
   labs(title = "Quasibinomial GLM: Observed vs Predicted",
        x = "Predicted CDC",
        y = "Observed CDC")
@@ -1479,10 +1479,6 @@ genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscri
 
 parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/R_objects/parameter.Rda")
 
-selection_coeff <- getSelectionCoefficients(genome = genome, 
-                                            parameter = parameter_object, 
-                                            samples = 1000)
-  
 # Get selection coefficients which extracted as log(s)
 
 selection_coeff <- getSelectionCoefficients(genome = genome, 
@@ -1493,14 +1489,152 @@ selection_coeff <- getSelectionCoefficients(genome = genome,
 
 selection_coeff_total <- selection_coeff |> rowSums()
 
-# Scale using expression to get total selective pressure
-# A gene with ~ 0 expression even if inefficient, is invisible for selection
+phi <- read.csv(file = './results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/gene_expression.txt') |>
+  dplyr::select(GeneID, Mean) |>
+  dplyr::rename(Gene_name = GeneID,
+                Mean_phi = Mean)
 
-selection_pressure_total <- 
+selection_coeff_total <- data.frame(Gene_name = names(selection_coeff_total),
+                                    Total_inefficiency = selection_coeff_total) |>
+  as.data.table()
 
-# Translating back to s
+selection_coeff_total <- selection_coeff_total |>
+  left_join(phi, 
+            by = "Gene_name")
 
-s_coeff <- exp(selection_coeff)
+# Getting the geometric mean to match AnaCoDa processing
+
+selection_coeff_total <- selection_coeff_total |>
+  # Recalculate S_coeff with the normalized Phi
+  dplyr::mutate(S_coeff = abs(Mean_phi * Total_inefficiency))
+
+# 8.3.1) Analyzing the correlation between total selective pressure and CAI and CDC ----
+
+selection_coeff_total <- selection_coeff_total |>
+  left_join(integrated_data |> dplyr::select(Gene_name, CAI, CDC, ENC, 
+                                              Total_Codons, GC3s))
+
+cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_total[, 4:6]),
+                                   method = "spearman")
+
+# 8.3.2) Final visualization ----
+
+# 1. Prepare Data
+plot_data <- selection_coeff_total |>
+  dplyr::mutate(
+    # Add small constants to avoid log(0)
+    Log_S = log10(S_coeff + 0.01), 
+    Log_Phi = log10(Mean_phi + 0.0001),
+    Log_Length = log10(Total_Codons)
+  ) |>
+  dplyr::filter(!is.na(ENC), !is.na(Total_Codons), !is.na(CAI))
+
+# Define common color scale limits for Log_Phi across panels B and C
+phi_range <- range(plot_data$Log_Phi, na.rm = TRUE)
+
+# Fit linear model for Panel C annotation
+lm_length_S <- lm(Log_S ~ Log_Length, data = plot_data)
+lm_summary <- summary(lm_length_S)
+lm_eq <- sprintf("y = %.2f + %.2fx, R² = %.3f, p %s",
+                 coef(lm_length_S)[1], 
+                 coef(lm_length_S)[2],
+                 lm_summary$r.squared,
+                 ifelse(lm_summary$coefficients[2, 4] < 0.001, "< 0.001", 
+                        sprintf("= %.3f", lm_summary$coefficients[2, 4])))
+
+# --- Panel A: Selection Load Distribution ---
+# Shows the landscape of selection intensities across the genome
+p1 <- ggplot(plot_data, aes(x = Log_S)) +
+  # Background shading for selection regimes
+  annotate("rect", xmin = -Inf, xmax = log10(1), ymin = -Inf, ymax = Inf, 
+           fill = "gray90", alpha = 0.5) +
+  annotate("rect", xmin = log10(100), xmax = Inf, ymin = -Inf, ymax = Inf, 
+           fill = "#ffe5e5", alpha = 0.5) +
+  geom_histogram(bins = 80, fill = "#69b3a2", color = "white", linewidth = 0.1) +
+  geom_vline(xintercept = log10(1), linetype = "dashed", color = "gray40") +
+  geom_vline(xintercept = log10(100), linetype = "dashed", color = "red") +
+  annotate("text", x = log10(0.1), y = 1900, label = "Drift Zone", 
+           angle = 90, color = "gray40", fontface = "bold", vjust = 1.5, hjust = 1) +
+  annotate("text", x = log10(500), y = 1900, label = "Strong Selection", 
+           angle = 90, color = "red", fontface = "bold", vjust = 1.5, hjust = 1) +
+  labs(x = expression(Log[10](S)), y = "Gene Count") +
+  theme_custom()
+
+# --- Panel B: CAI vs Selection Load ---
+# Key insight: CAI only captures selection in highly expressed genes
+# Low-expression genes show weak CAI-S correlation (CAI misses drift-dominated genes)
+p2 <- ggplot(plot_data, aes(x = Log_S, y = CAI)) +
+  geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
+              color = "black", linewidth = 1, se = TRUE, alpha = 0.3) +
+  scale_color_viridis_c(option = "plasma", name = expression(Log[10](phi)), 
+                        limits = phi_range, direction = 1) +
+  labs(
+    x = expression(Log[10](S)~"(Selection Load)"),
+    y = "Codon Adaptation Index (CAI)"
+  ) +
+  theme_custom() +
+  theme(legend.position = "right")
+
+# --- Panel C: Gene Length Effect ---
+# Longer genes accumulate more selection load (more codons = more sites under selection)
+# Color by expression to show the interplay: long + highly expressed = maximum S
+p3 <- ggplot(plot_data, aes(x = Log_Length, y = Log_S)) +
+  geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
+  geom_smooth(method = "lm", color = "black", linewidth = 1, se = TRUE, alpha = 0.3) +
+  scale_color_viridis_c(option = "plasma", name = expression(Log[10](phi)), 
+                        limits = phi_range, direction = 1) +
+  # Add linear equation annotation
+
+  annotate("text", x = min(plot_data$Log_Length, na.rm = TRUE) + 0.1, 
+           y = max(plot_data$Log_S, na.rm = TRUE) - 0.2,
+           label = lm_eq, hjust = 0, size = 3.5, fontface = "italic") +
+  labs(
+    x = expression(Log[10]~"(Gene Length in Codons)"),
+    y = expression(Log[10](S)~"(Selection Load)")
+  ) +
+  theme_custom() +
+  theme(legend.position = "right")
+
+# --- Combine Plots ---
+combined_plot <- (p1 | p2) / p3 + 
+  plot_annotation(tag_levels = 'A')
+
+# Save
+ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 11, height = 9)
+
+# 8.4) GO-enrichment analysis of genes with a massive selection load ----
+
+thr_sel <- 1e5
+
+subset_strongly_shaped_by_s <- selection_coeff_total |>
+  dplyr::filter(S_coeff > thr_sel) |>
+  dplyr::pull(Gene_name)
+
+custom_bag <- selection_coeff_total |> dplyr::pull(Gene_name)
+
+GO_results <- gost(query = subset_strongly_shaped_by_s,
+                   organism = 'gp__q7VP_EAck_dZk',
+                   multi_query = F,
+                   significant = T,
+                   correction_method = 'fdr',
+                   domain_scope = "custom",
+                   custom_bg = custom_bag,
+                   user_threshold = 0.05)$result |>
+  dplyr::select(-parents)
+
+# Export results
+
+write.csv(x = GO_results, file = "./results/Go_enrichment.csv", quote = T, 
+          row.names = F)
+
+# 8.5) Gettin top 10 genes in terms of S_coeff
+
+subset_strongly_shaped_by_s <- selection_coeff_total |>
+  dplyr::filter(S_coeff > thr_sel) |>
+  dplyr::arrange(desc(S_coeff)) |>
+  dplyr::slice(1:10) |>
+  dplyr::pull(Gene_name)
 
 ## XX) Comparing preferred codon of Mimulus guttatus to other plants ----
 
@@ -1679,7 +1813,7 @@ p_heatmap <- ggplot(codon_long, aes(x = Species, y = Codon, fill = factor(Prefer
   labs(title = "Preferred Codon Usage Across Plant Species",
        subtitle = "Based on highest expression genes",
        x = "", y = "Codon", fill = "") +
-  theme_minimal(base_size = 11) +
+  theme_custom(base_size = 11) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
         strip.text.y = element_text(angle = 0, hjust = 0),
         panel.spacing = unit(0.3, "lines"),
@@ -1822,7 +1956,7 @@ p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon
   labs(title = "Preferred Codon Usage Across Plant Species",
        subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
        x = "", y = "") +
-  theme_minimal(base_size = 12) +
+  theme_custom(base_size = 12) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
         axis.text.y = element_text(size = 10),
         strip.text.y = element_text(angle = 0, hjust = 0, face = "bold", size = 11),
@@ -2698,7 +2832,7 @@ p_pi_4fold <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_4fol
   labs(title = "Nucleotide Diversity at 4-fold Synonymous Sites by Expression Group",
        x = "Expression Group",
        y = "Pi (4-fold Synonymous Sites)") +
-  theme_minimal(base_size = 12) +
+  theme_custom(base_size = 12) +
   theme(plot.title = element_text(face = "bold"))
 
 overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)) +
@@ -2706,7 +2840,7 @@ overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)
   labs(title = "Nucleotide Diversity by Expression Group",
        x = "Expression Group",
        y = "Pi (overall)") +
-  theme_minimal(base_size = 12) +
+  theme_custom(base_size = 12) +
   theme(plot.title = element_text(face = "bold"))
 
 int_variables <- integrated_data |>
@@ -2806,7 +2940,7 @@ ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
   scale_color_viridis_c(name = "GC3s") +
   
   # Make it look clean
-  theme_minimal(base_size = 14) +
+  theme_custom(base_size = 14) +
   labs(
     title = "Nucleotide Diversity (π) vs. Gene Expression",
     subtitle = "Apparent positive trend (red) is a confound of GC3s (color)",
