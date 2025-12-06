@@ -128,7 +128,7 @@ SCRIPT2="$SCRIPT_DIR/calculate_pi.py"
 SCRIPT3="$SCRIPT_DIR/calculate_freq_preferred_codon.py"
 SCRIPT4="$SCRIPT_DIR/calculate_site_freq_by_preference.py"
 SCRIPT5="$SCRIPT_DIR/reformat_codon_freq_by_preference.py"
-SCRIPT6="$SCRIPT_DIR/calculate_sfs_by_amino_acid.py"
+SCRIPT6="$SCRIPT_DIR/analyze_preferred_codon_frequencies.py"
 
 for SCRIPT in "$SCRIPT1" "$SCRIPT2" "$SCRIPT3" "$SCRIPT4" "$SCRIPT5" "$SCRIPT6"; do
     if [ ! -f "$SCRIPT" ]; then
@@ -313,30 +313,28 @@ for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
             echo "  ✓ Created $SITE_FREQ_FILE"
         fi
         
-        # Calculate SFS by amino acid family
+        # Analyze preferred codon frequency distribution
         echo ""
-        echo "Step 3d: Calculating SFS by amino acid family..."
+        echo "Step 3d: Analyzing preferred codon frequency distribution..."
         
-        SFS_PREFIX="${OUTPUT_DIR}/${CHR}.sfs"
+        CODON_ANALYSIS_PREFIX="${OUTPUT_DIR}/${CHR}.codon_analysis"
         
-        if [ -f "${SFS_PREFIX}.aa_summary.txt" ]; then
-            echo "  ⚠ SFS files already exist, skipping..."
+        if [ -f "${CODON_ANALYSIS_PREFIX}.aa_summary.txt" ]; then
+            echo "  ⚠ Codon analysis files already exist, skipping..."
         else
-            python3 "$SCRIPT6" \
-                "$CHR" \
-                "$VCF_INPUT" \
-                "$ANNOTATION_FILE" \
-                "$PREFERRED_CODONS" \
-                > "${OUTPUT_DIR}/${CHR}.step3d.log" 2>&1
+            # Use the preferred codon frequency file from Step 3c
+            PREF_FREQ_FILE="${OUTPUT_DIR}/${CHR}.codon_frequencies_preferred.txt"
             
-            # Move output files to results directory
-            for suffix in aa_summary sfs_binned sfs_raw family_summary; do
-                if [ -f "${CHR}.sfs.${suffix}.txt" ]; then
-                    mv "${CHR}.sfs.${suffix}.txt" "${SFS_PREFIX}.${suffix}.txt"
-                fi
-            done
-            
-            echo "  ✓ Created SFS files: ${SFS_PREFIX}.*"
+            if [ -f "$PREF_FREQ_FILE" ]; then
+                python3 "$SCRIPT6" \
+                    "$PREF_FREQ_FILE" \
+                    "$CODON_ANALYSIS_PREFIX" \
+                    > "${OUTPUT_DIR}/${CHR}.step3d.log" 2>&1
+                
+                echo "  ✓ Created codon analysis files: ${CODON_ANALYSIS_PREFIX}.*"
+            else
+                echo "  ⚠ Skipping: $PREF_FREQ_FILE not found"
+            fi
         fi
     fi
     
@@ -463,29 +461,30 @@ if [ $SKIP_STEP3 -eq 0 ]; then
     
     echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.site_freq_by_preference.txt"
     
-    # Concatenate SFS files by amino acid
+    # Concatenate codon analysis files by amino acid
     echo ""
-    echo "Creating all_chromosomes.sfs.* files..."
+    echo "Creating all_chromosomes.codon_analysis.* files..."
     
-    for suffix in aa_summary sfs_binned sfs_raw family_summary; do
+    for suffix in aa_summary freq_distribution raw_frequencies family_summary; do
         FIRST=1
         for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
-            SFS_FILE="${OUTPUT_DIR}/${CHR}.sfs.${suffix}.txt"
+            CODON_FILE="${OUTPUT_DIR}/${CHR}.codon_analysis.${suffix}.txt"
             
-            if [ ! -f "$SFS_FILE" ]; then
+            if [ ! -f "$CODON_FILE" ]; then
                 continue
             fi
             
             if [ $FIRST -eq 1 ]; then
-                cat "$SFS_FILE" > "${OUTPUT_DIR}/all_chromosomes.sfs.${suffix}.txt"
+                cat "$CODON_FILE" > "${OUTPUT_DIR}/all_chromosomes.codon_analysis.${suffix}.txt"
                 FIRST=0
             else
-                tail -n +2 "$SFS_FILE" >> "${OUTPUT_DIR}/all_chromosomes.sfs.${suffix}.txt"
+                # Skip comment lines (starting with #) when concatenating
+                grep -v '^#' "$CODON_FILE" | tail -n +2 >> "${OUTPUT_DIR}/all_chromosomes.codon_analysis.${suffix}.txt"
             fi
         done
         
-        if [ -f "${OUTPUT_DIR}/all_chromosomes.sfs.${suffix}.txt" ]; then
-            echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.sfs.${suffix}.txt"
+        if [ -f "${OUTPUT_DIR}/all_chromosomes.codon_analysis.${suffix}.txt" ]; then
+            echo "  ✓ Created ${OUTPUT_DIR}/all_chromosomes.codon_analysis.${suffix}.txt"
         fi
     done
 fi

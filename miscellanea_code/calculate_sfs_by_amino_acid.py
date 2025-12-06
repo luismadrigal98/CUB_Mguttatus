@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """
-Calculate Site Frequency Spectrum (SFS) per amino acid family,
+Analyze allele frequency distributions at synonymous sites,
 stratified by preferred/non-preferred codon status.
 
-This script tests for selection on codon usage by comparing:
-1. Frequency spectrum of preferred→non-preferred changes (deleterious if selected)
-2. Frequency spectrum of non-preferred→preferred changes (beneficial if selected)
+This script provides DESCRIPTIVE statistics on allele frequencies:
+1. Frequency spectrum of changes creating preferred codons (nonpref→pref)
+2. Frequency spectrum of changes creating non-preferred codons (pref→nonpref)
 
-Under neutrality, both should follow the same distribution.
-Under selection for preferred codons:
-  - pref→nonpref mutations should be at LOWER frequencies (purifying selection)
-  - nonpref→pref mutations should be at HIGHER frequencies (positive selection)
+IMPORTANT LIMITATIONS:
+- Without outgroup sequences, cannot distinguish selection from drift
+- Frequency differences could reflect mutation bias, demography, or drift
+- Cannot infer direction of selection without ancestral state polarization
+- Results are descriptive and require additional tests for inference
 
 Polarization:
-  - We use preferred/non-preferred status as the "ancestral/derived" axis
-  - REF codon status defines the current state
-  - ALT codon status defines the alternative state
-  - The frequency of the ALT allele is what we track
+  - Uses preferred/non-preferred status as a categorical axis (NOT ancestral/derived)
+  - REF codon status defines the current reference state
+  - ALT codon status defines the alternative allele state
+  - Tracks frequency of the ALT allele at each polymorphic site
 
 Output:
-  - SFS binned by allele frequency (folded or unfolded)
-  - Separate spectra for each amino acid
-  - Summary statistics (mean frequency, Tajima's D-like metrics)
+  - Allele frequency distributions binned by category
+  - Separate distributions for each amino acid
+  - Descriptive statistics (mean frequency, counts)
 
 Input:
-    - VCF file with variant sites (must include invariant sites for proper normalization)
+    - VCF file with variant sites
     - <chrom>.genic_bases.annotated.txt (with Strand column)
     - preferred_codons.txt
 
@@ -57,13 +58,17 @@ GENETIC_CODE = {
 }
 
 # Amino acid families by degeneracy
+# M (Met) and W (Trp) are excluded - single codon, no synonymous variation possible
+# Stop codons (*) are also excluded
 AA_FAMILIES = {
     '2-fold': ['F', 'Y', 'H', 'Q', 'N', 'K', 'D', 'E', 'C'],
     '3-fold': ['I'],
     '4-fold': ['A', 'G', 'P', 'T', 'V'],
-    '6-fold': ['L', 'S', 'R'],
-    '1-fold': ['M', 'W']  # No synonymous changes possible
+    '6-fold': ['L', 'S', 'R']
 }
+
+# Amino acids to skip (no synonymous variation)
+SKIP_AMINO_ACIDS = {'*', 'M', 'W'}
 
 # Reverse mapping: AA -> family
 AA_TO_FAMILY = {}
@@ -414,13 +419,21 @@ def calculate_mean_frequency(freq_list):
 
 
 def write_output(sfs_data, chrom, output_prefix):
-    """Write SFS results to output files."""
+    """Write allele frequency distribution results to output files."""
     
     # 1. Per-amino-acid summary
     summary_file = f"{output_prefix}.aa_summary.txt"
     print(f"Writing amino acid summary to {summary_file}...")
     
     with open(summary_file, 'w') as out:
+        # Add caveats header
+        out.write("# Allele Frequency Distribution by Amino Acid\n")
+        out.write("# \n")
+        out.write("# IMPORTANT CAVEATS:\n")
+        out.write("#   - These are DESCRIPTIVE statistics only\n")
+        out.write("#   - Without outgroup: cannot distinguish selection from drift\n")
+        out.write("#   - Frequency differences could reflect mutation bias, demography, or drift\n")
+        out.write("# \n")
         out.write("Chr\tAmino_Acid\tFamily\t")
         out.write("N_to_preferred\tN_to_nonpreferred\tN_neutral_syn\t")
         out.write("Mean_freq_to_pref\tMean_freq_to_nonpref\tMean_freq_neutral\t")
@@ -525,10 +538,10 @@ def write_output(sfs_data, chrom, output_prefix):
 
 
 def print_summary(sfs_data):
-    """Print summary statistics to console."""
+    """Print descriptive summary statistics with appropriate caveats."""
     
     print("\n" + "=" * 70)
-    print("SITE FREQUENCY SPECTRUM SUMMARY")
+    print("ALLELE FREQUENCY DISTRIBUTION - DESCRIPTIVE SUMMARY")
     print("=" * 70)
     
     # Aggregate totals
@@ -546,30 +559,38 @@ def print_summary(sfs_data):
         all_to_nonpref_freqs.extend(data['to_nonpreferred'])
     
     print(f"\nTotal synonymous polymorphisms:")
-    print(f"  To preferred (nonpref→pref):     {total_to_pref:,}")
-    print(f"  To non-preferred (pref→nonpref): {total_to_nonpref:,}")
-    print(f"  Neutral (same status):           {total_neutral:,}")
+    print(f"  Creating preferred codon (nonpref→pref):     {total_to_pref:,}")
+    print(f"  Creating non-preferred codon (pref→nonpref): {total_to_nonpref:,}")
+    print(f"  Same preference status:                      {total_neutral:,}")
     
     if all_to_pref_freqs and all_to_nonpref_freqs:
         mean_to_pref = sum(all_to_pref_freqs) / len(all_to_pref_freqs)
         mean_to_nonpref = sum(all_to_nonpref_freqs) / len(all_to_nonpref_freqs)
         
-        print(f"\nMean ALT allele frequency:")
-        print(f"  To preferred:     {mean_to_pref:.4f}")
-        print(f"  To non-preferred: {mean_to_nonpref:.4f}")
+        print(f"\nMean ALT allele frequency (DESCRIPTIVE):")
+        print(f"  Creating preferred:     {mean_to_pref:.4f}")
+        print(f"  Creating non-preferred: {mean_to_nonpref:.4f}")
         
-        print(f"\nInterpretation:")
+        diff = abs(mean_to_pref - mean_to_nonpref)
+        print(f"\n--- What This Means ---")
         if mean_to_pref > mean_to_nonpref:
-            diff = mean_to_pref - mean_to_nonpref
-            print(f"  Preferred alleles are at HIGHER frequency (+{diff:.4f})")
-            print(f"  → Consistent with SELECTION FOR preferred codons")
+            print(f"  ALT alleles creating preferred codons are at higher frequency (+{diff:.4f})")
         elif mean_to_nonpref > mean_to_pref:
-            diff = mean_to_nonpref - mean_to_pref
-            print(f"  Non-preferred alleles are at HIGHER frequency (+{diff:.4f})")
-            print(f"  → Consistent with SELECTION AGAINST preferred codons (unexpected)")
+            print(f"  ALT alleles creating non-preferred codons are at higher frequency (+{diff:.4f})")
         else:
-            print(f"  Frequencies are equal")
-            print(f"  → Consistent with NEUTRAL evolution")
+            print(f"  Frequencies are approximately equal")
+        
+        print(f"\n--- IMPORTANT CAVEATS ---")
+        print(f"  ✗ This is DESCRIPTIVE data only")
+        print(f"  ✗ Cannot infer selection without:")
+        print(f"      • Outgroup sequences (to polarize ancestral/derived)")
+        print(f"      • Neutral baseline comparison")
+        print(f"      • Demographic model")
+        print(f"  ✗ Differences could reflect:")
+        print(f"      • Selection (for or against preferred codons)")
+        print(f"      • Mutation bias (toward/away from preferred)")
+        print(f"      • Demographic history")
+        print(f"      • Random drift")
     
     print("\n" + "=" * 70)
 
