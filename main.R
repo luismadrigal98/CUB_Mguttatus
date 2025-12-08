@@ -28,7 +28,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'txdbmaker', 'Rsamtools', 'purrr',
                         'abind', 'scales', 'mclust', 'coda',
                         'admisc', 'corrr', 'patchwork', 'gprofiler2',
-                        'ggnewscale')
+                        'ggnewscale', 'broom')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -186,7 +186,7 @@ cdc_results <- integrate_cdc_analysis(codon_usage,
                                       n_bootstrap = 10000,
                                       n_cores = 10)
 
-# Re-plotting ENC-based neutrality plot highlighting the significant genes with CDC ----
+# Re-plotting CDC-based neutrality plot highlighting the significant genes with CDC ----
 
 # Extract just CDC columns we need
 cdc_for_merge <- cdc_results |>
@@ -572,7 +572,9 @@ w_table <- cai_results$w_table
 
 # 7.1) Making bar plot per aminoacid to show differences in use ----
 
-ggplot(data = w_table, mapping = aes(x = reorder(codon, relative_adaptiveness), 
+ggplot(data = w_table |> dplyr::filter(amino_acid != "Met" & amino_acid != "Trp" &
+                                         amino_acid != "STOP"), 
+       mapping = aes(x = reorder(codon, relative_adaptiveness), 
                                      y = relative_adaptiveness)) +
   geom_segment(aes(xend = codon, y = 0, yend = relative_adaptiveness), 
                color = "gray70", linewidth = 1) +
@@ -780,7 +782,8 @@ freq_long <- freq_comparison |>
                values_to = "Frequency") |>
   dplyr::mutate(Group = dplyr::recode(Group, 
                                "Freq_Top5" = "Top 5%",
-                               "Freq_Rest" = "Rest"))
+                               "Freq_Rest" = "Rest")) |>
+  dplyr::filter(AA != "Trp" & AA != "Met")
 
 # Create lollipop plot
 p_freq_comparison <- ggplot(freq_long, 
@@ -1155,8 +1158,10 @@ cat("\n")
 enriched_codons_mg <- enriched_codons_corrected
 
 ## *****************************************************************************
-## Estimate mutation rates ----
+## 8) AnaCoDa-based analysis ----
 ## _____________________________________________________________________________
+
+## Estimate mutation rates ----
 
 # Use the wrapper function to generate dM files from both introns and intergenic regions
 # This replaces ~130 lines of duplicated code with a single function call
@@ -1219,10 +1224,6 @@ if (!is.null(dM_results$intermediates$introns$nuc_filtered) &
 }
 
 # No evidence for more than one cluster (genome-wide mutational pressure)
-
-## *****************************************************************************
-## 8) AnaCoDa-based analysis ----
-## _____________________________________________________________________________
 
 ## Results from AnaCoDa framework can be obtained by running:
 
@@ -1575,14 +1576,22 @@ selection_coeff_total <- selection_coeff_total |>
 # Getting the geometric mean to match AnaCoDa processing
 
 selection_coeff_total <- selection_coeff_total |>
-  # Recalculate S_coeff with the normalized Phi
-  dplyr::mutate(S_coeff = abs(Mean_phi * Total_inefficiency))
+  # Recalculate S_load with the normalized Phi
+  dplyr::mutate(S_load = abs(Mean_phi * Total_inefficiency))
 
 # 8.3.1) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
 selection_coeff_total <- selection_coeff_total |>
   left_join(integrated_data |> dplyr::select(Gene_name, CAI, CDC, ENC, 
                                               Total_Codons, GC3s))
+
+# Add Log_Phi (AnaCoDa-estimated expression) to integrated_data for later analyses
+integrated_data <- integrated_data |>
+  dplyr::left_join(phi |> dplyr::mutate(Log_Phi = log10(Mean_phi + 0.0001)), 
+                   by = "Gene_name")
+
+cat("Phi estimates joined:", sum(!is.na(integrated_data$Log_Phi)), 
+    "genes with AnaCoDa phi values\n")
 
 cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_total[, 4:6]),
                                    method = "spearman")
@@ -1593,7 +1602,7 @@ cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_total[, 4:6]),
 plot_data <- selection_coeff_total |>
   dplyr::mutate(
     # Add small constants to avoid log(0)
-    Log_S = log10(S_coeff + 0.01), 
+    Log_S = log10(S_load + 0.01), 
     Log_Phi = log10(Mean_phi + 0.0001),
     Log_Length = log10(Total_Codons)
   ) |>
@@ -1678,7 +1687,7 @@ ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 11, heigh
 thr_sel <- 1e5
 
 subset_strongly_shaped_by_s <- selection_coeff_total |>
-  dplyr::filter(S_coeff > thr_sel) |>
+  dplyr::filter(S_load > thr_sel) |>
   dplyr::pull(Gene_name)
 
 custom_bag <- selection_coeff_total |> dplyr::pull(Gene_name)
@@ -1698,11 +1707,11 @@ GO_results <- gost(query = subset_strongly_shaped_by_s,
 write.csv(x = GO_results, file = "./results/Go_enrichment.csv", quote = T, 
           row.names = F)
 
-# 8.5) Gettin top 10 genes in terms of S_coeff
+# 8.5) Getting top 10 genes in terms of S_load ----
 
 subset_strongly_shaped_by_s <- selection_coeff_total |>
-  dplyr::filter(S_coeff > thr_sel) |>
-  dplyr::arrange(desc(S_coeff)) |>
+  dplyr::filter(S_load > thr_sel) |>
+  dplyr::arrange(desc(S_load)) |>
   dplyr::slice(1:10) |>
   dplyr::pull(Gene_name)
 
@@ -2264,27 +2273,27 @@ for (i in seq_len(nrow(pca_wilcox_results))) {
               pca_wilcox_results$Significance[i]))
 }
 
-# 8.3) Selection Load (S_coeff) Based Analysis ----
+# 8.3) Selection Load (S_load) Based Analysis ----
 
 # Test whether genes under strong vs weak selection show distinct codon patterns
 
-if (exists("selection_coeff_total") && "S_coeff" %in% names(selection_coeff_total)) {
+if (exists("selection_coeff_total") && "S_load" %in% names(selection_coeff_total)) {
   
   cat("\n--- CA/PCA Analysis by Selection Load ---\n")
   
-  # Create S_coeff-based groups
-  s_quantiles <- quantile(selection_coeff_total$S_coeff, 
+  # Create S_load-based groups
+  s_quantiles <- quantile(selection_coeff_total$S_load, 
                           probs = c(0.05, 0.95), na.rm = TRUE)
   
   selection_groups <- selection_coeff_total |>
     dplyr::mutate(
       S_Group = dplyr::case_when(
-        S_coeff >= s_quantiles[2] ~ "High Selection (Top 5%)",
-        S_coeff <= s_quantiles[1] ~ "Low Selection (Bottom 5%)",
+        S_load >= s_quantiles[2] ~ "High Selection (Top 5%)",
+        S_load <= s_quantiles[1] ~ "Low Selection (Bottom 5%)",
         TRUE ~ "Intermediate"
       )
     ) |>
-    dplyr::select(Gene_name, S_coeff, S_Group)
+    dplyr::select(Gene_name, S_load, S_Group)
   
   cat("\nSelection Load Group Distribution:\n")
   print(table(selection_groups$S_Group))
@@ -2304,8 +2313,8 @@ if (exists("selection_coeff_total") && "S_coeff" %in% names(selection_coeff_tota
     dims = c(1, 2),
     arrow_scale = 1.0,
     title = "CA Biplot: By Selection Load",
-    subtitle = "High vs Low S_coeff genes",
-    output_file = "./results/CA_preference_biplot_S_coeff.pdf"
+    subtitle = "High vs Low S_load genes",
+    output_file = "./results/CA_preference_biplot_S_load.pdf"
   )
   
   # PCA analysis by selection load
@@ -2323,11 +2332,11 @@ if (exists("selection_coeff_total") && "S_coeff" %in% names(selection_coeff_tota
     dims = c(1, 2),
     arrow_scale = 1.5,
     title = "PCA Biplot: By Selection Load",
-    subtitle = "High vs Low S_coeff genes",
-    output_file = "./results/PCA_preference_biplot_S_coeff.pdf"
+    subtitle = "High vs Low S_load genes",
+    output_file = "./results/PCA_preference_biplot_S_load.pdf"
   )
   
-  # MANOVA tests for S_coeff grouping
+  # MANOVA tests for S_load grouping
   cat("\n=== MANOVA Test: CA Dimensions by Selection Load ===\n")
   ca_manova_S <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ S_Group, 
                         data = codon_usage_CA_coord_S)
@@ -2338,8 +2347,8 @@ if (exists("selection_coeff_total") && "S_coeff" %in% names(selection_coeff_tota
                          data = rscu_PCA_coord_S)
   print(summary(pca_manova_S))
   
-  # Univariate Wilcoxon tests with FDR correction for CA by S_coeff
-  cat("\n=== Univariate Tests for CA Dimensions by S_coeff (FDR corrected) ===\n")
+  # Univariate Wilcoxon tests with FDR correction for CA by S_load
+  cat("\n=== Univariate Tests for CA Dimensions by S_load (FDR corrected) ===\n")
   ca_wilcox_S_results <- data.frame(
     Dimension = character(),
     W = numeric(),
@@ -2370,8 +2379,8 @@ if (exists("selection_coeff_total") && "S_coeff" %in% names(selection_coeff_tota
                 ca_wilcox_S_results$Significance[i]))
   }
   
-  # Univariate Wilcoxon tests with FDR correction for PCA by S_coeff
-  cat("\n=== Univariate Tests for PCA Dimensions by S_coeff (FDR corrected) ===\n")
+  # Univariate Wilcoxon tests with FDR correction for PCA by S_load
+  cat("\n=== Univariate Tests for PCA Dimensions by S_load (FDR corrected) ===\n")
   pca_wilcox_S_results <- data.frame(
     Dimension = character(),
     W = numeric(),
@@ -2403,7 +2412,7 @@ if (exists("selection_coeff_total") && "S_coeff" %in% names(selection_coeff_tota
   cat("\n✓ Selection load-based analysis complete\n")
   
 } else {
-  cat("\n⚠ selection_coeff_total not found - skipping S_coeff-based analysis\n")
+  cat("\n⚠ selection_coeff_total not found - skipping S_load-based analysis\n")
 }
 
 cat("\n✓ CA/PCA ordination analysis complete\n")
@@ -2644,7 +2653,9 @@ pairing_analysis <- classify_codon_anticodon_pairing(
 cat("\n✓ Translational accuracy hypothesis test complete!\n")
 cat("  Results saved to: ./results/tRNA_analysis_pairing/\n\n")
 
+## *****************************************************************************
 ## 10) Polymorphism data integration ----
+## _____________________________________________________________________________
 
 pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
 
@@ -2655,226 +2666,89 @@ pi_data <- pi_data |>
   dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
   dplyr::rename(Gene_name = Gene)
 
-# Analyzing the diversity of synonymous sites 
-
-detrending_pi_4fold <- residuals(gam(Pi_mean_4fold ~ s(GC3) + s(CDS_length_nt),
-                                     data = integrated_data,
-                                     na.action = na.exclude))
-
-integrated_data$Pi_4fold_detrended <- detrending_pi_4fold
-
-# Create the plot with Mean and 95% Confidence Intervals
-p_pi_mean_ci <- ggplot(integrated_data, aes(x = Expression_Group, 
-                                            y = Pi_4fold_detrended,
-                                            fill = Expression_Group)) +
-  
-  # 2. Add the error bars for the 95% Confidence Interval
-  stat_summary(
-    fun.data = "mean_cl_normal",  # Calculates mean and 95% CI
-    geom = "errorbar",
-    width = 0.25,                # Width of the error bar caps
-    color = "black",
-    linewidth = 1
-  ) +
-  
-  # 3. Add the point for the Mean
-  stat_summary(
-    fun = "mean",                # Calculates the mean
-    geom = "point",
-    size = 4,
-    color = "black",
-    shape = 23,                  # Diamond shape
-    fill = "white"               # White fill for the diamond
-  ) +
-  
-  # Use your group colors for the jitter points
-  # scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
-  #                              "Bottom 5%" = "#377EB8",
-  #                              "Middle 90%" = "#999999")) +
-  
-  labs(
-    title = "Mean Nucleotide Diversity (π) at 4-fold Sites",
-    subtitle = "Showing mean and 95% confidence interval by expression group",
-    y = "Pi (4-fold Synonymous Sites)",
-    x = "Expression Group"
-  ) +
-  theme_custom() + # Use your custom theme
-  theme(legend.position = "none") # Hide the fill legend
-
-# Save the plot
-ggsave("./results/pi_4fold_by_expression_mean_ci.pdf", p_pi_mean_ci, 
-       width = 8, height = 6)
-
-# Exploring the relationship between diversity (4-fold) and ENC
-
-plot(x = integrated_data$Pi_mean_4fold, 
-     y = integrated_data$High_exp_log2)
-lm(High_exp_log2 ~ Pi_mean_4fold, data = integrated_data)
-plot(x = integrated_data$Pi_mean_all, 
-     y = integrated_data$High_exp_log2)
-lm(High_exp_log2 ~ Pi_mean_all, data = integrated_data)
-
-# Does 4-fold differs from background?
-
-t.test(integrated_data$Pi_mean_4fold, integrated_data$Pi_mean_all)
-
-# Boxplot for expression groups and 4-fold pi
-
-p_pi_4fold <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_4fold)) +
-  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
-  labs(title = "Nucleotide Diversity at 4-fold Synonymous Sites by Expression Group",
-       x = "Expression Group",
-       y = "Pi (4-fold Synonymous Sites)") +
-  theme_custom(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-
-overall_pi <- ggplot(integrated_data, aes(x = Expression_Group, y = Pi_mean_all)) +
-  geom_boxplot(outlier.size = 0.5, fill = "lightblue") +
-  labs(title = "Nucleotide Diversity by Expression Group",
-       x = "Expression Group",
-       y = "Pi (overall)") +
-  theme_custom(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-
-int_variables <- integrated_data |>
-  dplyr::select("CDC", "CDC_detrended", "Pi_mean_0fold", "Pi_mean_2fold", "Pi_mean_3fold",
-                "Pi_mean_4fold", "Pi_mean_all", "ENC") |>
-  as.matrix()
-
-int_cor <- corrr::correlate(x = int_variables)
-
-# 10.1) Searching for purifying selection signatures ----
-
-# Run the GAM (to control for confounders)
-# This asks: "Does expression predict Tajima's D at 4-fold sites?"
-model_tajimaD <- gam(TajimaD_4fold ~ High_exp_log2 + s(CDS_length_nt) + s(GC12),
-                     data = integrated_data)
-
-summary(model_tajimaD)
-
-# Plot it
-ggplot(integrated_data, aes(x = High_exp_log2, y = TajimaD_all)) +
-  geom_pointdensity() +
-  geom_smooth(method = "gam", show.legend = T) +
-  theme_custom() +
-  labs(title = "Selection Signature vs. Expression",
-       y = "Tajima's D (4-fold Synonymous Sites)",
-       x = "log2(Expression)") +
-  ylim(c(0.25, -0.25))
-
-ggsave("./results/tajimaD_vs_expression.pdf",
-       width = 8, height = 6)
-
-# 10.2) TajimaD vs CDC ----
-
-model_cdc_tajima <- gam(TajimaD_all ~ CDC + s(CDS_length_nt) + s(GC3s),
-                        data = integrated_data)
-
-summary(model_cdc_tajima)
-
-# 10.2) TajimaD vs expression
-
-model_expression_tajima <- gam(TajimaD_4fold ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
-                               data = integrated_data)
-
-summary(model_expression_tajima)
-
-plot_tajimaD <- data.frame(detrended_TajimaD = residuals(gam(TajimaD_4fold ~ s(CDS_length_nt) + s(GC3s),
-                                                             data = integrated_data,
-                                                             na.action = 'na.exclude')))
-plot_tajimaD$High_exp_log2 <- integrated_data$High_exp_log2
-
-ggplot(plot_tajimaD, aes(x = High_exp_log2, y = detrended_TajimaD)) +
-  geom_pointdensity() +
-  geom_smooth(method = "lm") +
-  theme_custom() +
-  ylim(c(0.05, -0.05))
-
-ggplot(integrated_data, aes(x = High_exp_log2, y = TajimaD_4fold)) +
-  
-  # Add points, maybe with a little less alpha
-  geom_point(alpha = 0.2, size = 1) +
-  
-  # *** THIS IS THE KEY ***
-  # Add a separate, linear trend line FOR EACH FACET
-  geom_smooth(method = "lm", se = FALSE, color = "blue", linetype = "dashed") +
-  
-  # *** THIS IS THE OTHER KEY ***
-  # Split the plot into 5 panels, one for each GC3s bin
-  facet_wrap(~ gc3s_label) +
-  
-  # Make it look clean
-  theme_bw(base_size = 14) +
-  labs(
-    title = "Controlling for GC3s Reveals Negative Selection",
-    subtitle = "Relationship between Expression and Tajima's D (π), binned by GC3s",
-    x = "Gene Expression (log2)",
-    y = "Tajima's D at 4-fold Synonymous Sites"
-  )
-
-# 10.3) pi vs expression ----
-
-model_pi <- gam(Pi_mean_4fold ~ High_exp_log2 + s(CDS_length_nt) + s(GC3s),
-                data = integrated_data)
-
-summary(model_pi)
-
-ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
-  geom_pointdensity() +
-  geom_smooth(method = "lm") +
-  theme_custom()
-
-ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
-  
-  # Add points, mapping GC3s to color
-  geom_point(aes(color = GC3s), alpha = 0.5, size = 1.5) +
-  
-  # This adds the "wrong" marginal trend line
-  geom_smooth(method = "lm", color = "red", se = FALSE, linetype = "dashed") +
-  
-  # Use a nice color scale
-  scale_color_viridis_c(name = "GC3s") +
-  
-  # Make it look clean
-  theme_custom() +
-  labs(
-    title = "Nucleotide Diversity (π) vs. Gene Expression",
-    subtitle = "Apparent positive trend (red) is a confound of GC3s (color)",
-    x = "Gene Expression (log2)",
-    y = "π at 4-fold Synonymous Sites",
-    caption = "Each point is one gene."
-  )
-
-ggsave("./results/pi_vs_expression_with_GC3s.pdf",
-       width = 8, height = 6)
-
-# We'll create 5 quantile groups (quintiles) for GC3s
+# Join polymorphism data to integrated_data
 integrated_data <- integrated_data |>
-  mutate(gc3s_bin = ntile(GC3s, 5)) |>
-  
-  # Optional: Make the labels nicer for the plot
-  mutate(gc3s_label = factor(gc3s_bin, 
-                             labels = c("Lowest 20%", "20-40%", "40-60%", "60-80%", "Highest 80%")))
+  dplyr::left_join(pi_data, by = "Gene_name")
 
-ggplot(integrated_data, aes(x = High_exp_log2, y = Pi_mean_4fold)) +
-  
-  # Add points, maybe with a little less alpha
-  geom_point(alpha = 0.2, size = 1) +
-  
-  # *** THIS IS THE KEY ***
-  # Add a separate, linear trend line FOR EACH FACET
-  geom_smooth(method = "lm", se = FALSE, color = "blue", linetype = "dashed") +
-  
-  # *** THIS IS THE OTHER KEY ***
-  # Split the plot into 5 panels, one for each GC3s bin
-  facet_wrap(~ gc3s_label) +
-  
-  # Make it look clean
-  theme_bw(base_size = 14) +
-  labs(
-    title = "Controlling for GC3s Reveals Negative Selection",
-    subtitle = "Relationship between Expression and Diversity (π), binned by GC3s",
-    x = "Gene Expression (log2)",
-    y = "π at 4-fold Synonymous Sites"
+## *****************************************************************************
+## 11) Model Selection for Diversity-Expression Relationship ----
+## _____________________________________________________________________________
+
+# Test whether genetic diversity (Pi, Tajima's D) decreases with expression
+# Using systematic model selection with AIC/BIC comparison
+
+source("./src/model_selection_diversity.R")
+
+# Create output directory
+if (!dir.exists("./results/diversity_modeling")) {
+  dir.create("./results/diversity_modeling", recursive = TRUE)
+}
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("SYSTEMATIC MODEL SELECTION: Diversity vs Expression\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+# 11.1) Analysis with EMPIRICAL expression (High_exp_log10) ----
+
+cat("=== Using Empirical Expression (High_exp_log10) ===\n\n")
+
+# Run model selection for Pi at 4-fold sites
+cat("--- Response: Pi_mean_4fold ---\n")
+pi_models_empirical <- run_diversity_analysis_pipeline(
+  data = integrated_data,
+  response = "Pi_mean_4fold",
+  expression_var = "High_exp_log10",
+  predictors = c("GC3s", "CDS_length_nt", "GC12"),
+  include_quadratic = TRUE,
+  include_interactions = TRUE,
+  output_dir = "./results/diversity_modeling"
+)
+
+# Run model selection for Tajima's D at 4-fold sites
+cat("\n--- Response: TajimaD_4fold ---\n")
+tajimaD_models_empirical <- run_diversity_analysis_pipeline(
+  data = integrated_data,
+  response = "TajimaD_4fold",
+  expression_var = "High_exp_log10",
+  predictors = c("GC3s", "CDS_length_nt"),
+  include_quadratic = TRUE,
+  include_interactions = TRUE,
+  output_dir = "./results/diversity_modeling"
+)
+
+## *****************************************************************************
+## 12) Codon Frequency Spectrum (CFS) Analysis ----
+## _____________________________________________________________________________
+# Analyze preferred codon frequency distributions to detect selection signatures
+# Note: We call this CFS (not SFS) because we lack ancestral state information
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CODON FREQUENCY SPECTRUM (CFS) ANALYSIS\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+# Run complete CFS analysis pipeline
+cfs_results <- run_cfs_analysis(
+  data_dir = "./data",
+  output_dir = "./results/cfs_analysis"
+)
+
+# Extract key statistics for integration with other analyses
+cat("\n=== Integration with Expression Analysis ===\n\n")
+
+# The fixation index by amino acid can be compared to expression-related metrics
+fixation_by_aa <- cfs_results$selection_estimates %>%
+  dplyr::select(Amino_Acid, Family, Fix_Ratio, Gamma_Estimate, Selection_Direction)
+
+cat("Fixation index summary by degeneracy:\n")
+fixation_summary <- cfs_results$selection_estimates %>%
+  group_by(Family) %>%
+  summarise(
+    Mean_Fix_Ratio = mean(Fix_Ratio),
+    Mean_Gamma = mean(Gamma_Estimate),
+    n_AA = n(),
+    .groups = "drop"
   )
+print(fixation_summary)
 
+cat("\nCFS Analysis Complete!\n")
+cat("Results saved to: ./results/cfs_analysis/\n\n")

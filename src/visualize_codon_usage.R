@@ -42,8 +42,8 @@ visualize_codon_usage <- function(codon_counts, genetic_code,
     plot_data <- merge(plot_data, aa_grouping, by = "AA", copy = TRUE)
   }
   
-  # Remove STOP codons
-  plot_data <- plot_data[plot_data$AA != "STOP", ]
+  # Remove STOP codons and non-informative codons
+  plot_data <- plot_data[!(plot_data$AA %in% c("STOP", "Trp", "Met")), ]
   
   # Calculate frequencies within each amino acid
   plot_data <- as.data.table(plot_data)
