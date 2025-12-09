@@ -28,7 +28,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'txdbmaker', 'Rsamtools', 'purrr',
                         'abind', 'scales', 'mclust', 'coda',
                         'admisc', 'corrr', 'patchwork', 'gprofiler2',
-                        'ggnewscale', 'broom')
+                        'ggnewscale', 'broom', 'reshape2')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -1347,18 +1347,6 @@ run_dirs <- c(
 dM_fixed_with_phi_conv <- GR_convergence(run_dirs, 
                                          parameter = 'selection') # Mutation is fixed
 
-phi_hat_dM_fixed_with_phi <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/gene_expression.txt") |>
-  dplyr::select(GeneID, Mean, Mean.log10) |>
-  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
-
-phi_dM_fixed_with_phi <- exp_complete |>
-  left_join(phi_hat_dM_fixed_with_phi, by = join_by("Gene" == "GeneID")) |>
-  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
-  na.exclude()
-
-cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi, 
-         phi_dM_fixed_with_phi$High_exp_log10)
-
 # 8.1.3.2) Codon frequency trajectories across expression levels ----
 
 # This section visualizes whether the ROC multinomial model:
@@ -1426,8 +1414,8 @@ cat("  Plot saved to: ./results/ROC_codon_trajectories.pdf\n")
 # Setup paths for the 3 runs
 run_dirs <- c(
   "./results/MCMC_results/results_dM_fixed_intergenic/run_1",
-  "./results/MCMC_results/results_dM_fixed_intergenic/run_2"#,
-  #"./results/MCMC_results/results_dM_fixed_intergenic/run_3"
+  "./results/MCMC_results/results_dM_fixed_intergenic/run_2",
+  "./results/MCMC_results/results_dM_fixed_intergenic/run_3"
 )
 
 dM_fixed_intergenic <- GR_convergence(run_dirs, 
@@ -1449,15 +1437,95 @@ dM_fixed_with_phi_intergenic <- GR_convergence(run_dirs,
 
 # Poor convergence (intergenic-based mutation bias is not adequate)
 
+# Exploring and overlapping traces to rule out bad mixing ----
+
+parameters_objects <- list(run1 = loadParameterObject(file = paste(run_dirs[1], "R_objects/parameter.Rda", sep = '/')),
+                           run2 = loadParameterObject(file = paste(run_dirs[2], "R_objects/parameter.Rda", sep = '/')),
+                           run3 = loadParameterObject(file = paste(run_dirs[3], "R_objects/parameter.Rda", sep = '/')))
+
+parameters_objects <- list(run1 = listRDA(paste(run_dirs[1], "R_objects/parameter.Rda", sep = '/')),
+                           run2 = listRDA(paste(run_dirs[2], "R_objects/parameter.Rda", sep = '/')),
+                           run3 = listRDA(paste(run_dirs[3], "R_objects/parameter.Rda", sep = '/')))
+
+# 1. Select one of the high deviants codons
+codon_index <- 36  
+
+# 2. Extract Data function
+# This pulls the specific codon trace from all 3 runs into one data frame
+extract_traces <- function(objects, codon_idx) {
+  df_list <- list()
+  
+  for (run_name in names(objects)) {
+    # Access logic: Run -> selectionTrace -> Mixture 1 -> Codon Index
+    trace_data <- objects[[run_name]]$selectionTrace[[1]][[codon_idx]]
+    
+    # Create temporary DF
+    temp_df <- data.frame(
+      Iteration = 1:length(trace_data),
+      Value = trace_data,
+      Run = run_name
+    )
+    df_list[[run_name]] <- temp_df
+  }
+  
+  return(do.call(rbind, df_list))
+}
+
+# 3. Create the Master Data Frame
+plot_data <- extract_traces(parameters_objects, codon_index)
+plot_data <- subset(plot_data, Iteration > max(plot_data$Iteration) * 0.5)
+
+# 4. PLOT 1: The Trace Overlay (The "Are we mixing?" Plot)
+p1 <- ggplot(plot_data, aes(x = Iteration, y = Value, color = Run)) +
+  geom_line(alpha = 0.7, linewidth = 0.3) +
+  theme_custom() +
+  labs(title = paste("Trace Overlay: Codon Index", codon_index),
+       subtitle = "Flat lines at different levels = Good Mixing + Multimodality",
+       y = "Selection Cost (Delta Eta)",
+       x = "MCMC Sample") +
+  theme(legend.position = "top")
+
+# 5. PLOT 2: Density Overlay (The "Distinct Realities" Plot)
+p2 <- ggplot(plot_data, aes(x = Value, fill = Run)) +
+  geom_density(alpha = 0.5) +
+  theme_custom() +
+  labs(title = paste("Posterior Density: Codon Index", codon_index),
+       subtitle = "Non-overlapping peaks = Model Misspecification / Broken Energy Landscape",
+       x = "Selection Cost (Delta Eta)",
+       y = "Density") +
+  theme(legend.position = "top")
+
+# 6. PLOT 3: Autocorrelation (The "Stickiness" Check)
+# We calculate ACF for just Run 1 to prove it's not "sticky"
+acf_val <- acf(subset(plot_data, Run == "run1")$Value, plot = FALSE, lag.max = 40)
+acf_df <- data.frame(Lag = acf_val$lag, ACF = acf_val$acf)
+
+p3 <- ggplot(acf_df, aes(x = Lag, y = ACF)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = -0.05, linetype = "dashed", color = "red") +
+  theme_custom() +
+  labs(title = "Autocorrelation (Run 1)",
+       subtitle = "Rapid drop to 0 = Efficient Sampling (Not Bad Mixing)",
+       y = "Autocorrelation")
+
+# Display Plots
+ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", codon_index, "_trace_overlay.pdf"),
+       plot = p1, width = 10, height = 4)
+ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", codon_index, "_density_overlay.pdf"),
+       plot = p2, width = 8, height = 4)
+ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", codon_index, "_acf.pdf"),
+       plot = p3, width = 6, height = 4)
+
 # 8.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
 
 # Using chain 1 results (independent chains are indistinguishable)
 
-eta_estimates <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv")
+eta_data <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv")
 
-preferred_codons <- sapply(unique(eta_estimates$AA), function(x) {
+preferred_codons <- sapply(unique(eta_data$AA), function(x) {
   AA <- x
-  aa_subset <- eta_estimates[eta_estimates$AA == AA, ]
+  aa_subset <- eta_data[eta_data$AA == AA, ]
   preferred <- aa_subset[which.min(aa_subset$Mean), "Codon"]
   preferred
 })
@@ -1483,7 +1551,7 @@ preferred_codons_roc <- preferred_codons |>
 
 cat(sprintf("✓ Preferred codons from ROC model: %d amino acids\n", nrow(preferred_codons_roc)))
 
-# 8.3) Extracting selection estimates from the best chain (dM-fixed-with_phi) ----
+# 8.3) Extracting selection estimates from the best model (dM-fixed-with_phi) ----
 
 genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa',
                                  match.expression.by.id = TRUE,
@@ -1492,9 +1560,6 @@ genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscri
 parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/R_objects/parameter.Rda")
 
 # Visualizing cost per codons and confidence intervals
-
-eta_data <- read.csv(file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv",
-                     header = T)
 
 plot_data <- eta_data |>
   dplyr::mutate(
@@ -1534,8 +1599,7 @@ p <- ggplot(plot_data, aes(x = Codon, y = Mean, color = Status)) +
   
   # E. Aesthetics
   labs(
-    title = "Codon Selection Inefficiency Estimates",
-    y = "Selection Coefficient (Mean ± 95% CI)",
+    y = "Relative Codon Costs, deta_eta (Mean ± 95% CI)",
     x = NULL # Codon labels are self-explanatory
   ) +
   theme_custom() +
@@ -1556,141 +1620,214 @@ selection_coeff <- getSelectionCoefficients(genome = genome,
                                             parameter = parameter_object, 
                                             samples = 1000)
 
-# Get total inefficiency per gene
+# Get total selection load per gene
 
-selection_coeff_total <- selection_coeff |> rowSums()
+counts_df <- as.data.frame(codon_usage)
+rownames(counts_df) <- counts_df$Gene_name
+counts_df$Gene_name <- NULL # Remove the ID column so it's all numeric
 
-phi <- read.csv(file = './results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/gene_expression.txt') |>
-  dplyr::select(GeneID, Mean) |>
-  dplyr::rename(Gene_name = GeneID,
-                Mean_phi = Mean)
+# Ensure 'selection_coeff' is a matrix
+sel_mat <- as.matrix(selection_coeff)
 
-selection_coeff_total <- data.frame(Gene_name = names(selection_coeff_total),
-                                    Total_inefficiency = selection_coeff_total) |>
-  as.data.table()
+# Find common genes (rows) and common codons (columns)
+common_genes <- intersect(rownames(counts_df), rownames(sel_mat))
+common_codons <- intersect(colnames(counts_df), colnames(sel_mat))
 
-selection_coeff_total <- selection_coeff_total |>
-  left_join(phi, 
-            by = "Gene_name")
+message(paste("Matching:", length(common_genes), "genes and", 
+              length(common_codons), "codons."))
 
-# Getting the geometric mean to match AnaCoDa processing
+# Align genes and codons
+counts_aligned <- counts_df[common_genes, common_codons]
+sel_aligned <- sel_mat[common_genes, common_codons]
+counts_aligned <- as.matrix(counts_aligned)
 
-selection_coeff_total <- selection_coeff_total |>
-  # Recalculate S_load with the normalized Phi
-  dplyr::mutate(S_load = abs(Mean_phi * Total_inefficiency))
+# Logic: Count * abs(Selection_Coefficient)
+# We use abs() because our values are negative penalties (e.g., -0.06).
+# A penalty of -0.06 is a "load" of 0.06.
+
+# Element-wise multiplication (NOT matrix multiplication %*%)
+gene_load_matrix <- counts_aligned * abs(sel_aligned)
+
+# Sum across rows to get the total load per gene
+total_selection_load <- rowSums(gene_load_matrix, na.rm = TRUE)
+
+# Selection intensity ----
+n_synonymous_codons <- rowSums(counts_aligned, na.rm = TRUE)
+
+sel_intensity <- total_selection_load / n_synonymous_codons
+
+selection_coeff_intensity <- data.frame(Gene_name = names(sel_intensity),
+                                        S_coeff = as.vector(sel_intensity))
 
 # 8.3.1) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
-selection_coeff_total <- selection_coeff_total |>
-  left_join(integrated_data |> dplyr::select(Gene_name, CAI, CDC, ENC, 
-                                              Total_Codons, GC3s))
-
-# Add Log_Phi (AnaCoDa-estimated expression) to integrated_data for later analyses
 integrated_data <- integrated_data |>
-  dplyr::left_join(phi |> dplyr::mutate(Log_Phi = log10(Mean_phi + 0.0001)), 
-                   by = "Gene_name")
+  mutate(
+    # Calculate Geometric Mean (add small epsilon if zeros exist)
+    Geom_Exp = sqrt(Exp_leaf * Exp_bud),
+    
+    # Optional: Log transformation for plotting later
+    Log_Geom_Exp = log10(Geom_Exp + 0.0001) 
+  )
 
-cat("Phi estimates joined:", sum(!is.na(integrated_data$Log_Phi)), 
-    "genes with AnaCoDa phi values\n")
+selection_coeff_intensity <- selection_coeff_intensity |>
+  left_join(integrated_data |> dplyr::select(Gene_name, CAI, CDC, ENC, 
+                                              Total_Codons, GC3s, Geom_Exp, Log_Geom_Exp))
 
-cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_total[, 4:6]),
+# Correlation between selection metric and CUB metrics
+
+cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_intensity[, 2:5]),
                                    method = "spearman")
 
 # 8.3.2) Final visualization ----
+# Prepare Plot Data (Final Visualization)
 
-# 1. Prepare Data
-plot_data <- selection_coeff_total |>
-  dplyr::mutate(
-    # Add small constants to avoid log(0)
-    Log_S = log10(S_load + 0.01), 
-    Log_Phi = log10(Mean_phi + 0.0001),
+plot_data <- selection_coeff_intensity |>
+  mutate(
+    # Log Transform Selection Load (Load = Total Cost per Gene)
+    # Note: If you want Intensity (per codon), swap S_load for Selection_Intensity
+    Log_S_coeff = log10(S_coeff + 0.01), 
+    
+    # Log Transform Expression (using the new clear name)
+    Log_Phi = log10(Geom_Exp + 0.0001), 
+    
+    # Log Transform Length
     Log_Length = log10(Total_Codons)
   ) |>
-  dplyr::filter(!is.na(ENC), !is.na(Total_Codons), !is.na(CAI))
+  filter(!is.na(ENC), !is.na(Total_Codons), !is.na(CAI))
 
-# Define common color scale limits for Log_Phi across panels B and C
+# 4. Visualization Setup
+
+# Define common color scale limits
 phi_range <- range(plot_data$Log_Phi, na.rm = TRUE)
 
-# Fit linear model for Panel C annotation
-lm_length_S <- lm(Log_S ~ Log_Length, data = plot_data)
-lm_summary <- summary(lm_length_S)
-lm_eq <- sprintf("y = %.2f + %.2fx, R² = %.3f, p %s",
-                 coef(lm_length_S)[1], 
-                 coef(lm_length_S)[2],
-                 lm_summary$r.squared,
-                 ifelse(lm_summary$coefficients[2, 4] < 0.001, "< 0.001", 
-                        sprintf("= %.3f", lm_summary$coefficients[2, 4])))
+# Fit linear model for Panel C annotation (Load vs Length)
+tail_data <- plot_data |> 
+  dplyr::filter(Log_S_coeff > -0.5)
 
-# --- Panel A: Selection Load Distribution ---
-# Shows the landscape of selection intensities across the genome
-p1 <- ggplot(plot_data, aes(x = Log_S)) +
-  # Background shading for selection regimes
-  annotate("rect", xmin = -Inf, xmax = log10(1), ymin = -Inf, ymax = Inf, 
-           fill = "gray90", alpha = 0.5) +
-  annotate("rect", xmin = log10(100), xmax = Inf, ymin = -Inf, ymax = Inf, 
-           fill = "#ffe5e5", alpha = 0.5) +
-  geom_histogram(bins = 80, fill = "#69b3a2", color = "white", linewidth = 0.1) +
-  geom_vline(xintercept = log10(1), linetype = "dashed", color = "gray40") +
-  geom_vline(xintercept = log10(100), linetype = "dashed", color = "red") +
-  annotate("text", x = log10(0.1), y = 1900, label = "Drift Zone", 
-           angle = 90, color = "gray40", fontface = "bold", vjust = 1.5, hjust = 1) +
-  annotate("text", x = log10(500), y = 1900, label = "Strong Selection", 
-           angle = 90, color = "red", fontface = "bold", vjust = 1.5, hjust = 1) +
-  labs(x = expression(Log[10](S)), y = "Gene Count") +
+# Fit LM specifically on the tail
+lm_tail <- lm(GC3s ~ Log_S_coeff, data = tail_data)
+lm_tail_eq <- sprintf("Tail: y = %.2f + %.2fx\nR² = %.3f, p = %.4f",
+                      coef(lm_tail)[1], 
+                      coef(lm_tail)[2], 
+                      summary(lm_tail)$r.squared,
+                      summary(lm_tail)$coefficients["Log_S_coeff","Pr(>|t|)"])
+
+# Panel A: Selection Load Distribution
+drift_thresh <- log10(1 + 0.01)   
+strong_thresh <- log10(5 + 0.01)
+y_max_anno <- 10000
+
+p1 <- ggplot(plot_data, aes(x = Log_S_coeff)) +
+  
+  # --- Background Shading ---
+  annotate("rect", xmin = -Inf, xmax = drift_thresh, 
+           ymin = 0, ymax = Inf, fill = "gray95", alpha = 0.8) +
+  annotate("rect", xmin = strong_thresh, xmax = Inf, 
+           ymin = 0, ymax = Inf, fill = "#ffe5e5", alpha = 0.5) +
+  
+  # --- Histogram ---
+  geom_histogram(bins = 100, fill = "#69b3a2", color = "white", linewidth = 0.05) +
+  
+  # --- Vertical Threshold Lines ---
+  geom_vline(xintercept = drift_thresh, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = strong_thresh, linetype = "dotted", color = "red") +
+  
+  # --- Vertical Text Annotations (No Ne*s text) ---
+  # Drift Label (Left side, Vertical)
+  annotate("text", x = log10(0.05), y = y_max_anno/6, 
+           label = "Drift Dominated", 
+           color = "gray50", fontface = "bold", size = 4, 
+           angle = 0) +
+  
+  # Strong Selection Label (Right side, Vertical)
+  annotate("text", x = log10(12), y = y_max_anno/12, 
+           label = "Strong Selection", 
+           color = "red", fontface = "bold", size = 4, 
+           angle = 90) +
+  
+  # --- Custom "Separated" Rug ---
+  # We draw segments explicitly at y = -0.5 (below axis) to create the gap
+  geom_segment(aes(x = Log_S_coeff, xend = Log_S_coeff, 
+                   y = -0.05, yend = -0.2), # Adjust these values for tick length/position
+               alpha = 0.3, color = "darkgreen") +
+  
+  # --- Scales & Coordinates ---
+  scale_y_continuous(
+    trans = "log1p", 
+    breaks = c(0, 10, 100, 1000, 10000), 
+    labels = comma_format(accuracy = 1),
+    expand = c(0, 0)
+  ) +
+  
+  # This allows drawing below the axis (where we put the rug)
+  coord_cartesian(clip = "off", ylim = c(0, NA)) + 
+  
+  labs(x = expression(Log[10]("Selection Intensity" ~ (S[avg]))), 
+       y = "Gene Count (Log1p Scale)") +
+  
+  theme_custom() +
+  # Add margin at bottom to ensure the new rug doesn't get cut off
+  theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
+
+# Panel B: CAI vs Selection Load
+p2 <- ggplot(plot_data, aes(x = Log_S_coeff, y = CAI)) +
+  geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
+  scale_color_viridis_c(option = "plasma", name = expression(Log[10](Phi[geom])), 
+                        limits = phi_range, direction = 1) +
+  geom_smooth(color = "black") +
+  labs(x = expression(Log[10](S[avg])), y = "CAI") +
   theme_custom()
 
-# --- Panel B: CAI vs Selection Load ---
-# Key insight: CAI only captures selection in highly expressed genes
-# Low-expression genes show weak CAI-S correlation (CAI misses drift-dominated genes)
-p2 <- ggplot(plot_data, aes(x = Log_S, y = CAI)) +
-  geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
-  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
-              color = "black", linewidth = 1, se = TRUE, alpha = 0.3) +
-  scale_color_viridis_c(option = "plasma", name = expression(Log[10](phi)), 
+# Panel C: Gene Length Effect
+p3_main <- ggplot(plot_data, aes(x = Log_S_coeff, y = GC3s)) +
+  geom_point(aes(color = Log_Phi), alpha = 0.3, size = 0.8) +
+  
+  # Use GAM to show the true shape (Flat -> Rising)
+  geom_smooth(method = "gam", color = "black", se = TRUE, size = 0.8) +
+  
+  scale_color_viridis_c(option = "plasma", name = expression(Log[10](Phi[geom])), 
                         limits = phi_range, direction = 1) +
-  labs(
-    x = expression(Log[10](S)~"(Selection Load)"),
-    y = "Codon Adaptation Index (CAI)"
-  ) +
+  
+  # Add a box to show where the inset comes from
+  annotate("rect", xmin = -0.5, xmax = max(plot_data$Log_S_coeff), 
+           ymin = min(tail_data$GC3s), ymax = max(tail_data$GC3s),
+           fill = NA, color = "red", linetype = "dashed", alpha = 0.5) +
+  
+  labs(x = expression(Log[10]("Selection Intensity" ~ (S[avg]))), 
+       y = expression(GC3s)) +
   theme_custom() +
-  theme(legend.position = "right")
+  theme(legend.position = "none") # Remove legend (shared in combined plot)
 
-# --- Panel C: Gene Length Effect ---
-# Longer genes accumulate more selection load (more codons = more sites under selection)
-# Color by expression to show the interplay: long + highly expressed = maximum S
-p3 <- ggplot(plot_data, aes(x = Log_Length, y = Log_S)) +
+# --- 3. Create the Inset Plot (The Linear Tail) ---
+p3_zoom_in <- ggplot(tail_data, aes(x = Log_S_coeff, y = GC3s)) +
   geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
-  geom_smooth(method = "lm", color = "black", linewidth = 1, se = TRUE, alpha = 0.3) +
-  scale_color_viridis_c(option = "plasma", name = expression(Log[10](phi)), 
-                        limits = phi_range, direction = 1) +
-  # Add linear equation annotation
-
-  annotate("text", x = min(plot_data$Log_Length, na.rm = TRUE) + 0.1, 
-           y = max(plot_data$Log_S, na.rm = TRUE) - 0.2,
-           label = lm_eq, hjust = 0, size = 3.5, fontface = "italic") +
-  labs(
-    x = expression(Log[10]~"(Gene Length in Codons)"),
-    y = expression(Log[10](S)~"(Selection Load)")
-  ) +
+  # Linear model for the tail
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  scale_color_viridis_c(option = "plasma", limits = phi_range, direction = 1) +
+  
+  # Add the equation inside the inset
+  annotate("text", x = min(tail_data$Log_S_coeff), y = max(tail_data$GC3s), 
+           label = lm_tail_eq, hjust = 0, vjust = 1, size = 3, color = "red") +
+  
   theme_custom() +
-  theme(legend.position = "right")
+  labs(x = expression(Log[10]("Selection Intensity" ~ (S[avg]))), 
+       y = expression(GC3s)) +
+  theme(legend.position = "none") 
 
-# --- Combine Plots ---
-combined_plot <- (p1 | p2) / p3 + 
-  plot_annotation(tag_levels = 'A')
-
-# Save
-ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 11, height = 9)
+# Combine
+combined_plot <- (p1 | p2) / p3_main / p3_zoom_in + plot_annotation(tag_levels = 'A')
+ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 11, height = 14)
 
 # 8.4) GO-enrichment analysis of genes with a massive selection load ----
 
-thr_sel <- 1e5
+thr_sel <- 1
 
-subset_strongly_shaped_by_s <- selection_coeff_total |>
-  dplyr::filter(S_load > thr_sel) |>
+subset_strongly_shaped_by_s <- selection_coeff_intensity |>
+  dplyr::filter(S_coeff > thr_sel) |>
   dplyr::pull(Gene_name)
 
-custom_bag <- selection_coeff_total |> dplyr::pull(Gene_name)
+custom_bag <- selection_coeff_intensity |> dplyr::pull(Gene_name)
 
 GO_results <- gost(query = subset_strongly_shaped_by_s,
                    organism = 'gp__q7VP_EAck_dZk',
@@ -1709,9 +1846,9 @@ write.csv(x = GO_results, file = "./results/Go_enrichment.csv", quote = T,
 
 # 8.5) Getting top 10 genes in terms of S_load ----
 
-subset_strongly_shaped_by_s <- selection_coeff_total |>
-  dplyr::filter(S_load > thr_sel) |>
-  dplyr::arrange(desc(S_load)) |>
+subset_strongly_shaped_by_s <- selection_coeff_intensity |>
+  dplyr::filter(S_coeff > thr_sel) |>
+  dplyr::arrange(desc(S_coeff)) |>
   dplyr::slice(1:10) |>
   dplyr::pull(Gene_name)
 
@@ -2277,15 +2414,15 @@ for (i in seq_len(nrow(pca_wilcox_results))) {
 
 # Test whether genes under strong vs weak selection show distinct codon patterns
 
-if (exists("selection_coeff_total") && "S_load" %in% names(selection_coeff_total)) {
+if (exists("selection_coeff_intensity") && "S_load" %in% names(selection_coeff_intensity)) {
   
   cat("\n--- CA/PCA Analysis by Selection Load ---\n")
   
   # Create S_load-based groups
-  s_quantiles <- quantile(selection_coeff_total$S_load, 
+  s_quantiles <- quantile(selection_coeff_intensity$S_load, 
                           probs = c(0.05, 0.95), na.rm = TRUE)
   
-  selection_groups <- selection_coeff_total |>
+  selection_groups <- selection_coeff_intensity |>
     dplyr::mutate(
       S_Group = dplyr::case_when(
         S_load >= s_quantiles[2] ~ "High Selection (Top 5%)",
@@ -2412,7 +2549,7 @@ if (exists("selection_coeff_total") && "S_load" %in% names(selection_coeff_total
   cat("\n✓ Selection load-based analysis complete\n")
   
 } else {
-  cat("\n⚠ selection_coeff_total not found - skipping S_load-based analysis\n")
+  cat("\n⚠ selection_coeff_intensity not found - skipping S_load-based analysis\n")
 }
 
 cat("\n✓ CA/PCA ordination analysis complete\n")
