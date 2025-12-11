@@ -1662,7 +1662,7 @@ selection_coeff_intensity <- data.frame(Gene_name = names(sel_intensity),
 # 8.3.1) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
 integrated_data <- integrated_data |>
-  mutate(
+  dplyr::mutate(
     # Calculate Geometric Mean (add small epsilon if zeros exist)
     Geom_Exp = sqrt(Exp_leaf * Exp_bud),
     
@@ -1672,7 +1672,8 @@ integrated_data <- integrated_data |>
 
 selection_coeff_intensity <- selection_coeff_intensity |>
   left_join(integrated_data |> dplyr::select(Gene_name, CAI, CDC, ENC, 
-                                              Total_Codons, GC3s, Geom_Exp, Log_Geom_Exp))
+                                              Total_Codons, GC3s, Geom_Exp, Log_Geom_Exp,
+                                              Pi_mean_4fold, TajimaD_4fold))
 
 # Correlation between selection metric and CUB metrics
 
@@ -2244,13 +2245,13 @@ for (i in 1:nrow(mg_summary)) {
 cat("\n")
 
 ## *****************************************************************************
-## 8) Correspondence analysis over counts and PCA over RSCU ----
+## 10) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
 ## Simplified version: One biplot per analysis showing preferred vs non-preferred codons
 
 source("./src/enhanced_biplot.R")
 
-# 8.1) CA Analysis ---- 
+# 10.1) CA Analysis ---- 
 
 codon_usage_m <- as.matrix(codon_usage[, -1])
 rownames(codon_usage_m) <- codon_usage[[1]]
@@ -2336,7 +2337,7 @@ for (i in seq_len(nrow(ca_wilcox_results))) {
               ca_wilcox_results$Significance[i]))
 }
 
-# 8.2) PCA Analysis ----
+# 10.2) PCA Analysis ----
 
 rscu_m <- as.matrix(cub_results$rscu_results[, -1])
 rownames(rscu_m) <- cub_results$rscu_results[[1]]
@@ -2417,7 +2418,7 @@ for (i in seq_len(nrow(pca_wilcox_results))) {
               pca_wilcox_results$Significance[i]))
 }
 
-# 8.3) Selection Load (S_load) Based Analysis ----
+# 10.3) Selection Load (S_load) Based Analysis ----
 
 # Test whether genes under strong vs weak selection show distinct codon patterns
 
@@ -2562,15 +2563,15 @@ if (exists("selection_coeff_intensity") && "S_load" %in% names(selection_coeff_i
 cat("\n✓ CA/PCA ordination analysis complete\n")
 cat("  Key outputs: CA_preference_biplot.pdf, PCA_preference_biplot.pdf\n\n")
 
-# 8.5) 3D visuals for PCA results ----
+# 10.5) 3D visuals for PCA results ----
 
-cat("\n=== 8.5: Creating 3D PCA Visualizations ===\n")
+cat("\n=== 10.5: Creating 3D PCA Visualizations ===\n")
 
 source("./src/create_3d_pca_video.R")
 
-# 8.3.1) Generate dynamics 3D videos for presentation ----
+# 10.3.1) Generate dynamics 3D videos for presentation ----
 
-cat("\n8.3.1: Creating interactive 3D PCA plot...\n")
+cat("\n10.3.1: Creating interactive 3D PCA plot...\n")
 
 # Ensure preferred_codons_roc has the required columns for 3D functions
 preferred_codons_roc <- preferred_codons_roc |>
@@ -2603,7 +2604,7 @@ cat("✓ Interactive 3D plot saved: ./results/PCA_3D_interactive.html\n")
 cat("  Open in browser to explore (rotate, zoom, hover for details)\n\n")
 
 # Create rotating animation (HTML with auto-rotation)
-cat("8.3.2: Creating rotating 3D animation...\n")
+cat("10.3.2: Creating rotating 3D animation...\n")
 
 pca_3d_animation <- create_3d_pca_animation(
   pca_result = rscu_PCA,
@@ -2652,7 +2653,7 @@ if (requireNamespace("magick", quietly = TRUE)) {
 cat("✓ 3D visualizations complete\n\n")
 
 ## *****************************************************************************
-## 9) tRNA abundance correlation analysis ----
+## 11) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
 
 # Analysis 1: By tRNA gene copy number (traditional approach)
@@ -2798,7 +2799,7 @@ cat("\n✓ Translational accuracy hypothesis test complete!\n")
 cat("  Results saved to: ./results/tRNA_analysis_pairing/\n\n")
 
 ## *****************************************************************************
-## 10) Polymorphism data integration ----
+## 12) Polymorphism data integration ----
 ## _____________________________________________________________________________
 
 pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
@@ -2814,8 +2815,28 @@ pi_data <- pi_data |>
 integrated_data <- integrated_data |>
   dplyr::left_join(pi_data, by = "Gene_name")
 
+# Differences in pi at synonymous sites as a function of expression
+
+pi_per_expression <- anova(lm(Pi_mean_4fold ~ Expression_Group, 
+                           data = integrated_data))
+
+# Visual
+
+ggplot(data = integrated_data, mapping = aes(x = Expression_Group,
+                                                       y = Pi_mean_4fold)) +
+  geom_boxplot() +
+  theme_custom()
+
+ggsave("./results/diversity_modeling/Pi_by_expression_group_boxplot.pdf",
+       width = 6, height = 4)
+
+# Post-hoc test
+
+pi_posthoc <- TukeyHSD(aov(lm(Pi_mean_4fold ~ Expression_Group, 
+                             data = integrated_data)))
+
 ## *****************************************************************************
-## 11) Model Selection for Diversity-Expression Relationship ----
+## 13) Model Selection for Diversity-Expression Relationship ----
 ## _____________________________________________________________________________
 
 # Test whether genetic diversity (Pi, Tajima's D) decreases with expression
@@ -2832,7 +2853,7 @@ cat("\n", paste(rep("=", 70), collapse = ""), "\n")
 cat("SYSTEMATIC MODEL SELECTION: Diversity vs Expression\n")
 cat(paste(rep("=", 70), collapse = ""), "\n\n")
 
-# 11.1) Analysis with EMPIRICAL expression (High_exp_log10) ----
+# 13.1) Analysis with EMPIRICAL expression (High_exp_log10) ----
 
 cat("=== Using Empirical Expression (High_exp_log10) ===\n\n")
 
@@ -2860,8 +2881,153 @@ tajimaD_models_empirical <- run_diversity_analysis_pipeline(
   output_dir = "./results/diversity_modeling"
 )
 
+# 13.2) Exploration of Bulmer effect ----
+
+# Using selection_coeff_intensity, let's define selection group
+
+selection_coeff_intensity <- selection_coeff_intensity |>
+  dplyr::mutate(
+    Selection_group = case_when(
+      S_coeff < 1 ~ "Negligible (Drift)",
+      S_coeff >= 1 & S_coeff < 5 ~ "Weak Selection",
+      S_coeff >= 5 ~ "Strong Selection"
+    ),
+    # distinct step to enforce order
+    Selection_group = factor(Selection_group, 
+                             levels = c("Negligible (Drift)", "Weak Selection", "Strong Selection"))
+  )
+
+# Check the counts
+table(selection_coeff_intensity$Selection_group)
+
+# ANOVA
+
+selection_pi_anova <- anova(lm(Pi_mean_4fold ~ Selection_group, 
+                               data = selection_coeff_intensity))
+
+ggplot(data = selection_coeff_intensity, mapping = aes(x = Selection_group,
+                                                       y = Pi_mean_4fold)) +
+  geom_boxplot() +
+  theme_custom()
+
+ggsave("./results/diversity_modeling/Pi_by_selection_group_boxplot.pdf",
+       width = 6, height = 4)
+
+tapply(selection_coeff_intensity$Pi_mean_4fold, 
+       selection_coeff_intensity$Selection_group, 
+       mean, na.rm=TRUE)
+       
+# ANOVA results is an artifact of aggregation. This analysis must be done per\
+# amino acid, because mutational bias are going to be different (also, ANOVA is\
+# not appropriate here)
+
+# 13.3) Per amino-acid derivation of pi at synonymous places ----
+
+# Mutational biases per amino acid family ----
+
+Q <- solve_Q_matrix(pi_A = dM_results$global_stats_introns[, "avg_pi_A"], 
+                    pi_C = dM_results$global_stats_introns[, "avg_pi_C"], 
+                    pi_G = dM_results$global_stats_introns[, "avg_pi_G"], 
+                    pi_T = dM_results$global_stats_introns[, "avg_pi_T"], 
+                    kappa = 2)
+
+preferred_codons_list <- list()
+
+for (i in 1:nrow(preferred_codons)) {
+  preferred_codons_list[[preferred_codons[i, 'aa']]] <- preferred_codons[i, 'Codon']
+}
+
+# Define the Genetic Code (Standard, One letter compatible with AnaCoda)
+genetic_code <- list(
+  'A' = c('GCT', 'GCC', 'GCA', 'GCG'),
+  'C' = c('TGT', 'TGC'),
+  'D' = c('GAT', 'GAC'),
+  'E' = c('GAA', 'GAG'),
+  'F' = c('TTT', 'TTC'),
+  'G' = c('GGT', 'GGC', 'GGA', 'GGG'),
+  'H' = c('CAT', 'CAC'),
+  'I' = c('ATT', 'ATC', 'ATA'),
+  'K' = c('AAA', 'AAG'),
+  'L' = c('TTA', 'TTG', 'CTT', 'CTC', 'CTA', 'CTG'),
+  'M' = c('ATG'),
+  'N' = c('AAT', 'AAC'),
+  'P' = c('CCT', 'CCC', 'CCA', 'CCG'),
+  'Q' = c('CAA', 'CAG'),
+  'R' = c('CGT', 'CGC', 'CGA', 'CGG', 'AGA', 'AGG'),
+  'S' = c('TCT', 'TCC', 'TCA', 'TCG'),
+  'T' = c('ACT', 'ACC', 'ACA', 'ACG'),
+  'V' = c('GTT', 'GTC', 'GTA', 'GTG'),
+  'W' = c('TGG'),
+  'Y' = c('TAT', 'TAC'),
+  'Z' = c('AGT', 'AGC')
+)
+
+genetic_code_df <- data.frame(
+  AA = rep(names(genetic_code), times = sapply(genetic_code, length)),
+  Codon = unlist(genetic_code),
+  stringsAsFactors = FALSE
+)
+
+aa_mut_rates <- get_aa_mutation_rates(Q, preferred_codons_list, genetic_code)
+
+vcf_codon <- fread("./data/all_chromosomes.codon_frequencies_preferred.txt")
+
+site_data_ready <- process_codon_vcf(vcf_codon, 
+                                   aa_mut_rates, 
+                                   genetic_code_df)
+
+final_gene_stats <- site_data_ready |>
+  group_by(Gene, AA) |>
+  summarise(
+    # 1. Observed Stats
+    Mean_Pi_Observed = mean(Site_Pi, na.rm = TRUE),
+    N_Sites = n(),
+    
+    # 2. Estimated Gamma (SFS)
+    # We pass the vectors of k and n into the custom function
+    Gamma_SFS = calc_gamma_vectorized(k, n, first(u), first(v)),
+    
+    # Keep the rates for downstream plotting
+    u = first(u),
+    v = first(v),
+    
+    .groups = "drop"
+  )
+
+final_gene_stats <- final_gene_stats |>
+  rowwise() |>
+  mutate(
+    # Calculate Alpha/Beta for the theory curve
+    # Assuming global theta ~ 0.015 (or calculate from your data)
+    theta_global = 0.015,
+    alpha_theory = theta_global * (u / (u+v)),
+    beta_theory  = theta_global * (v / (u+v)),
+    
+    # Calculate what Pi SHOULD be given the Gamma we just estimated
+    Pi_Expected = calculate_pi_analytical(alpha_theory, beta_theory, Gamma_SFS)
+  )
+
+# --- Visualization for VALINE (Example) ---
+plot_data <- final_gene_stats |> filter(AA == "V")
+
+ggplot(plot_data, aes(x = Gamma_SFS, y = Mean_Pi_Observed)) +
+  # 1. The Genes (Scatter)
+  geom_point(alpha = 0.3, color = "gray50") +
+  
+  # 2. The Trend of Data (Smoothed)
+  geom_smooth(method = "gam", color = "blue", se = FALSE) +
+  
+  # 3. The Theoretical Prediction (Red Line)
+  geom_line(aes(y = Pi_Expected), color = "red", linetype = "dashed", size = 1) +
+  
+  labs(title = "Validation: Valine (4-fold)",
+       subtitle = "Blue: Data Trend | Red: Theoretical Expectation (Wright)",
+       x = "Selection Coefficient (Gamma) from SFS",
+       y = "Nucleotide Diversity (Pi)") +
+  theme_custom()
+
 ## *****************************************************************************
-## 12) Codon Frequency Spectrum (CFS) Analysis ----
+## 14) Codon Frequency Spectrum (CFS) Analysis ----
 ## _____________________________________________________________________________
 # Analyze preferred codon frequency distributions to detect selection signatures
 # Note: We call this CFS (not SFS) because we lack ancestral state information
@@ -2880,12 +3046,12 @@ cfs_results <- run_cfs_analysis(
 cat("\n=== Integration with Expression Analysis ===\n\n")
 
 # The fixation index by amino acid can be compared to expression-related metrics
-fixation_by_aa <- cfs_results$selection_estimates %>%
+fixation_by_aa <- cfs_results$selection_estimates |>
   dplyr::select(Amino_Acid, Family, Fix_Ratio, Gamma_Estimate, Selection_Direction)
 
 cat("Fixation index summary by degeneracy:\n")
-fixation_summary <- cfs_results$selection_estimates %>%
-  group_by(Family) %>%
+fixation_summary <- cfs_results$selection_estimates |>
+  group_by(Family) |>
   summarise(
     Mean_Fix_Ratio = mean(Fix_Ratio),
     Mean_Gamma = mean(Gamma_Estimate),

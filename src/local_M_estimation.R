@@ -669,7 +669,7 @@ apply_q_matrix_to_windows <- function(nuc_composition_df, kappa = 2) {
     rowwise() %>%
     
     # 2. Mutate to create a new list column named 'Q_matrix'
-    mutate(
+    dplyr::mutate(
       Q_matrix = list(solve_Q_matrix(
         pi_A = pi_A, 
         pi_C = pi_C, 

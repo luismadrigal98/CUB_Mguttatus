@@ -184,3 +184,233 @@ calculate_pi_analytical <- function(alpha, beta, S) {
   # 3. Ratio
   return(exp(log_numerator - log_denom))
 }
+
+get_aa_mutation_rates <- function(Q, pref_codons_list, genetic_code) {
+  
+  results <- data.frame(AA = character(), u = numeric(), v = numeric(), 
+                        stringsAsFactors = FALSE)
+  
+  for (aa in names(genetic_code)) {
+    codons <- genetic_code[[aa]]
+    if (length(codons) < 2) next # Skip Met, Trp
+    
+    # Identify Preferred and Unpreferred sets for this AA
+    # You need to supply 'pref_codons_list' based on your AnaCoDa results
+    pref <- intersect(codons, pref_codons_list[[aa]])
+    unpref <- setdiff(codons, pref)
+    
+    if (length(pref) == 0 || length(unpref) == 0) next
+    
+    # --- Calculate u (Unpreferred -> Preferred) ---
+    # We average the "flux" leaving each Unpreferred codon
+    u_rates <- c()
+    for (c_un in unpref) {
+      rate_out <- 0
+      for (c_p in pref) {
+        # Check if 1-step mutation
+        diffs <- 0
+        nuc_from <- ""
+        nuc_to <- ""
+        for (i in 1:3) {
+          if (substr(c_un, i, i) != substr(c_p, i, i)) {
+            diffs <- diffs + 1
+            nuc_from <- substr(c_un, i, i)
+            nuc_to <- substr(c_p, i, i)
+          }
+        }
+        
+        # If it is a single step mutation, it is a valid synonymous path
+        if (diffs == 1) {
+          rate_out <- rate_out + Q[nuc_from, nuc_to]
+        }
+      }
+      u_rates <- c(u_rates, rate_out)
+    }
+    u <- mean(u_rates) # Average rate per Unpreferred codon
+    
+    # --- Calculate v (Preferred -> Unpreferred) ---
+    v_rates <- c()
+    for (c_p in pref) {
+      rate_out <- 0
+      for (c_un in unpref) {
+        # Check if 1-step mutation
+        diffs <- 0
+        nuc_from <- ""
+        nuc_to <- ""
+        for (i in 1:3) {
+          if (substr(c_p, i, i) != substr(c_un, i, i)) {
+            diffs <- diffs + 1
+            nuc_from <- substr(c_p, i, i)
+            nuc_to <- substr(c_un, i, i)
+          }
+        }
+        
+        if (diffs == 1) {
+          rate_out <- rate_out + Q[nuc_from, nuc_to]
+        }
+      }
+      v_rates <- c(v_rates, rate_out)
+    }
+    v <- mean(v_rates) # Average rate per Preferred codon
+    
+    results <- rbind(results, data.frame(AA = aa, u = u, v = v))
+  }
+  return(results)
+}
+
+calc_gamma_wrapper <- function(k_list, n_list, u, v) {
+  # Don't run if too few sites
+  if(length(k_list) < 2) return(NA) 
+  
+  # Run your optimization function
+  gamma <- estimate_gamma_for_AA(counts = unlist(k_list), 
+                                 sample_sizes = unlist(n_list), 
+                                 u = u, v = v)
+  return(gamma)
+}
+
+process_codon_vcf <- function(vcf_dt, aa_mut_rates, genetic_code_df) {
+  
+  # Ensure input is a data.table for speed
+  if (!is.data.table(vcf_dt)) setDT(vcf_dt)
+  
+  # A. Parse the "Codon_Variants" column
+  # We select only necessary columns and expand the variants
+  # "GCC:183;GCA:4" -> two rows
+  long_vcf <- vcf_dt[, .(Gene, Codon_Pos, AA, Preferred_Codon, Codon_Variants)] %>%
+    separate_rows(Codon_Variants, sep = ";") %>%
+    separate(Codon_Variants, into = c("Variant_Codon", "Count"), sep = ":", convert = TRUE)
+  
+  # B. Handle the Serine S/Z Split Correction
+  # AnaCoDa calls 2-fold Serines 'Z' (AGT, AGC).
+  # The VCF likely labels them 'S'. We must re-label them based on the Preferred Codon.
+  # If Preferred is AGT or AGC, change AA to 'Z'. Otherwise leave as 'S'.
+  long_vcf <- long_vcf %>%
+    mutate(
+      AA = case_when(
+        AA == "S" & (Preferred_Codon == "AGT" | Preferred_Codon == "AGC") ~ "Z",
+        TRUE ~ AA
+      )
+    )
+  
+  # C. Filter for Synonymous Variants Only
+  # Join variant codons with genetic code to check their AA identity
+  clean_counts <- long_vcf %>%
+    inner_join(genetic_code_df, by = c("Variant_Codon" = "Codon")) %>%
+    # IMPORTANT: Filter condition
+    # AA.x is the Site's AA (from VCF column, potentially corrected to Z)
+    # AA.y is the Variant's AA (from genetic code lookup)
+    filter(AA.x == AA.y) %>% 
+    rename(AA_Site = AA.x) %>%
+    dplyr::select(-AA.y) 
+  
+  # D. Aggregate to get k (Preferred) and Recalculated n (Total Synonymous)
+  site_stats <- clean_counts %>%
+    group_by(Gene, Codon_Pos, AA_Site, Preferred_Codon) %>%
+    summarise(
+      # k = Sum counts where Variant is the Preferred one
+      k = sum(Count[Variant_Codon == Preferred_Codon]),
+      
+      # n = Sum counts of ALL synonymous variants (excluding non-syn noise)
+      n = sum(Count),
+      
+      # Calculate Site Pi
+      p = ifelse(n > 0, k/n, 0),
+      # Note: n/(n-1) correction handles sample size bias
+      Site_Pi = ifelse(n > 1, 2 * p * (1-p) * (n/(n-1)), 0),
+      
+      .groups = "drop"
+    ) %>%
+    rename(AA = AA_Site) # Rename back to AA for merging
+  
+  # E. Merge in the Mutation Rates (u, v)
+  final_site_data <- site_stats %>%
+    left_join(aa_mut_rates, by = "AA") %>%
+    filter(!is.na(u)) # Removes Stop codons or AAs without defined rates
+  
+  return(final_site_data)
+}
+
+calc_gamma_vectorized <- function(k_vec, n_vec, u, v) {
+  # If gene has too few sites for this AA, return NA
+  if(length(k_vec) == 0) return(NA)
+  
+  # Use the optimizer function defined previously
+  tryCatch(
+    estimate_gamma_for_AA(counts = k_vec, sample_sizes = n_vec, u = u, v = v),
+    error = function(e) NA
+  )
+}
+
+calc_gamma_wrapper <- function(k_list, n_list, u, v) {
+  # Don't run if too few sites
+  if(length(k_list) < 2) return(NA) 
+  
+  # Run your optimization function
+  gamma <- estimate_gamma_for_AA(counts = unlist(k_list), 
+                                 sample_sizes = unlist(n_list), 
+                                 u = u, v = v)
+  return(gamma)
+}
+
+process_codon_vcf_fast <- function(vcf_dt, aa_mut_rates, genetic_code_df) {
+  
+  # Ensure input is data.table
+  if (!is.data.table(vcf_dt)) setDT(vcf_dt)
+  if (!is.data.table(genetic_code_df)) setDT(genetic_code_df)
+  if (!is.data.table(aa_mut_rates)) setDT(aa_mut_rates)
+  
+  # 1. Select only needed columns to save memory
+  # We subset immediately
+  dt <- vcf_dt[, .(Gene, Codon_Pos, AA, Preferred_Codon, Codon_Variants)]
+  
+  # 2. Fast String Splitting (The heavy lifting)
+  # This uses data.table's internal C-based splitter which is vastly faster than tidyr
+  dt <- dt[, tstrsplit(Codon_Variants, ";", fixed=TRUE), by = .(Gene, Codon_Pos, AA, Preferred_Codon)]
+  
+  # Melt long to get single column of variants
+  dt <- melt(dt, id.vars = c("Gene", "Codon_Pos", "AA", "Preferred_Codon"), 
+             value.name = "Variant_String", na.rm = TRUE)
+  
+  # Split "Codon:Count" (e.g. "GCC:183")
+  dt[, c("Variant_Codon", "Count") := tstrsplit(Variant_String, ":", fixed=TRUE)]
+  dt[, Count := as.integer(Count)]
+  dt[, Variant_String := NULL] # Clean up
+  
+  # 3. Handle S/Z Split (Vectorized)
+  dt[AA == "S" & (Preferred_Codon == "AGT" | Preferred_Codon == "AGC"), AA := "Z"]
+  
+  # 4. Filter Synonymous (Fast Join)
+  # Set keys for speed
+  setkey(dt, Variant_Codon)
+  setkey(genetic_code_df, Codon)
+  
+  # Inner Join
+  dt <- genetic_code_df[dt, nomatch=0] # Match Variant_Codon to Codon
+  
+  # Filter where Site AA == Variant AA (renamed column handling)
+  # data.table merge usually keeps the 'i' columns, check names
+  # genetic_code_df has 'AA' and 'Codon'. dt has 'AA' (site). 
+  # After merge, we likely have i.AA (site) and AA (variant)
+  dt <- dt[AA == i.AA] 
+  
+  # 5. Aggregation
+  result <- dt[, .(
+    k = sum(Count[Variant_Codon == i.Preferred_Codon]),
+    n = sum(Count)
+  ), by = .(Gene, Codon_Pos, i.AA, i.Preferred_Codon)]
+  
+  # Rename for clarity
+  setnames(result, c("i.AA", "i.Preferred_Codon"), c("AA", "Preferred_Codon"))
+  
+  # 6. Calculate Pi
+  result[, p := ifelse(n > 0, k/n, 0)]
+  result[, Site_Pi := ifelse(n > 1, 2 * p * (1-p) * (n/(n-1)), 0)]
+  
+  # 7. Merge Rates
+  setkey(result, AA)
+  setkey(aa_mut_rates, AA)
+  final <- aa_mut_rates[result, nomatch=0]
+  
+  return(final)
+}
