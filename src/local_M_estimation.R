@@ -257,7 +257,6 @@ get_inergenic_sequences <- function(fasta_file, ann_file,
   # --- 4b. Handle Overlapping Regions ---
   # When genes are close together, their flanking regions can overlap.
   # We use `reduce()` to merge overlapping ranges, ensuring each genomic
-
   # position is counted only ONCE in downstream nucleotide composition analysis.
   
   message("Step 3b: Resolving overlapping regions...")

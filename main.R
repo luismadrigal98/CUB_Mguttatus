@@ -1679,6 +1679,8 @@ selection_coeff_intensity <- selection_coeff_intensity |>
 cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_intensity[, 2:5]),
                                    method = "spearman")
 
+cor.test(selection_coeff_intensity$S_coeff, selection_coeff_intensity$CAI)
+
 # 8.3.2) Final visualization ----
 # Prepare Plot Data (Final Visualization)
 
@@ -1741,7 +1743,7 @@ p1 <- ggplot(plot_data, aes(x = Log_S_coeff)) +
            angle = 0) +
   
   # Strong Selection Label (Right side, Vertical)
-  annotate("text", x = log10(12), y = y_max_anno/12, 
+  annotate("text", x = log10(12), y = y_max_anno/15, 
            label = "Strong Selection", 
            color = "red", fontface = "bold", size = 4, 
            angle = 90) +
@@ -1836,12 +1838,17 @@ GO_results <- gost(query = subset_strongly_shaped_by_s,
                    correction_method = 'fdr',
                    domain_scope = "custom",
                    custom_bg = custom_bag,
-                   user_threshold = 0.05)$result |>
-  dplyr::select(-parents)
+                   user_threshold = 0.05)
+  
+GO1_plot <- gostplot(GO_results, capped = TRUE, interactive = FALSE)
+
+ggsave(filename = "./results/Manhattan_like_GO.pdf", plot = GO1_plot, 
+       width = 10, height = 8)
 
 # Export results
 
-write.csv(x = GO_results, file = "./results/Go_enrichment.csv", quote = T, 
+write.csv(x = GO_results$result |> dplyr::select(-parents), 
+          file = "./results/Go_enrichment.csv", quote = T, 
           row.names = F)
 
 # 8.5) Getting top 10 genes in terms of S_load ----
