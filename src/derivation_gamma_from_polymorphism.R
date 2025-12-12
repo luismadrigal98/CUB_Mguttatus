@@ -82,7 +82,7 @@ get_prob_k_analytical <- function(k, n, u, v, S, theta = 0.0312) {
 #   sample_sizes: Vector of sample sizes (n) for those sites (usually 187, because we have haplotypes)
 #   u, v: Mutation rates for this specific Amino Acid family
 
-estimate_gamma_for_AA <- function(counts, sample_sizes, u, v, S_interval = c(-5, 20), theta = 0.0312) {
+estimate_gamma_for_AA <- function(counts, sample_sizes, u, v, S_interval = c(0, 20), theta = 0.0312) {
   
   nll <- function(S) {
     log_probs <- mapply(function(k, n) {
