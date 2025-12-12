@@ -3025,8 +3025,175 @@ final_gene_stats <- gamma_results |>
     Pi_Expected = calc_pi_vec(alpha_theory, beta_theory, Gamma_SFS)
   )
 
-# --- Visualization for VALINE (Example) ---
-plot_data <- final_gene_stats |> dplyr::filter(AA == "V")
+final_gene_stats$Pi_Ratio <- final_gene_stats$Mean_Pi_Observed / final_gene_stats$Pi_Expected
+
+## *****************************************************************************
+## 13.5) Aggregate to Gene Level ----
+## _____________________________________________________________________________
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("AGGREGATING TO GENE LEVEL\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+# Filter at AA level before aggregating
+aa_filtered <- final_gene_stats |>
+  dplyr::filter(
+    N_Sites >= 15,           # Adequate coverage
+    Gamma_SFS >= 0,          # Positive selection only
+    !is.na(Gamma_SFS),       # Valid estimate
+    Mean_Pi_Observed < 0.1   # Remove extreme outliers
+  )
+
+cat("AA-level filtering:\n")
+cat("  Original rows:", nrow(final_gene_stats), "\n")
+cat("  After filtering:", nrow(aa_filtered), "\n")
+cat("  Retained:", round(100 * nrow(aa_filtered) / nrow(final_gene_stats), 1), "%\n\n")
+
+# Aggregate to gene level with weighted means
+gene_level_stats <- aa_filtered |>
+  group_by(Gene) |>
+  summarise(
+    # Weighted means (weight by N_Sites)
+    Mean_Pi_Obs = weighted.mean(Mean_Pi_Observed, N_Sites, na.rm = TRUE),
+    Mean_Gamma = weighted.mean(Gamma_SFS, N_Sites, na.rm = TRUE),
+    Mean_Pi_Exp = weighted.mean(Pi_Expected, N_Sites, na.rm = TRUE),
+    
+    # Summary statistics
+    Total_Sites = sum(N_Sites, na.rm = TRUE),
+    N_AA_Used = n(),
+    SD_Gamma = sd(Gamma_SFS, na.rm = TRUE),
+    Max_Gamma = max(Gamma_SFS, na.rm = TRUE),
+    Min_Gamma = min(Gamma_SFS, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) |>
+  # Filter genes with insufficient data
+  dplyr::filter(
+    N_AA_Used >= 3,      # At least 3 amino acids
+    Total_Sites >= 50    # Good overall coverage
+  ) |>
+  # Add Pi_Ratio at gene level
+  mutate(Pi_Ratio = Mean_Pi_Obs / Mean_Pi_Exp)
+
+cat("Gene-level aggregation:\n")
+cat("  Total genes:", nrow(gene_level_stats), "\n")
+cat("  Median sites per gene:", median(gene_level_stats$Total_Sites), "\n")
+cat("  Median AAs per gene:", median(gene_level_stats$N_AA_Used), "\n\n")
+
+cat("Gene-level summary:\n")
+print(summary(gene_level_stats))
+
+# Save gene-level statistics
+fwrite(gene_level_stats, "./results/diversity_modeling/gene_level_statistics.csv")
+
+## *****************************************************************************
+## 13.6) Visualize Hump Effect at Gene Level ----
+## _____________________________________________________________________________
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("VISUALIZING HUMP EFFECT (Gene Level)\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+# Create binned data for clearer visualization
+gene_level_stats$Gamma_Bin <- cut(
+  gene_level_stats$Mean_Gamma,
+  breaks = c(0, 0.5, 1, 1.5, 2, 3, 5, 10, 20),
+  labels = c("0-0.5", "0.5-1", "1-1.5", "1.5-2", "2-3", "3-5", "5-10", "10-20")
+)
+
+binned_summary <- gene_level_stats |>
+  filter(!is.na(Gamma_Bin)) |>
+  group_by(Gamma_Bin) |>
+  summarise(
+    Mean_Pi_Obs = mean(Mean_Pi_Obs, na.rm = TRUE),
+    Mean_Pi_Exp = mean(Mean_Pi_Exp, na.rm = TRUE),
+    SE_Obs = sd(Mean_Pi_Obs, na.rm = TRUE) / sqrt(n()),
+    SE_Exp = sd(Mean_Pi_Exp, na.rm = TRUE) / sqrt(n()),
+    N_Genes = n(),
+    Gamma_Mid = mean(Mean_Gamma, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("Binned summary:\n")
+print(binned_summary)
+
+# Create two-panel plot: scatter + binned
+library(gridExtra)
+
+# Panel 1: Scatter plot with smoothers
+p1 <- ggplot(gene_level_stats, aes(x = Mean_Gamma, y = Mean_Pi_Obs)) +
+  geom_point(alpha = 0.2, color = "gray50", size = 0.8) +
+  geom_smooth(aes(color = "Observed"), method = "gam", se = TRUE, linewidth = 1.2) +
+  geom_line(aes(y = Mean_Pi_Exp, color = "Expected"), linewidth = 1.2) +
+  scale_color_manual(
+    name = "Pi",
+    values = c("Observed" = "blue", "Expected" = "red"),
+    labels = c("Observed" = "Observed (GAM smooth)", "Expected" = "Wright-Fisher prediction")
+  ) +
+  labs(
+    title = "Hump Effect: Observed vs Expected Nucleotide Diversity",
+    subtitle = sprintf("Gene-level analysis (n = %d genes)", nrow(gene_level_stats)),
+    x = "Selection Coefficient (Gamma)",
+    y = "Nucleotide Diversity (Pi)"
+  ) +
+  coord_cartesian(xlim = c(0, 10), ylim = c(0, 0.03)) +
+  theme_custom() +
+  theme(legend.position = "bottom")
+
+# Panel 2: Binned means with error bars
+p2 <- ggplot(binned_summary, aes(x = Gamma_Mid)) +
+  geom_line(aes(y = Mean_Pi_Obs, color = "Observed"), linewidth = 1.2) +
+  geom_point(aes(y = Mean_Pi_Obs, color = "Observed"), size = 3) +
+  geom_errorbar(aes(ymin = Mean_Pi_Obs - SE_Obs, ymax = Mean_Pi_Obs + SE_Obs, color = "Observed"),
+                width = 0.2, linewidth = 0.8) +
+  geom_line(aes(y = Mean_Pi_Exp, color = "Expected"), linewidth = 1.2, linetype = "dashed") +
+  geom_point(aes(y = Mean_Pi_Exp, color = "Expected"), size = 3, shape = 17) +
+  scale_color_manual(
+    name = "Pi",
+    values = c("Observed" = "blue", "Expected" = "red")
+  ) +
+  labs(
+    title = "Binned Means: Clear Hump Pattern",
+    subtitle = "Error bars = SE",
+    x = "Selection Coefficient (Gamma)",
+    y = "Mean Nucleotide Diversity (Pi)"
+  ) +
+  theme_custom() +
+  theme(legend.position = "bottom")
+
+# Save combined plot
+pdf("./results/diversity_modeling/Hump_Effect_Gene_Level.pdf", width = 14, height = 6)
+grid.arrange(p1, p2, ncol = 2)
+dev.off()
+
+cat("\nHump effect plots saved to: ./results/diversity_modeling/Hump_Effect_Gene_Level.pdf\n")
+
+# Statistical test for hump effect
+weak_sel <- gene_level_stats |> filter(Mean_Gamma >= 0.5 & Mean_Gamma < 2)
+strong_sel <- gene_level_stats |> filter(Mean_Gamma >= 2)
+
+cat("\nHump effect test:\n")
+cat("  Weak selection (0.5 < Gamma < 2):\n")
+cat("    Mean Pi_Obs:", round(mean(weak_sel$Mean_Pi_Obs, na.rm = TRUE), 5), "\n")
+cat("    N genes:", nrow(weak_sel), "\n")
+cat("  Strong selection (Gamma >= 2):\n")
+cat("    Mean Pi_Obs:", round(mean(strong_sel$Mean_Pi_Obs, na.rm = TRUE), 5), "\n")
+cat("    N genes:", nrow(strong_sel), "\n")
+cat("  Difference:", round(mean(weak_sel$Mean_Pi_Obs) - mean(strong_sel$Mean_Pi_Obs), 5), "\n")
+
+if (mean(weak_sel$Mean_Pi_Obs) > mean(strong_sel$Mean_Pi_Obs)) {
+  cat("  ✓ HUMP CONFIRMED: Weak selection has higher diversity!\n")
+} else {
+  cat("  ✗ No hump: Strong selection has equal or higher diversity\n")
+}
+
+# Keep AA-level filtered data for amino acid-specific analyses
+final_gene_stats_filtered <- final_gene_stats |>
+  dplyr::filter(Gamma_SFS >= 0.0 &
+                Pi_Ratio < 5)
+
+# --- Visualization for VALINE (Example - AA level) ---
+plot_data <- final_gene_stats_filtered |> dplyr::filter(AA == "V")
 
 ggplot(plot_data, aes(x = Gamma_SFS, y = Mean_Pi_Observed)) +
   # 1. The Genes (Scatter)
