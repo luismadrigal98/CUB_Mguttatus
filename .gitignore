@@ -27,3 +27,6 @@ miscellanea_code/four_fold_contraster.py
 main_cubar.R
 archive/old_code.R
 data/CAI_Reference_Set_annotation_only.txt
+tests/validation_log.txt
+.gitignore
+tests/validation_results.csv

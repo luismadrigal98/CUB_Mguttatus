@@ -7,28 +7,26 @@
 # 1) Define the Probability Function (Wright's Distribution integrated) ----
 # ______________________________________________________________________________
 
-get_prob_k <- function(k, n, alpha, beta, S) 
-{
-  #' Calculates the probability of observing k derived alleles in sample size n
-  #' given mutation rates (alpha=4Neu, beta=4Nev) and selection (S=4Nes).
-  #'
-  #' u: rate from Unpreferred -> Preferred
-  #' v: rate from Preferred -> Unpreferred
-  #' alpha: Population level mutation rate towards preferred
-  #' beta: Population level mutation rate towards unpreferred
-  #' S: Selection coefficient favoring Preferred
+get_prob_k <- function(k, n, u, v, S, theta = 0.0312) {
+  #' Calculates probability using internally scaled mutation rates
+  #' theta: The observed population mutation rate (Pi from synonymous sites)
+  
+  # --- INTERNAL SCALING FIX ---
+  # Force alpha + beta to equal the observed theta (0.0312)
+  # Preserving the bias ratio (u vs v) from the Q-matrix
+  rate_sum <- u + v
+  alpha <- theta * (u / rate_sum)
+  beta  <- theta * (v / rate_sum)
   
   # Define the unnormalized Wright density
-  # x is frequency of PREFERRED allele
   wright_density <- function(x) {
     if(x <= 0 | x >= 1) return(0)
-    # Using log scale for numerical stability then exp
+    # Using log scale for numerical stability
     val <- (alpha - 1)*log(x) + (beta - 1)*log(1-x) + S*x
     return(exp(val))
   }
   
-  # Calculate Normalization Constant (Denominator)
-  # Integrate density from 0 to 1
+  # Normalization Constant (Denominator)
   denom <- tryCatch(
     integrate(wright_density, 0, 1)$value,
     error = function(e) NA
@@ -36,12 +34,11 @@ get_prob_k <- function(k, n, alpha, beta, S)
   
   if(is.na(denom) || denom == 0) return(0)
   
-  # Calculate Numerator (Probability of sampling k alleles)
-  # Integral of binom(n,k) * x^k * (1-x)^(n-k) * density
+  # Numerator (Probability of sampling k alleles)
   numerator_func <- function(x) {
     if(x <= 0 | x >= 1) return(0)
-    binom_prob <- dbinom(k, size=n, prob=x)
-    return(binom_prob * wright_density(x))
+    # dbinom handles the combinatorial math
+    return(dbinom(k, size=n, prob=x) * wright_density(x))
   }
   
   num <- tryCatch(
@@ -54,6 +51,28 @@ get_prob_k <- function(k, n, alpha, beta, S)
   return(num / denom)
 }
 
+get_prob_k_analytical <- function(k, n, u, v, S, theta = 0.0312) {
+  # u and v come from Q-matrix (per-generation rates)
+  # theta = 4*N*mu_total where mu_total is the total mutation rate
+  # We scale u and v by theta to get 4*N*u and 4*N*v
+  
+  rate_sum <- u + v
+  alpha <- theta * (u / rate_sum)  # This is 4*N*u
+  beta  <- theta * (v / rate_sum)  # This is 4*N*v
+  
+  A_prime <- k + alpha
+  B_prime <- n - k + beta
+  
+  log_binom <- lchoose(n, k)
+  log_beta_ratio <- lbeta(A_prime, B_prime) - lbeta(alpha, beta)
+  log_hyperg_num <- log(gsl::hyperg_1F1(A_prime, A_prime + B_prime, S))
+  log_hyperg_den <- log(gsl::hyperg_1F1(alpha, alpha + beta, S))
+  
+  log_prob <- log_binom + log_beta_ratio + (log_hyperg_num - log_hyperg_den)
+  
+  return(exp(log_prob))
+}
+
 # ******************************************************************************
 # 2) Likelihood Optimizer ----
 # ______________________________________________________________________________
@@ -63,26 +82,30 @@ get_prob_k <- function(k, n, alpha, beta, S)
 #   sample_sizes: Vector of sample sizes (n) for those sites (usually 187, because we have haplotypes)
 #   u, v: Mutation rates for this specific Amino Acid family
 
-estimate_gamma_for_AA <- function(counts, sample_sizes, u, v,
-                                  S_interval = c(-5, 20)) {
+estimate_gamma_for_AA <- function(counts, sample_sizes, u, v, S_interval = c(-5, 20), theta = 0.0312) {
   
-  # Negative Log Likelihood Function to minimize
   nll <- function(S) {
-    # Calculate log-probability for each site
     log_probs <- mapply(function(k, n) {
-      p <- get_prob_k(k, n, u, v, S)
-      if(p <= 0) return(-1e6) # Penalty for impossible values
+      p <- get_prob_k_analytical(k, n, u, v, S, theta)
+      if(is.na(p) || p <= 0) return(-1e6) 
       return(log(p))
     }, counts, sample_sizes)
     
     return(-sum(log_probs))
   }
   
-  # Optimize S (gamma)
-  # Searching likely range -5 to 20
   opt <- optimize(nll, interval = S_interval)
+  return(opt$minimum)
+}
+
+worker_gamma_corrected <- function(k, n, u, v, theta) {
+  if (length(k) < 5) return(NA_real_)
   
-  return(opt$minimum) # This is your Gamma (4Nes)
+  tryCatch(
+    estimate_gamma_corrected(counts = k, sample_sizes = n, 
+                             u = u, v = v, theta = theta),
+    error = function(e) NA_real_
+  )
 }
 
 # ******************************************************************************
@@ -164,6 +187,210 @@ calculate_expected_pi_robust <- function(alpha, beta, S) {
   
   return(num / den)
 }
+
+#' Calculate nucleotide diversity (pi) at synonymous sites
+#' 
+#' This function calculates TRUE nucleotide diversity by examining
+#' nucleotide-level variation at each codon position, rather than
+#' treating whole codons as alleles.
+#' 
+#' @author Luis Javier Madrigal-Roca
+#' _____________________________________________________________________________
+
+calculate_nucleotide_pi_at_synonymous_sites <- function(vcf_dt, genetic_code_df) {
+  #' Calculate nucleotide-level pi at synonymous sites
+  #' 
+  #' For each codon position, we examine which nucleotide positions
+  #' are synonymous (don't change the amino acid) and calculate
+  #' nucleotide diversity at those positions.
+  #' 
+  #' @param vcf_dt data.table with columns: Gene, Codon_Pos, AA, 
+  #'               Preferred_Codon, Codon_Variants
+  #' @param genetic_code_df data.frame mapping codons to amino acids
+  #' @return data.table with nucleotide-level pi at each synonymous position
+  
+  if (!is.data.table(vcf_dt)) setDT(vcf_dt)
+  if (!is.data.table(genetic_code_df)) setDT(genetic_code_df)
+  
+  # Create codon-to-AA lookup
+  setkey(genetic_code_df, Codon)
+  
+  # Expand variants
+  dt <- vcf_dt[, .(
+    Variant_String = unlist(strsplit(Codon_Variants, ";", fixed = TRUE))
+  ), by = .(Gene, Codon_Pos, AA, Preferred_Codon)]
+  
+  # Parse codon:count
+  dt[, c("Variant_Codon", "Count") := tstrsplit(Variant_String, ":", fixed=TRUE)]
+  dt[, Count := as.integer(Count)]
+  dt[, Variant_String := NULL]
+  
+  # Get AA for each variant
+  dt <- merge(dt, genetic_code_df, by.x = "Variant_Codon", by.y = "Codon", all.x = TRUE)
+  setnames(dt, "AA.y", "Variant_AA")
+  setnames(dt, "AA.x", "Site_AA")
+  
+  # Keep only synonymous variants
+  dt_syn <- dt[Site_AA == Variant_AA]
+  
+  # For each site, calculate nucleotide diversity at each of the 3 positions
+  result <- dt_syn[, {
+    
+    # Get all variant codons and their counts
+    codons <- Variant_Codon
+    counts <- Count
+    total_n <- sum(counts)
+    
+    if (length(codons) < 2 || total_n < 2) {
+      # No variation or insufficient sample
+      list(
+        Pos1_Pi = 0, Pos2_Pi = 0, Pos3_Pi = 0,
+        Pos1_Syn = FALSE, Pos2_Syn = FALSE, Pos3_Syn = FALSE,
+        n = total_n,
+        Mean_Syn_Pi = 0,
+        N_Syn_Positions = 0
+      )
+    } else {
+      
+      # Check each position
+      pi_vals <- numeric(3)
+      is_syn <- logical(3)
+      
+      for (pos in 1:3) {
+        # Extract nucleotides at this position
+        nucs <- substr(codons, pos, pos)
+        
+        # Calculate nucleotide frequencies
+        nuc_counts <- tapply(counts, nucs, sum)
+        nuc_freqs <- nuc_counts / total_n
+        
+        # Check if this position is synonymous (has variation)
+        is_syn[pos] <- length(unique(nucs)) > 1
+        
+        # Calculate pi: (n/(n-1)) * (1 - sum(p_i^2))
+        if (is_syn[pos]) {
+          pi_vals[pos] <- (total_n / (total_n - 1)) * (1 - sum(nuc_freqs^2))
+        } else {
+          pi_vals[pos] <- 0
+        }
+      }
+      
+      # Calculate mean pi across synonymous positions only
+      n_syn_pos <- sum(is_syn)
+      mean_pi <- if (n_syn_pos > 0) mean(pi_vals[is_syn]) else 0
+      
+      list(
+        Pos1_Pi = pi_vals[1],
+        Pos2_Pi = pi_vals[2],
+        Pos3_Pi = pi_vals[3],
+        Pos1_Syn = is_syn[1],
+        Pos2_Syn = is_syn[2],
+        Pos3_Syn = is_syn[3],
+        n = total_n,
+        Mean_Syn_Pi = mean_pi,
+        N_Syn_Positions = n_syn_pos
+      )
+    }
+  }, by = .(Gene, Codon_Pos, Site_AA, Preferred_Codon)]
+  
+  return(result)
+}
+
+
+process_codon_vcf_with_nucleotide_pi <- function(vcf_dt, aa_mut_rates, genetic_code_df) {
+  #' Combined function: biallelic codon analysis + nucleotide pi
+  #' 
+  #' Returns a data.table with:
+  #' - k, n, p: biallelic codon frequencies (for SFS/gamma estimation)
+  #' - Site_Pi_Codon: heterozygosity at codon level (biallelic)
+  #' - Site_Pi_Nucleotide: true nucleotide diversity at synonymous positions
+  #' - u, v: mutation rates
+  
+  if (!is.data.table(vcf_dt)) setDT(vcf_dt)
+  if (!is.data.table(genetic_code_df)) setDT(genetic_code_df)
+  if (!is.data.table(aa_mut_rates)) setDT(aa_mut_rates)
+  
+  # --- PREPARE GENETIC CODE ---
+  gen_code_mod <- copy(genetic_code_df)
+  setnames(gen_code_mod, c("AA", "Codon"), c("Variant_AA", "Codon"))
+  gen_code_mod[Codon %in% c("AGT", "AGC"), Variant_AA := "Z"]
+  
+  # --- PREPARE VCF ---
+  dt <- vcf_dt[, .(
+    Variant_String = unlist(strsplit(Codon_Variants, ";", fixed = TRUE))
+  ), by = .(Gene, Codon_Pos, AA, Preferred_Codon)]
+  
+  dt[, c("Variant_Codon", "Count") := tstrsplit(Variant_String, ":", fixed=TRUE)]
+  dt[, Count := as.integer(Count)]
+  dt[, Variant_String := NULL]
+  
+  setnames(dt, "AA", "Site_AA")
+  dt[Site_AA == "S" & (Preferred_Codon == "AGT" | Preferred_Codon == "AGC"), Site_AA := "Z"]
+  
+  # --- JOIN & FILTER ---
+  setkey(gen_code_mod, Codon)
+  setkey(dt, Variant_Codon)
+  dt_merged <- gen_code_mod[dt, nomatch=0] 
+  dt_syn <- dt_merged[Site_AA == Variant_AA]
+  
+  # --- BIALLELIC CODON ANALYSIS (for SFS) ---
+  result_codon <- dt_syn[, .(
+    k = sum(Count[Codon == Preferred_Codon]),
+    n = sum(Count)
+  ), by = .(Gene, Codon_Pos, Site_AA, Preferred_Codon)]
+  
+  result_codon[, p := ifelse(n > 0, k/n, 0)]
+  result_codon[, Site_Pi_Codon := ifelse(n > 1, 2 * p * (1-p) * (n/(n-1)), 0)]
+  
+  # --- NUCLEOTIDE-LEVEL PI ---
+  result_nuc <- dt_syn[, {
+    codons <- Codon
+    counts <- Count
+    total_n <- sum(counts)
+    
+    if (length(codons) < 2 || total_n < 2) {
+      list(Site_Pi_Nucleotide = 0.0, N_Syn_Positions = 0L)
+    } else {
+      pi_vals <- numeric(3)
+      is_syn <- logical(3)
+      
+      for (pos in 1:3) {
+        nucs <- substr(codons, pos, pos)
+        nuc_counts <- tapply(counts, nucs, sum)
+        nuc_freqs <- nuc_counts / total_n
+        is_syn[pos] <- length(unique(nucs)) > 1
+        
+        if (is_syn[pos]) {
+          pi_vals[pos] <- (total_n / (total_n - 1)) * (1 - sum(nuc_freqs^2))
+        } else {
+          pi_vals[pos] <- 0
+        }
+      }
+      
+      n_syn_pos <- sum(is_syn)
+      mean_pi <- if (n_syn_pos > 0) mean(pi_vals[is_syn]) else 0.0
+      
+      list(
+        Site_Pi_Nucleotide = as.numeric(mean_pi),
+        N_Syn_Positions = as.integer(n_syn_pos)
+      )
+    }
+  }, by = .(Gene, Codon_Pos, Site_AA, Preferred_Codon)]
+  
+  # --- MERGE RESULTS ---
+  result <- merge(result_codon, result_nuc, 
+                  by = c("Gene", "Codon_Pos", "Site_AA", "Preferred_Codon"))
+  
+  setnames(result, "Site_AA", "AA")
+  
+  # --- MERGE MUTATION RATES ---
+  setkey(result, AA)
+  setkey(aa_mut_rates, AA)
+  final <- aa_mut_rates[result, nomatch=0]
+  
+  return(final)
+}
+
 
 calculate_pi_analytical <- function(alpha, beta, S) {
   require(gsl)
@@ -269,66 +496,59 @@ calc_gamma_wrapper <- function(k_list, n_list, u, v) {
   return(gamma)
 }
 
-process_codon_vcf <- function(vcf_dt, aa_mut_rates, genetic_code_df) {
+process_codon_vcf_corrected <- function(vcf_dt, aa_mut_rates, genetic_code_df) {
   
-  # Ensure input is a data.table for speed
   if (!is.data.table(vcf_dt)) setDT(vcf_dt)
+  if (!is.data.table(genetic_code_df)) setDT(genetic_code_df)
+  if (!is.data.table(aa_mut_rates)) setDT(aa_mut_rates)
   
-  # A. Parse the "Codon_Variants" column
-  # We select only necessary columns and expand the variants
-  # "GCC:183;GCA:4" -> two rows
-  long_vcf <- vcf_dt[, .(Gene, Codon_Pos, AA, Preferred_Codon, Codon_Variants)] %>%
-    separate_rows(Codon_Variants, sep = ";") %>%
-    separate(Codon_Variants, into = c("Variant_Codon", "Count"), sep = ":", convert = TRUE)
+  # Prepare genetic code with S/Z split
+  gen_code_mod <- copy(genetic_code_df)
+  setnames(gen_code_mod, c("AA", "Codon"), c("Variant_AA", "Codon"))
+  gen_code_mod[Codon %in% c("AGT", "AGC"), Variant_AA := "Z"]
   
-  # B. Handle the Serine S/Z Split Correction
-  # AnaCoDa calls 2-fold Serines 'Z' (AGT, AGC).
-  # The VCF likely labels them 'S'. We must re-label them based on the Preferred Codon.
-  # If Preferred is AGT or AGC, change AA to 'Z'. Otherwise leave as 'S'.
-  long_vcf <- long_vcf %>%
-    mutate(
-      AA = case_when(
-        AA == "S" & (Preferred_Codon == "AGT" | Preferred_Codon == "AGC") ~ "Z",
-        TRUE ~ AA
-      )
-    )
+  # Expand VCF rows
+  dt <- vcf_dt[, .(
+    Variant_String = unlist(strsplit(Codon_Variants, ";", fixed = TRUE))
+  ), by = .(Gene, Codon_Pos, AA, Preferred_Codon)]
   
-  # C. Filter for Synonymous Variants Only
-  # Join variant codons with genetic code to check their AA identity
-  clean_counts <- long_vcf %>%
-    inner_join(genetic_code_df, by = c("Variant_Codon" = "Codon")) %>%
-    # IMPORTANT: Filter condition
-    # AA.x is the Site's AA (from VCF column, potentially corrected to Z)
-    # AA.y is the Variant's AA (from genetic code lookup)
-    filter(AA.x == AA.y) %>% 
-    rename(AA_Site = AA.x) %>%
-    dplyr::select(-AA.y) 
+  # Split "Codon:Count"
+  dt[, c("Variant_Codon", "Count") := tstrsplit(Variant_String, ":", fixed=TRUE)]
+  dt[, Count := as.integer(Count)]
+  dt[, Variant_String := NULL]
   
-  # D. Aggregate to get k (Preferred) and Recalculated n (Total Synonymous)
-  site_stats <- clean_counts %>%
-    group_by(Gene, Codon_Pos, AA_Site, Preferred_Codon) %>%
-    summarise(
-      # k = Sum counts where Variant is the Preferred one
-      k = sum(Count[Variant_Codon == Preferred_Codon]),
-      
-      # n = Sum counts of ALL synonymous variants (excluding non-syn noise)
-      n = sum(Count),
-      
-      # Calculate Site Pi
-      p = ifelse(n > 0, k/n, 0),
-      # Note: n/(n-1) correction handles sample size bias
-      Site_Pi = ifelse(n > 1, 2 * p * (1-p) * (n/(n-1)), 0),
-      
-      .groups = "drop"
-    ) %>%
-    rename(AA = AA_Site) # Rename back to AA for merging
+  # Handle S/Z split for sites
+  setnames(dt, "AA", "Site_AA")
+  dt[Site_AA == "S" & (Preferred_Codon == "AGT" | Preferred_Codon == "AGC"), Site_AA := "Z"]
   
-  # E. Merge in the Mutation Rates (u, v)
-  final_site_data <- site_stats %>%
-    left_join(aa_mut_rates, by = "AA") %>%
-    filter(!is.na(u)) # Removes Stop codons or AAs without defined rates
+  # Join with genetic code
+  setkey(gen_code_mod, Codon)
+  setkey(dt, Variant_Codon)
+  dt_merged <- gen_code_mod[dt, nomatch=0]
   
-  return(final_site_data)
+  # Filter for synonymous only
+  dt_syn <- dt_merged[Site_AA == Variant_AA]
+  
+  # *** KEY FIX: Calculate n as total sample size, not sum of counts ***
+  # The sample size should be consistent across all variants at a site
+  result <- dt_syn[, .(
+    k = sum(Count[Codon == Preferred_Codon]),  # Count of preferred allele
+    n = sum(Count),  # Total alleles sampled at this site (should be ~187 based on your data)
+    n_variants = .N  # Number of distinct variants (for QC)
+  ), by = .(Gene, Codon_Pos, Site_AA, Preferred_Codon)]
+  
+  setnames(result, "Site_AA", "AA")
+  
+  # Calculate allele frequency and Pi
+  result[, p := ifelse(n > 0, k/n, 0)]
+  result[, Site_Pi := ifelse(n > 1, 2 * p * (1-p) * (n/(n-1)), 0)]
+  
+  # Merge mutation rates
+  setkey(result, AA)
+  setkey(aa_mut_rates, AA)
+  final <- aa_mut_rates[result, nomatch=0]
+  
+  return(final)
 }
 
 calc_gamma_vectorized <- function(k_vec, n_vec, u, v) {
@@ -355,62 +575,82 @@ calc_gamma_wrapper <- function(k_list, n_list, u, v) {
 
 process_codon_vcf_fast <- function(vcf_dt, aa_mut_rates, genetic_code_df) {
   
-  # Ensure input is data.table
+  # 0. Ensure inputs are data.tables
   if (!is.data.table(vcf_dt)) setDT(vcf_dt)
   if (!is.data.table(genetic_code_df)) setDT(genetic_code_df)
   if (!is.data.table(aa_mut_rates)) setDT(aa_mut_rates)
   
-  # 1. Select only needed columns to save memory
-  # We subset immediately
-  dt <- vcf_dt[, .(Gene, Codon_Pos, AA, Preferred_Codon, Codon_Variants)]
+  # --- PREPARE GENETIC CODE ---
+  # Rename columns to avoid collision: AA -> Variant_AA
+  gen_code_mod <- copy(genetic_code_df)
+  setnames(gen_code_mod, c("AA", "Codon"), c("Variant_AA", "Codon"))
   
-  # 2. Fast String Splitting (The heavy lifting)
-  # This uses data.table's internal C-based splitter which is vastly faster than tidyr
-  dt <- dt[, tstrsplit(Codon_Variants, ";", fixed=TRUE), by = .(Gene, Codon_Pos, AA, Preferred_Codon)]
+  # Teach genetic code that AGT/AGC are 'Z' (for the Variant check)
+  gen_code_mod[Codon %in% c("AGT", "AGC"), Variant_AA := "Z"]
   
-  # Melt long to get single column of variants
-  dt <- melt(dt, id.vars = c("Gene", "Codon_Pos", "AA", "Preferred_Codon"), 
-             value.name = "Variant_String", na.rm = TRUE)
+  # --- PREPARE VCF ---
+  # 1. Expand Rows (Long Format)
+  # Unlist splits the variants into rows
+  dt <- vcf_dt[, .(
+    Variant_String = unlist(strsplit(Codon_Variants, ";", fixed = TRUE))
+  ), by = .(Gene, Codon_Pos, AA, Preferred_Codon)]
   
-  # Split "Codon:Count" (e.g. "GCC:183")
+  # 2. Split "Codon:Count"
   dt[, c("Variant_Codon", "Count") := tstrsplit(Variant_String, ":", fixed=TRUE)]
   dt[, Count := as.integer(Count)]
-  dt[, Variant_String := NULL] # Clean up
+  dt[, Variant_String := NULL]
   
-  # 3. Handle S/Z Split (Vectorized)
-  dt[AA == "S" & (Preferred_Codon == "AGT" | Preferred_Codon == "AGC"), AA := "Z"]
+  # 3. Handle S/Z Split for the SITES
+  # Rename AA to Site_AA to be explicit
+  setnames(dt, "AA", "Site_AA")
+  dt[Site_AA == "S" & (Preferred_Codon == "AGT" | Preferred_Codon == "AGC"), Site_AA := "Z"]
   
-  # 4. Filter Synonymous (Fast Join)
-  # Set keys for speed
+  # --- JOIN & FILTER ---
+  # Set keys for fast merge
+  setkey(gen_code_mod, Codon)
   setkey(dt, Variant_Codon)
-  setkey(genetic_code_df, Codon)
   
-  # Inner Join
-  dt <- genetic_code_df[dt, nomatch=0] # Match Variant_Codon to Codon
+  # Merge on Codon == Variant_Codon
+  # dt_merged will have: Site_AA, Preferred_Codon, Variant_AA, Count
+  dt_merged <- gen_code_mod[dt, nomatch=0] 
   
-  # Filter where Site AA == Variant AA (renamed column handling)
-  # data.table merge usually keeps the 'i' columns, check names
-  # genetic_code_df has 'AA' and 'Codon'. dt has 'AA' (site). 
-  # After merge, we likely have i.AA (site) and AA (variant)
-  dt <- dt[AA == i.AA] 
+  # Filter: The Variant's Amino Acid must match the Site's Amino Acid
+  # (This excludes non-synonymous variants)
+  dt_syn <- dt_merged[Site_AA == Variant_AA]
   
-  # 5. Aggregation
-  result <- dt[, .(
-    k = sum(Count[Variant_Codon == i.Preferred_Codon]),
-    n = sum(Count)
-  ), by = .(Gene, Codon_Pos, i.AA, i.Preferred_Codon)]
+  # --- AGGREGATE ---
+  # Now we have clear column names, no "i." needed
+  # For SFS-based gamma estimation, we treat this as BIALLELIC:
+  # Preferred codon(s) vs Non-preferred codon(s)
+  result <- dt_syn[, .(
+    k = sum(Count[Codon == Preferred_Codon]), # Count of preferred codon alleles
+    n = sum(Count)                             # Total sample size at this site
+  ), by = .(Gene, Codon_Pos, Site_AA, Preferred_Codon)]
   
-  # Rename for clarity
-  setnames(result, c("i.AA", "i.Preferred_Codon"), c("AA", "Preferred_Codon"))
+  # Rename back to standard 'AA' for final merge
+  setnames(result, "Site_AA", "AA")
   
-  # 6. Calculate Pi
+  # --- CALCULATE PI (BIALLELIC HETEROZYGOSITY) ---
+  # p = frequency of preferred codon
+  # Site_Pi = expected heterozygosity assuming biallelic model
   result[, p := ifelse(n > 0, k/n, 0)]
   result[, Site_Pi := ifelse(n > 1, 2 * p * (1-p) * (n/(n-1)), 0)]
   
-  # 7. Merge Rates
+  # --- MERGE RATES ---
   setkey(result, AA)
   setkey(aa_mut_rates, AA)
   final <- aa_mut_rates[result, nomatch=0]
   
   return(final)
+}
+
+worker_gamma_est <- function(k, n, u, v) {
+  # Quick check to skip useless rows
+  if (length(k) < 5) return(NA_real_) 
+  
+  # Run your existing estimator
+  tryCatch(
+    estimate_gamma_for_AA(counts = k, sample_sizes = n, u = u, v = v),
+    error = function(e) NA_real_
+  )
 }

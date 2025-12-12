@@ -15,6 +15,7 @@ setwd(".")
 
 # Source the set_environment function first
 source("./src/set_environment.R")
+source("./src/calculate_nucleotide_pi.R")
 
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
                         'stringi', 'foreach', 'doParallel',
@@ -28,7 +29,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'txdbmaker', 'Rsamtools', 'purrr',
                         'abind', 'scales', 'mclust', 'coda',
                         'admisc', 'corrr', 'patchwork', 'gprofiler2',
-                        'ggnewscale', 'broom', 'reshape2')
+                        'ggnewscale', 'broom', 'reshape2',
+                        'furrr')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -2972,43 +2974,59 @@ aa_mut_rates <- get_aa_mutation_rates(Q, preferred_codons_list, genetic_code)
 
 vcf_codon <- fread("./data/all_chromosomes.codon_frequencies_preferred.txt")
 
-site_data_ready <- process_codon_vcf(vcf_codon, 
-                                   aa_mut_rates, 
-                                   genetic_code_df)
+# Use the enhanced function that calculates both codon-level and nucleotide-level pi
+site_data_ready <- process_codon_vcf_with_nucleotide_pi(vcf_codon, 
+                                                         aa_mut_rates, 
+                                                         genetic_code_df)
 
-final_gene_stats <- site_data_ready |>
+gene_aa_inputs <- site_data_ready |>
   group_by(Gene, AA) |>
   summarise(
-    # 1. Observed Stats
-    Mean_Pi_Observed = mean(Site_Pi, na.rm = TRUE),
+    # Use nucleotide-level pi for comparison with theta
+    Mean_Pi_Observed = mean(Site_Pi_Nucleotide, na.rm = TRUE),
+    # Also track codon-level heterozygosity for reference
+    Mean_Codon_Het = mean(Site_Pi_Codon, na.rm = TRUE),
     N_Sites = n(),
-    
-    # 2. Estimated Gamma (SFS)
-    # We pass the vectors of k and n into the custom function
-    Gamma_SFS = calc_gamma_vectorized(k, n, first(u), first(v)),
-    
-    # Keep the rates for downstream plotting
     u = first(u),
     v = first(v),
+    
+    # Store vectors k and n in a lightweight list
+    # This avoids the overhead of a full data.frame per row
+    k_vec = list(k),
+    n_vec = list(n),
     
     .groups = "drop"
   )
 
-final_gene_stats <- final_gene_stats |>
-  rowwise() |>
-  mutate(
-    # Calculate Alpha/Beta for the theory curve
-    # Assuming global theta ~ 0.015 (or calculate from your data)
-    theta_global = 0.015,
-    alpha_theory = theta_global * (u / (u+v)),
-    beta_theory  = theta_global * (v / (u+v)),
+gamma_results <- gene_aa_inputs |>
+  dplyr::mutate(
+    Gamma_SFS = future_pmap_dbl(
+      list(k_vec, n_vec, u, v), 
+      worker_gamma_est,
+      .options = furrr_options(seed = TRUE) # Ensures reproducibility
+    )
+  ) |>
+  dplyr::select(-k_vec, -n_vec) |> # Clean up heavy columns
+  dplyr::filter(!is.na(Gamma_SFS))
+
+calc_pi_vec <- Vectorize(calculate_pi_analytical)
+
+# Run the calculation purely with column vectors (Instantaneous)
+# Note: Mean_Pi_Observed now represents TRUE nucleotide diversity at synonymous sites
+# This is directly comparable to theta = 0.0312 (expected values: 0.001-0.05)
+final_gene_stats <- gamma_results |>
+  dplyr::mutate(
+    theta_global = 0.0312,
+    alpha_theory = theta_global * (u / (u + v)),
+    beta_theory  = theta_global * (v / (u + v)),
     
-    # Calculate what Pi SHOULD be given the Gamma we just estimated
-    Pi_Expected = calculate_pi_analytical(alpha_theory, beta_theory, Gamma_SFS)
+    # Calculate Pi Expected using the vectorized function
+    # This gives expected nucleotide diversity under Wright-Fisher model with selection
+    Pi_Expected = calc_pi_vec(alpha_theory, beta_theory, Gamma_SFS)
   )
 
 # --- Visualization for VALINE (Example) ---
-plot_data <- final_gene_stats |> filter(AA == "V")
+plot_data <- final_gene_stats |> dplyr::filter(AA == "V")
 
 ggplot(plot_data, aes(x = Gamma_SFS, y = Mean_Pi_Observed)) +
   # 1. The Genes (Scatter)
@@ -3025,6 +3043,9 @@ ggplot(plot_data, aes(x = Gamma_SFS, y = Mean_Pi_Observed)) +
        x = "Selection Coefficient (Gamma) from SFS",
        y = "Nucleotide Diversity (Pi)") +
   theme_custom()
+
+ggsave("./results/diversity_modeling/Pi_vs_Gamma_Valine.pdf",
+       width = 6, height = 4)
 
 ## *****************************************************************************
 ## 14) Codon Frequency Spectrum (CFS) Analysis ----
