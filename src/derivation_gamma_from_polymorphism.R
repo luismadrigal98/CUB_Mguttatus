@@ -342,37 +342,64 @@ process_codon_vcf_with_nucleotide_pi <- function(vcf_dt, aa_mut_rates, genetic_c
   result_codon[, p := ifelse(n > 0, k/n, 0)]
   result_codon[, Site_Pi_Codon := ifelse(n > 1, 2 * p * (1-p) * (n/(n-1)), 0)]
   
-  # --- NUCLEOTIDE-LEVEL PI ---
+  # --- NUCLEOTIDE-LEVEL PI (BIALLELIC: Preferred vs Non-Preferred) ---
+  # Calculate nucleotide diversity treating preferred/non-preferred as biallelic
+  # This is consistent with the Wright-Fisher model used for gamma estimation
   result_nuc <- dt_syn[, {
     codons <- Codon
     counts <- Count
+    pref_codon <- Preferred_Codon[1]
     total_n <- sum(counts)
     
     if (length(codons) < 2 || total_n < 2) {
       list(Site_Pi_Nucleotide = 0.0, N_Syn_Positions = 0L)
     } else {
-      pi_vals <- numeric(3)
-      is_syn <- logical(3)
+      # Classify codons as preferred or non-preferred
+      is_preferred <- codons == pref_codon
+      n_pref <- sum(counts[is_preferred])
+      n_nonpref <- sum(counts[!is_preferred])
       
-      for (pos in 1:3) {
-        nucs <- substr(codons, pos, pos)
-        nuc_counts <- tapply(counts, nucs, sum)
-        nuc_freqs <- nuc_counts / total_n
-        is_syn[pos] <- length(unique(nucs)) > 1
+      # Calculate biallelic frequency
+      p_pref <- n_pref / total_n
+      
+      # Biallelic heterozygosity (same as Site_Pi_Codon but recalculated here for nucleotide interpretation)
+      pi_codon_biallelic <- ifelse(total_n > 1, 
+                                    2 * p_pref * (1 - p_pref) * (total_n / (total_n - 1)), 
+                                    0.0)
+      
+      # For nucleotide-level pi: count how many nucleotide positions differ between
+      # preferred and non-preferred codons on average
+      if (n_pref > 0 && n_nonpref > 0) {
+        # Get representative codons
+        pref_codons_present <- unique(codons[is_preferred])
+        nonpref_codons_present <- unique(codons[!is_preferred])
         
-        if (is_syn[pos]) {
-          pi_vals[pos] <- (total_n / (total_n - 1)) * (1 - sum(nuc_freqs^2))
-        } else {
-          pi_vals[pos] <- 0
+        # Count positions that differ
+        n_diff_positions <- 0
+        for (pos in 1:3) {
+          nucs_pref <- unique(substr(pref_codons_present, pos, pos))
+          nucs_nonpref <- unique(substr(nonpref_codons_present, pos, pos))
+          # Position differs if there's no overlap between preferred and non-preferred nucleotides
+          if (length(intersect(nucs_pref, nucs_nonpref)) == 0) {
+            n_diff_positions <- n_diff_positions + 1
+          } else if (length(nucs_pref) > 1 || length(nucs_nonpref) > 1) {
+            # Position is polymorphic within groups
+            n_diff_positions <- n_diff_positions + 1
+          }
         }
+        
+        # Nucleotide pi is the codon-level heterozygosity scaled by proportion of differing positions
+        # This gives expected nucleotide diversity per synonymous site
+        pi_nucleotide <- pi_codon_biallelic * (n_diff_positions / 3)
+        n_syn_pos <- as.integer(n_diff_positions)
+      } else {
+        pi_nucleotide <- 0.0
+        n_syn_pos <- 0L
       }
       
-      n_syn_pos <- sum(is_syn)
-      mean_pi <- if (n_syn_pos > 0) mean(pi_vals[is_syn]) else 0.0
-      
       list(
-        Site_Pi_Nucleotide = as.numeric(mean_pi),
-        N_Syn_Positions = as.integer(n_syn_pos)
+        Site_Pi_Nucleotide = as.numeric(pi_nucleotide),
+        N_Syn_Positions = n_syn_pos
       )
     }
   }, by = .(Gene, Codon_Pos, Site_AA, Preferred_Codon)]
