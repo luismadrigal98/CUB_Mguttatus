@@ -15,7 +15,6 @@ setwd(".")
 
 # Source the set_environment function first
 source("./src/set_environment.R")
-source("./src/calculate_nucleotide_pi.R")
 
 required_libraries <- c('data.table', 'Biostrings', 'assertthat', 
                         'stringi', 'foreach', 'doParallel',
@@ -1675,7 +1674,8 @@ integrated_data <- integrated_data |>
 selection_coeff_intensity <- selection_coeff_intensity |>
   left_join(integrated_data |> dplyr::select(Gene_name, CAI, CDC, ENC, 
                                               Total_Codons, GC3s, Geom_Exp, Log_Geom_Exp,
-                                              Pi_mean_4fold, TajimaD_4fold))
+                                              Pi_mean_4fold, TajimaD_4fold)) |>
+  na.exclude()
 
 # Correlation between selection metric and CUB metrics
 
@@ -2922,6 +2922,102 @@ tapply(selection_coeff_intensity$Pi_mean_4fold,
 # ANOVA results is an artifact of aggregation. This analysis must be done per\
 # amino acid, because mutational bias are going to be different (also, ANOVA is\
 # not appropriate here)
+
+ggplot(data = selection_coeff_intensity |> dplyr::filter(Pi_mean_4fold < 0.05), 
+       mapping = aes(x = S_coeff, y = Pi_mean_4fold)) +
+  geom_point() +
+  geom_smooth() +
+  theme_custom()
+
+ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_smooth.pdf",
+       width = 6, height = 4)
+
+# 1. Prepare the Theoretical Curve Data
+# We create a dummy dataset spanning the range of AnaCoDa S values
+theory_curve <- data.frame(
+  S_val = seq(-1, 15, length.out = 100) # Range of X-axis
+) %>%
+  rowwise() %>%
+  dplyr::mutate(
+    # Use the mean u and v from your whole genome (or a specific AA like Valine)
+    u_mean = mean(final_gene_stats$u),
+    v_mean = mean(final_gene_stats$v),
+    
+    # Calculate Alpha/Beta using the Global Theta
+    theta_global = 0.0312,
+    alpha = theta_global * (u_mean / (u_mean + v_mean)),
+    beta  = theta_global * (v_mean / (u_mean + v_mean)),
+    
+    # Calculate Pi using the AnaCoDa S (S_val) as the Gamma input
+    Pi_Theory = calculate_pi_analytical(alpha, beta, S_val)
+  )
+
+# 2. Plot AnaCoDa Data with Theory Overlay
+ggplot() +
+  # A. The Real Data (AnaCoDa S vs. VCF Pi)
+  geom_jitter(data = selection_coeff_intensity, mapping = aes(x = Selection_group,
+                                                              y = Pi_mean_4fold),
+              alpha = 0.15, width = 0.1, color = "gray60") +
+  
+  # B. The Empirical Trend (Blue)
+  geom_smooth(data = selection_coeff_intensity, mapping = aes(x = Selection_group,
+                                                              y = Pi_mean_4fold),
+              method = "gam", color = "blue", fill = "blue", alpha = 0.2) +
+  
+  # C. The Theory Line (Red) - NOW ADDED
+  geom_line(data = theory_curve, aes(x = S_val, y = Pi_Theory),
+            color = "red", linetype = "dashed", size = 1.2) +
+  
+  # D. Formatting
+  coord_cartesian(xlim = c(-1, 10), ylim = c(0, 0.04)) + # Zoom in on the hump
+  labs(title = "Independent Validation: AnaCoDa S predicts Current Diversity",
+       x = "AnaCoDa Selection Coefficient (S)",
+       y = "Nucleotide Diversity (Pi)") +
+  theme_custom()
+
+ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_with_theory.pdf",
+       width = 6, height = 4)
+
+# 1. Create Bins for AnaCoDa S
+# We group genes into bins of size 0.5 or 1.0
+binned_data <- selection_coeff_intensity |>
+  dplyr::filter(Pi_mean_4fold < 0.05) |>     # Remove artifacts
+  dplyr::mutate(
+    S_Bin = cut(S_coeff, breaks = seq(0, 18, by = 0.5))
+  ) %>%
+  group_by(S_Bin) |>
+  summarise(
+    Mean_S = mean(S_coeff),
+    Mean_Pi = mean(Pi_mean_4fold),
+    SE_Pi = sd(Pi_mean_4fold) / sqrt(n()), # Standard Error
+    N_Genes = n()
+  ) #|>
+  #dplyr::filter(N_Genes > 10)
+
+# 2. Plot Binned Data vs Theory
+ggplot() +
+  # A. The Theoretical Curve (Red Dashed)
+  # (Re-use the 'theory_curve' dataframe from the previous step)
+  # geom_line(data = theory_curve, aes(x = S_val, y = Pi_Theory),
+  #           color = "#e74c3c", linetype = "dashed", size = 1.2) +
+  
+  # B. The Binned Data (Points with Error Bars)
+  geom_point(data = binned_data, aes(x = Mean_S, y = Mean_Pi), 
+             size = 3, color = "black") +
+  geom_errorbar(data = binned_data, 
+                aes(x = Mean_S, ymin = Mean_Pi - 2*SE_Pi, ymax = Mean_Pi + 2*SE_Pi),
+                width = 0.2, color = "black") +
+  
+  # C. Formatting
+  labs(
+    title = "Validation of Selection: Binned Analysis",
+    x = "Selection Coefficient (AnaCoDa S)",
+    y = "Nucleotide Diversity (Pi)"
+  ) +
+  theme_custom()
+
+ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_binned_with_theory.pdf",
+       width = 6, height = 4)
 
 # 13.3) Per amino-acid derivation of pi at synonymous places ----
 

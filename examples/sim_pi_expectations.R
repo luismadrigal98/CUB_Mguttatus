@@ -27,7 +27,7 @@ peak_Pi <- max(plot_df$Pi)
 # --- Generate the Plot ---
 ggplot(plot_df, aes(x = S, y = Pi)) +
   # The Curve
-  geom_line(color = "#2c3e50", size = 1.2) +
+  geom_line(color = "#2c3e50", linewidth = 1.2) +
   
   # Area Shading
   geom_area(fill = "#3498db", alpha = 0.2) +
