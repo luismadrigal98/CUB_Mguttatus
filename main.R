@@ -3517,4 +3517,3 @@ cat("  • Negative γ: Preferred codons under purifying selection\n")
 cat("  • |γ| > 1.92 ≈ significant at α = 0.05 (chi-square(1) threshold)\n\n")
 
 cat("Analysis complete!\n\n")
-}

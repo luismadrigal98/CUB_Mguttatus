@@ -218,34 +218,56 @@ def process_batch(lines):
         if not is_invariant and (len(ref_genomic) > 1 or len(alt_genomic) > 1 or ',' in alt_genomic):
             continue
 
-        # 3. Get Allele Counts from GT
-        # Usually GT is the first field in FORMAT (index 8)
+        # 3. Get Allele Counts from AD (Allele Depth)
+        # With bcftools -c flag, missing data shows as 0/0:0,0,0:0/0
+        # We need to check AD field to filter out missing data
         try:
             fmt = parts[8]
-            # Optimization: Check if GT is first (standard) to avoid splitting huge strings
-            if fmt.startswith('GT'):
-                gt_idx = 0
-            else:
-                gt_idx = fmt.split(':').index('GT')
+            fmt_fields = fmt.split(':')
             
-            c0 = 0 # Ref count
-            c1 = 0 # Alt count
+            # Find AD index in FORMAT
+            try:
+                ad_idx = fmt_fields.index('AD')
+            except ValueError:
+                # No AD field, skip this variant
+                continue
             
-            # Manual parse of sample columns is faster than full split
+            c0 = 0 # Ref allele depth
+            c1 = 0 # Alt allele depth
+            
             # Iterate samples starting at index 9
             for sample_str in parts[9:]:
-                # Extract GT part
-                if gt_idx == 0:
-                    # Common case optimization
-                    colon_pos = sample_str.find(':')
-                    if colon_pos == -1: gt_val = sample_str
-                    else: gt_val = sample_str[:colon_pos]
-                else:
-                    gt_val = sample_str.split(':')[gt_idx]
+                sample_fields = sample_str.split(':')
                 
-                # Count alleles
-                c0 += gt_val.count('0')
-                c1 += gt_val.count('1')
+                # Check if we have enough fields
+                if len(sample_fields) <= ad_idx:
+                    continue
+                
+                # Parse AD field (format: "ref_depth,alt_depth")
+                ad_val = sample_fields[ad_idx]
+                
+                # Skip missing data (AD = 0,0,0 or just 0,0 or empty)
+                if ad_val == '.' or ad_val == '0,0,0' or ad_val == '0,0':
+                    continue
+                
+                # Parse ref and alt depths
+                ad_parts = ad_val.split(',')
+                if len(ad_parts) < 2:
+                    continue
+                
+                try:
+                    ref_depth = int(ad_parts[0])
+                    alt_depth = int(ad_parts[1])
+                    
+                    # Skip if both are 0 (missing data)
+                    if ref_depth == 0 and alt_depth == 0:
+                        continue
+                    
+                    c0 += ref_depth
+                    c1 += alt_depth
+                    
+                except ValueError:
+                    continue
                 
         except (ValueError, IndexError):
             continue
