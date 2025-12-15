@@ -37,6 +37,8 @@ def parse_gff_introns(gff_file):
             if len(parts) < 9: continue
             
             chrom, feature = parts[0], parts[2]
+            if "Chr" not in chrom:
+                continue # Skip scaffolds/non-chromosomal
             start, end = int(parts[3]) - 1, int(parts[4]) # 0-based
             strand = parts[6]
             attributes = parts[8]
