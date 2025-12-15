@@ -73,6 +73,67 @@ get_prob_k_analytical <- function(k, n, u, v, S, theta = 0.0312) {
   return(exp(log_prob))
 }
 
+solve_alpha_and_beta_from_introns <- function(k_vec, n_vec) {
+  #' Estimate alpha and beta from neutral (intronic) site frequency spectra
+  #' Uses Beta-Binomial Maximum Likelihood Estimation
+  #' 
+  #' @param k_vec Vector of counts of the derived/focus allele (e.g., G counts)
+  #' @param n_vec Vector of total coverage/sample size at each site
+  #' @return A list containing estimated alpha, beta, and convergence codes
+  #' ___________________________________________________________________________
+  
+  require(stats)
+  
+  # Remove sites with 0 coverage
+  valid <- n_vec > 0
+  k <- k_vec[valid]
+  n <- n_vec[valid]
+  
+  # Negative Log-Likelihood Function for Beta-Binomial
+  # L(alpha, beta | k, n) = Product [ Beta(k+alpha, n-k+beta) / Beta(alpha, beta) * (n choose k) ]
+  # We perform optimization on log(alpha) and log(beta) to ensure positivity
+  
+  nll <- function(params) {
+    log_alpha <- params[1]
+    log_beta <- params[2]
+    
+    alpha <- exp(log_alpha)
+    beta <- exp(log_beta)
+    
+    # Calculate log-likelihood terms
+    # lbeta is log(beta_function)
+    # The term lchoose(n, k) is constant w.r.t parameters, so strictly optional for optimization,
+    # but included here for completeness of the probability definition.
+    
+    log_prob <- lchoose(n, k) + 
+      lbeta(k + alpha, n - k + beta) - 
+      lbeta(alpha, beta)
+    
+    # Return negative sum (to minimize)
+    return(-sum(log_prob))
+  }
+  
+  # Initial guesses: Start with small values (0.01 is typical for 4Neu)
+  # or approximate based on mean frequency p_hat = a/(a+b)
+  p_hat <- mean(k/n, na.rm=TRUE)
+  start_alpha <- 0.1 * p_hat
+  start_beta <- 0.1 * (1 - p_hat)
+  
+  # Optimize
+  opt <- optim(par = c(log(start_alpha), log(start_beta)), 
+               fn = nll, 
+               method = "Nelder-Mead")
+  
+  results <- list(
+    alpha = exp(opt$par[1]),
+    beta = exp(opt$par[2]),
+    convergence = opt$convergence,
+    n_sites = length(k)
+  )
+  
+  return(results)
+}
+
 # ******************************************************************************
 # 2) Likelihood Optimizer ----
 # ______________________________________________________________________________
@@ -82,7 +143,8 @@ get_prob_k_analytical <- function(k, n, u, v, S, theta = 0.0312) {
 #   sample_sizes: Vector of sample sizes (n) for those sites (usually 187, because we have haplotypes)
 #   u, v: Mutation rates for this specific Amino Acid family
 
-estimate_gamma_for_AA <- function(counts, sample_sizes, u, v, S_interval = c(0, 20), theta = 0.0312) {
+estimate_gamma_for_AA <- function(counts, sample_sizes, u, v, 
+                                  S_interval = c(0, 20), theta = 0.0312) {
   
   nll <- function(S) {
     log_probs <- mapply(function(k, n) {
