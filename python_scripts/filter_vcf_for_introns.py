@@ -1,92 +1,97 @@
 import sys
-import gzip
 import csv
 import re
+import argparse
+import multiprocessing
+from collections import defaultdict
+import time
+import gzip
+
+# --- Global Storage for Workers ---
+# This dictionary will be shared with workers via inheritance (Linux) 
+# or initializer (Windows/Mac) to avoid pickling overhead.
+INTRON_INDEX = {}
+
+# --- Helper Functions ---
 
 def get_complement(nuc):
-    """Return the complement of a single nucleotide."""
-    mapping = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C', 'N': 'N'}
+    """Return complement of a nucleotide."""
+    mapping = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C', 'N': 'N', '.': '.'}
     return mapping.get(nuc, 'N')
 
 def parse_gff_introns(gff_file):
     """
-    Parses GFF3 to find gene coordinates/strand and subtracts exons to get introns.
+    Parses GFF3 to find gene coordinates/strand and calculates intron intervals.
     Returns: {chrom: [(start, end, strand), ...]}
     """
     print(f"Loading GFF: {gff_file}")
     genes = {}
     exons = {}
     
+    # 1. Parse Genes and Exons
     with open(gff_file, 'r') as f:
         for line in f:
             if line.startswith('#'): continue
             parts = line.strip().split('\t')
             if len(parts) < 9: continue
             
-            chrom = parts[0]
-            feature = parts[2]
-            start = int(parts[3]) - 1 # 0-based
-            end = int(parts[4])
-            strand = parts[6] # '+' or '-'
+            chrom, feature = parts[0], parts[2]
+            start, end = int(parts[3]) - 1, int(parts[4]) # 0-based
+            strand = parts[6]
+            attributes = parts[8]
             
             if feature == 'gene':
-                # Parse ID
-                gid_match = re.search(r'ID=([^;]+)', parts[8])
+                gid_match = re.search(r'ID=([^;]+)', attributes)
                 if gid_match:
-                    gid = gid_match.group(1)
-                    genes[gid] = {'chrom': chrom, 'start': start, 'end': end, 'strand': strand}
+                    genes[gid_match.group(1)] = {'chrom': chrom, 'start': start, 'end': end, 'strand': strand}
             elif feature == 'exon':
-                # Parse Parent
-                pid_match = re.search(r'Parent=([^;]+)', parts[8])
+                pid_match = re.search(r'Parent=([^;]+)', attributes)
                 if pid_match:
                     parent = pid_match.group(1)
                     if parent not in exons: exons[parent] = []
                     exons[parent].append((start, end))
 
-    # Calculate Introns
+    # 2. Calculate Introns
     introns = {}
     print("Calculating intron coordinates...")
+    count_introns = 0
     
     for gid, gene_info in genes.items():
         if gid not in exons: continue
+        chrom, strand = gene_info['chrom'], gene_info['strand']
         
-        chrom = gene_info['chrom']
-        strand = gene_info['strand']
-        
-        # Sort exons by genomic position
+        # Sort exons by position
         sorted_exons = sorted(exons[gid], key=lambda x: x[0])
         
-        current_pos = sorted_exons[0][1] # End of first exon
+        # Introns are gaps between exons
+        current_pos = sorted_exons[0][1]
         
         if chrom not in introns: introns[chrom] = []
         
         for i in range(1, len(sorted_exons)):
             exon_start = sorted_exons[i][0]
             
-            # Gap validation
+            # 10bp gap check (minimal intron size)
             if exon_start > current_pos + 10:
-                # Apply 30bp trimming as per your methods
+                # 30bp trimming from exon boundaries
                 intron_start = current_pos + 30
                 intron_end = exon_start - 30
                 
                 if intron_end > intron_start:
-                    # Store strand with the interval
                     introns[chrom].append((intron_start, intron_end, strand))
+                    count_introns += 1
             
             current_pos = sorted_exons[i][1]
             
-    # Sort intervals for binary search
+    # Sort for binary search
     for chrom in introns:
         introns[chrom].sort(key=lambda x: x[0])
         
-    print(f"Introns parsed for {len(introns)} chromosomes.")
+    print(f"Loaded {count_introns} introns across {len(introns)} chromosomes.")
     return introns
 
-def find_intron_info(chrom, pos, intron_dict):
-    """
-    Binary search to check if pos is in intron list for chrom.
-    Returns (True, strand) or (False, None).
-    """
+def binary_search_intron(chrom, pos, intron_dict):
+    """Returns (True, strand) if pos is in an intron, else (False, None)."""
     if chrom not in intron_dict: return False, None
     regions = intron_dict[chrom]
     
@@ -105,127 +110,237 @@ def find_intron_info(chrom, pos, intron_dict):
             low = mid + 1
     return False, None
 
-def process_vcf(vcf_path, intron_dict):
-    """
-    Reads VCF, filters for introns, corrects for strand, counts G and C alleles.
-    """
-    print(f"Processing VCF: {vcf_path}")
-    
-    # Output files now represent "Coding Strand Target"
-    out_g = open('intron_counts_coding_G.csv', 'w')
-    out_c = open('intron_counts_coding_C.csv', 'w')
-    
-    writer_g = csv.writer(out_g)
-    writer_c = csv.writer(out_c)
-    
-    header = ['chrom', 'pos', 'k', 'n', 'strand']
-    writer_g.writerow(header)
-    writer_c.writerow(header)
-    
-    opener = gzip.open if vcf_path.endswith('.gz') else open
-    
-    count_sites = 0
-    
-    with opener(vcf_path, 'rt') as f:
-        for line in f:
-            if line.startswith('#'): continue
-            
-            parts = line.strip().split('\t')
-            chrom = parts[0]
-            pos = int(parts[1]) - 1 # 0-based
-            
-            # 1. Spatial Filter + Get Strand
-            in_intron, strand = find_intron_info(chrom, pos, intron_dict)
-            if not in_intron:
-                continue
-            
-            ref_genomic = parts[3]
-            alt_genomic = parts[4]
-            
-            # 2. Quality Filter
-            if len(ref_genomic) > 1 or len(alt_genomic) > 1 or ',' in alt_genomic:
-                continue
-                
-            # 3. Get Counts (Genomic Strand)
-            try:
-                format_keys = parts[8].split(':')
-                gt_idx = format_keys.index('GT')
-            except ValueError:
-                continue
-            
-            ref_count = 0
-            alt_count = 0
-            
-            for s in parts[9:]:
-                gt_str = s.split(':')[gt_idx]
-                # Fast parsing for 0/0, 0/1, 1/1
-                if '0' in gt_str: ref_count += gt_str.count('0')
-                if '1' in gt_str: alt_count += gt_str.count('1')
-            
-            total_n = ref_count + alt_count
-            if total_n < 10: continue
-            
-            # 4. Strand Correction
-            # We want to know: What are the alleles on the CODING strand?
-            if strand == '+':
-                ref_coding = ref_genomic
-                alt_coding = alt_genomic
-                # Counts map directly
-                count_of_ref_allele = ref_count
-                count_of_alt_allele = alt_count
-            else: # Negative strand
-                # The "Ref" on coding strand is complement of genomic Ref
-                ref_coding = get_complement(ref_genomic)
-                alt_coding = get_complement(alt_genomic)
-                # Counts still map to Ref/Alt indices, but the physical bases swapped
-                count_of_ref_allele = ref_count
-                count_of_alt_allele = alt_count
+# --- Worker Logic ---
 
-            # 5. Assign to Targets (Coding Strand Perspective)
+def worker_init(intron_dict_shared):
+    """Initializer to set the global intron index in each worker process."""
+    global INTRON_INDEX
+    INTRON_INDEX = intron_dict_shared
+
+def process_batch(lines):
+    """
+    Process a batch of VCF lines.
+    Returns two SFS dictionaries: sfs_G, sfs_C
+    Key: (n, k), Value: count
+    """
+    local_sfs_G = defaultdict(int)
+    local_sfs_C = defaultdict(int)
+    
+    for line in lines:
+        if line.startswith('#'): continue
+        
+        # Fast split
+        parts = line.strip().split('\t')
+        if len(parts) < 10: continue
+        
+        chrom = parts[0]
+        try:
+            pos = int(parts[1]) - 1
+        except ValueError:
+            continue
             
-            # -- Target G (Coding) --
+        # 1. Filter: Intron Check
+        in_intron, strand = binary_search_intron(chrom, pos, INTRON_INDEX)
+        if not in_intron:
+            continue
+            
+        ref_genomic = parts[3]
+        alt_genomic = parts[4]
+        
+        # 2. Check for Invariant/Variant status
+        # Invariants often denoted by '.' or '<NON_REF>' or just REF=N, ALT=.
+        is_invariant = (alt_genomic == '.' or alt_genomic == '<NON_REF>' or alt_genomic == '*')
+        
+        # Skip Indels/Complex if not invariant
+        if not is_invariant and (len(ref_genomic) > 1 or len(alt_genomic) > 1 or ',' in alt_genomic):
+            continue
+
+        # 3. Get Allele Counts from GT
+        # Usually GT is the first field in FORMAT (index 8)
+        try:
+            fmt = parts[8]
+            # Optimization: Check if GT is first (standard) to avoid splitting huge strings
+            if fmt.startswith('GT'):
+                gt_idx = 0
+            else:
+                gt_idx = fmt.split(':').index('GT')
+            
+            c0 = 0 # Ref count
+            c1 = 0 # Alt count
+            
+            # Manual parse of sample columns is faster than full split
+            # Iterate samples starting at index 9
+            for sample_str in parts[9:]:
+                # Extract GT part
+                if gt_idx == 0:
+                    # Common case optimization
+                    colon_pos = sample_str.find(':')
+                    if colon_pos == -1: gt_val = sample_str
+                    else: gt_val = sample_str[:colon_pos]
+                else:
+                    gt_val = sample_str.split(':')[gt_idx]
+                
+                # Count alleles
+                c0 += gt_val.count('0')
+                c1 += gt_val.count('1')
+                
+        except (ValueError, IndexError):
+            continue
+
+        total_n = c0 + c1
+        if total_n < 10: continue # Skip low coverage
+
+        # 4. Strand Correction
+        if strand == '+':
+            ref_coding = ref_genomic
+            alt_coding = alt_genomic
+            count_ref = c0
+            count_alt = c1
+        else: # Negative Strand
+            ref_coding = get_complement(ref_genomic)
+            alt_coding = get_complement(alt_genomic)
+            # The REF index (0) now refers to the complement of Genomic REF
+            count_ref = c0 
+            count_alt = c1
+
+        # 5. Populate SFS G (Target = G)
+        k_g = -1
+        
+        # If the Reference (Coding) is G, then all Ref alleles count towards k
+        if ref_coding == 'G':
+            k_g = count_ref
+        # If the Alt (Coding) is G, then all Alt alleles count towards k
+        elif not is_invariant and alt_coding == 'G':
+            k_g = count_alt
+        # If neither is G, but site is invariant (Fixed Non-G), k=0
+        elif is_invariant and ref_coding != 'G':
             k_g = 0
-            is_relevant_g = False
+        # If variant A <-> T, neither is G, so k=0 for G-process
+        elif not is_invariant and ref_coding != 'G' and alt_coding != 'G':
+            k_g = 0
             
-            if ref_coding == 'G':
-                k_g = count_of_ref_allele
-                is_relevant_g = True
-            elif alt_coding == 'G':
-                k_g = count_of_alt_allele
-                is_relevant_g = True
-            
-            if is_relevant_g:
-                writer_g.writerow([chrom, pos, k_g, total_n, strand])
-                
-            # -- Target C (Coding) --
+        if k_g != -1:
+            local_sfs_G[(total_n, k_g)] += 1
+
+        # 6. Populate SFS C (Target = C)
+        k_c = -1
+        
+        if ref_coding == 'C':
+            k_c = count_ref
+        elif not is_invariant and alt_coding == 'C':
+            k_c = count_alt
+        elif is_invariant and ref_coding != 'C':
             k_c = 0
-            is_relevant_c = False
+        elif not is_invariant and ref_coding != 'C' and alt_coding != 'C':
+            k_c = 0
             
-            if ref_coding == 'C':
-                k_c = count_of_ref_allele
-                is_relevant_c = True
-            elif alt_coding == 'C':
-                k_c = count_of_alt_allele
-                is_relevant_c = True
-                
-            if is_relevant_c:
-                writer_c.writerow([chrom, pos, k_c, total_n, strand])
-                
-            count_sites += 1
-            if count_sites % 100000 == 0:
-                print(f"Processed {count_sites} intronic sites...")
+        if k_c != -1:
+            local_sfs_C[(total_n, k_c)] += 1
+            
+    return local_sfs_G, local_sfs_C
 
-    out_g.close()
-    out_c.close()
-    print("Done.")
+# --- Main Driver ---
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python extract_intron_sfs_stranded.py <gff_file> <vcf_file>")
+def main():
+    parser = argparse.ArgumentParser(description="Parallel SFS generation for Introns from massive VCF.")
+    parser.add_argument('--vcf', type=str, help='Path to input VCF (gzip ok, but piping via --stream is faster)')
+    parser.add_argument('--stream', action='store_true', help='Read VCF from stdin (Recommended: zcat file.vcf.gz | python script.py --stream)')
+    parser.add_argument('--gff', type=str, required=True, help='GFF3 annotation file')
+    parser.add_argument('--workers', type=int, default=max(1, multiprocessing.cpu_count() - 1), help='Number of worker processes')
+    parser.add_argument('--batch_size', type=int, default=20000, help='Lines per batch to send to workers')
+    
+    args = parser.parse_args()
+    
+    # 1. Load Introns (Main Process)
+    introns = parse_gff_introns(args.gff)
+    
+    # 2. Setup Parallel Pool
+    print(f"Starting {args.workers} workers...")
+    pool = multiprocessing.Pool(
+        processes=args.workers,
+        initializer=worker_init,
+        initargs=(introns,)
+    )
+    
+    # 3. Process Stream
+    if args.stream:
+        input_stream = sys.stdin
+        print("Reading VCF from STDIN...")
+    elif args.vcf:
+        if args.vcf.endswith('.gz'):
+            input_stream = gzip.open(args.vcf, 'rt')
+        else:
+            input_stream = open(args.vcf, 'r')
+        print(f"Reading VCF from {args.vcf}...")
+    else:
+        print("Error: Must provide --vcf or --stream")
         sys.exit(1)
         
-    gff_file = sys.argv[1]
-    vcf_file = sys.argv[2]
+    # Master Aggregators
+    GLOBAL_SFS_G = defaultdict(int)
+    GLOBAL_SFS_C = defaultdict(int)
     
-    introns = parse_gff_introns(gff_file)
-    process_vcf(vcf_file, introns)
+    batch_lines = []
+    active_jobs = []
+    total_lines_read = 0
+    total_batches_sent = 0
+    
+    start_time = time.time()
+    
+    # Callback to merge results as they finish
+    def update_result(result):
+        sfs_g_part, sfs_c_part = result
+        for k, v in sfs_g_part.items():
+            GLOBAL_SFS_G[k] += v
+        for k, v in sfs_c_part.items():
+            GLOBAL_SFS_C[k] += v
+
+    for line in input_stream:
+        if line.startswith('##'): continue # Skip meta headers
+        
+        batch_lines.append(line)
+        total_lines_read += 1
+        
+        # When batch is full, submit to pool
+        if len(batch_lines) >= args.batch_size:
+            pool.apply_async(process_batch, (batch_lines,), callback=update_result)
+            batch_lines = []
+            total_batches_sent += 1
+            
+            if total_batches_sent % 100 == 0:
+                elapsed = time.time() - start_time
+                print(f"Read {total_lines_read:,} lines... ({total_lines_read/elapsed:.0f} lines/sec)")
+                
+                # Prevent memory overflow if workers are slow
+                # Simple backpressure: check pending jobs (optional but good for stability)
+                # For simplicity in this script, we trust the OS scheduler + memory
+    
+    # Submit final batch
+    if batch_lines:
+        pool.apply_async(process_batch, (batch_lines,), callback=update_result)
+    
+    input_stream.close()
+    
+    print("Finished reading file. Waiting for workers to finish...")
+    pool.close()
+    pool.join()
+    
+    # 4. Write Results
+    print("Writing output files...")
+    
+    with open('sfs_introns_G.csv', 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['n', 'k', 'count'])
+        for (n, k), count in GLOBAL_SFS_G.items():
+            w.writerow([n, k, count])
+            
+    with open('sfs_introns_C.csv', 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['n', 'k', 'count'])
+        for (n, k), count in GLOBAL_SFS_C.items():
+            w.writerow([n, k, count])
+            
+    print("Done!")
+
+if __name__ == "__main__":
+    main()

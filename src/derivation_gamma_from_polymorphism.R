@@ -73,16 +73,48 @@ get_prob_k_analytical <- function(k, n, u, v, S, theta = 0.0312) {
   return(exp(log_prob))
 }
 
-solve_alpha_and_beta_from_introns <- function(k_vec, n_vec) {
+get_prob_k_analytical_precomputed <- function(k, n, alpha, beta, S) {
+  #' Calculate probability using pre-computed alpha and beta from introns
+  #' This version directly uses empirically-derived 4N*u and 4N*v values
+  #' 
+  #' @param k Number of preferred alleles observed
+  #' @param n Total sample size
+  #' @param alpha Pre-computed 4N*u from intronic G or C sites
+  #' @param beta Pre-computed 4N*v from intronic G or C sites
+  #' @param S Selection coefficient (4Nes) to evaluate
+  #' @return Probability of observing k preferred alleles
+  
+  A_prime <- k + alpha
+  B_prime <- n - k + beta
+  
+  log_binom <- lchoose(n, k)
+  log_beta_ratio <- lbeta(A_prime, B_prime) - lbeta(alpha, beta)
+  log_hyperg_num <- log(gsl::hyperg_1F1(A_prime, A_prime + B_prime, S))
+  log_hyperg_den <- log(gsl::hyperg_1F1(alpha, alpha + beta, S))
+  
+  log_prob <- log_binom + log_beta_ratio + (log_hyperg_num - log_hyperg_den)
+  
+  return(exp(log_prob))
+}
+
+solve_alpha_and_beta_from_introns <- function(sfs_file) {
   #' Estimate alpha and beta from neutral (intronic) site frequency spectra
   #' Uses Beta-Binomial Maximum Likelihood Estimation
   #' 
-  #' @param k_vec Vector of counts of the derived/focus allele (e.g., G counts)
-  #' @param n_vec Vector of total coverage/sample size at each site
+  #' @param sfs_file Path to CSV file with columns: n, k, count
+  #'                 (output from filter_vcf_for_introns.py)
   #' @return A list containing estimated alpha, beta, and convergence codes
   #' ___________________________________________________________________________
   
   require(stats)
+  require(data.table)
+  
+  # Load SFS data
+  sfs_data <- fread(sfs_file)
+  
+  # Expand to individual observations (weighted by count)
+  k_vec <- rep(sfs_data$k, sfs_data$count)
+  n_vec <- rep(sfs_data$n, sfs_data$count)
   
   # Remove sites with 0 coverage
   valid <- n_vec > 0
@@ -143,12 +175,21 @@ solve_alpha_and_beta_from_introns <- function(k_vec, n_vec) {
 #   sample_sizes: Vector of sample sizes (n) for those sites (usually 187, because we have haplotypes)
 #   u, v: Mutation rates for this specific Amino Acid family
 
-estimate_gamma_for_AA <- function(counts, sample_sizes, u, v, 
-                                  S_interval = c(0, 20), theta = 0.0312) {
+estimate_gamma_for_AA <- function(counts, sample_sizes, alpha, beta, 
+                                  S_interval = c(0, 20)) {
+  #' Estimate gamma (4Nes) using pre-computed alpha and beta from introns
+  #' 
+  #' @param counts Vector of preferred codon counts (k)
+  #' @param sample_sizes Vector of total sample sizes (n)
+  #' @param alpha Pre-computed 4N*u (unpreferred -> preferred mutation rate)
+  #' @param beta Pre-computed 4N*v (preferred -> unpreferred mutation rate)
+  #' @param S_interval Search interval for gamma
+  #' @return Estimated gamma value
   
   nll <- function(S) {
     log_probs <- mapply(function(k, n) {
-      p <- get_prob_k_analytical(k, n, u, v, S, theta)
+      # Use analytical formula with pre-computed alpha, beta
+      p <- get_prob_k_analytical_precomputed(k, n, alpha, beta, S)
       if(is.na(p) || p <= 0) return(-1e6) 
       return(log(p))
     }, counts, sample_sizes)

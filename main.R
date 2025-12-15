@@ -3366,3 +3366,212 @@ print(fixation_summary)
 
 cat("\nCFS Analysis Complete!\n")
 cat("Results saved to: ./results/cfs_analysis/\n\n")
+
+## *****************************************************************************
+## 15) Intronic Polymorphism-Based Selection Inference ----
+## _____________________________________________________________________________
+# Estimate selection coefficients (gamma) using mutation rate parameters
+# (alpha, beta) derived from neutral intronic sites.
+#
+# APPROACH:
+# 1. Run Python script to extract intronic G/C site frequency spectra from VCF
+# 2. Estimate alpha_G, beta_G, alpha_C, beta_C from neutral (S=0) sites
+# 3. Use these empirical parameters to infer gamma at coding sites
+# 4. Validate against CAI, CDC, and expression patterns
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("POLYMORPHISM-BASED SELECTION INFERENCE\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+# Load integration functions
+source("./src/derivation_gamma_from_polymorphism.R")
+source("./src/integrate_intronic_polymorphism.R")
+
+# --- STEP 1: Check for pre-computed intronic SFS files ---
+sfs_G_file <- "./data/sfs_introns_G.csv"
+sfs_C_file <- "./data/sfs_introns_C.csv"
+
+if (!file.exists(sfs_G_file) || !file.exists(sfs_C_file)) {
+  cat("⚠️  Intronic SFS files not found!\n\n")
+  cat("Please run the Python VCF filtering script first:\n")
+  cat("  python python_scripts/filter_vcf_for_introns.py \\\n")
+  cat("    --vcf <your_vcf.gz> \\\n")
+  cat("    --gff data/Mguttatusvar_IM767_887_v2.1.gene.gff3 \\\n")
+  cat("    --workers 8\n\n")
+  cat("Or using streaming for faster processing:\n")
+  cat("  zcat <your_vcf.gz> | python python_scripts/filter_vcf_for_introns.py \\\n")
+  cat("    --stream \\\n")
+  cat("    --gff data/Mguttatusvar_IM767_887_v2.1.gene.gff3 \\\n")
+  cat("    --workers 8\n\n")
+  cat("Then move the output files to ./data/\n")
+  cat("Skipping polymorphism analysis for now...\n\n")
+  
+} else {
+  
+  cat("✓ Found intronic SFS files\n\n")
+  
+  # --- STEP 2: Estimate neutral mutation parameters ---
+  neutral_params <- load_and_estimate_neutral_params(sfs_G_file, sfs_C_file)
+  
+  # Save neutral parameter estimates
+  neutral_params_df <- data.frame(
+    Parameter = c("alpha_G", "beta_G", "alpha_C", "beta_C",
+                  "pi_G_expected", "pi_C_expected"),
+    Value = c(neutral_params$alpha_G, neutral_params$beta_G,
+              neutral_params$alpha_C, neutral_params$beta_C,
+              neutral_params$pi_G_expected, neutral_params$pi_C_expected),
+    Description = c("4N*u for G (unpreferred->preferred)", 
+                    "4N*v for G (preferred->unpreferred)",
+                    "4N*u for C (unpreferred->preferred)",
+                    "4N*v for C (preferred->unpreferred)",
+                    "Expected nucleotide diversity at G sites",
+                    "Expected nucleotide diversity at C sites")
+  )
+  
+  write.csv(neutral_params_df, 
+            "./results/neutral_mutation_parameters.csv",
+            row.names = FALSE)
+  
+  cat("✓ Neutral parameters saved: ./results/neutral_mutation_parameters.csv\n\n")
+  
+  # --- STEP 3: Load codon-level VCF data ---
+  # This should be generated from your VCF using similar approach
+  # For now, check if file exists
+  codon_vcf_file <- "./data/codon_vcf_processed.rds"
+  
+  if (!file.exists(codon_vcf_file)) {
+    cat("⚠️  Codon-level VCF data not found!\n")
+    cat("Expected file: ", codon_vcf_file, "\n\n")
+    cat("This file should contain codon variant frequencies.\n")
+    cat("Skipping gamma estimation for now...\n\n")
+    
+  } else {
+    
+    cat("Loading codon-level polymorphism data...\n")
+    codon_vcf_data <- readRDS(codon_vcf_file)
+    
+    # --- STEP 4: Create preferred codon mapping ---
+    # Extract from your existing CAI analysis
+    preferred_codons_df <- w_table |>
+      dplyr::filter(w == 1.0) |>
+      dplyr::select(amino_acid, codon) |>
+      dplyr::rename(AA = amino_acid, Preferred_Codon = codon)
+    
+    # --- STEP 5: Estimate gamma for each gene and amino acid ---
+    gamma_results <- estimate_gamma_by_gene_with_neutral_params(
+      codon_vcf_data = codon_vcf_data,
+      neutral_params = neutral_params,
+      preferred_codons_df = preferred_codons_df
+    )
+    
+    # Save gamma estimates
+    write.csv(gamma_results,
+              "./results/gamma_estimates_by_gene_and_aa.csv",
+              row.names = FALSE)
+    
+    cat("✓ Gamma estimates saved: ./results/gamma_estimates_by_gene_and_aa.csv\n\n")
+    
+    # --- STEP 6: Compare with expression levels ---
+    gamma_expr_comparison <- compare_gamma_with_expression(
+      gamma_results = gamma_results,
+      expression_data = integrated_data[, .(Gene, High_exp_log2)]
+    )
+    
+    # --- STEP 7: Cross-validate with CAI and CDC ---
+    validation_results <- validate_against_cai(
+      gamma_results = gamma_results,
+      integrated_data = integrated_data
+    )
+    
+    write.csv(validation_results,
+              "./results/gamma_validation_vs_cai_cdc.csv",
+              row.names = FALSE)
+    
+    cat("✓ Validation results saved: ./results/gamma_validation_vs_cai_cdc.csv\n\n")
+    
+    # --- STEP 8: Visualization ---
+    cat("Creating visualization plots...\n")
+    
+    # Plot 1: Gamma distribution by terminal nucleotide
+    p_gamma_dist <- ggplot(gamma_results[!is.na(Gamma)], 
+                           aes(x = Gamma, fill = Terminal_Nuc)) +
+      geom_histogram(alpha = 0.6, bins = 50, position = "identity") +
+      geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+      facet_wrap(~Terminal_Nuc, ncol = 1) +
+      scale_fill_manual(values = c("G" = "#E69F00", "C" = "#56B4E9")) +
+      labs(title = "Distribution of Selection Coefficients (Gamma)",
+           subtitle = "Separated by terminal nucleotide of preferred codon",
+           x = "γ (4Nes)", y = "Count",
+           fill = "Terminal\nNucleotide") +
+      theme_minimal(base_size = 12) +
+      theme(legend.position = "bottom")
+    
+    ggsave("./results/gamma_distribution_by_nucleotide.pdf", 
+           p_gamma_dist, width = 10, height = 8)
+    
+    # Plot 2: Gamma vs Expression
+    p_gamma_expr <- ggplot(gamma_expr_comparison, 
+                           aes(x = High_exp_log2, y = Mean_Gamma)) +
+      geom_point(alpha = 0.3, size = 1) +
+      geom_smooth(method = "lm", color = "red", se = TRUE) +
+      geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+      labs(title = "Selection Coefficient vs Gene Expression",
+           x = "Expression Level (log2 CPM)",
+           y = "Mean γ per Gene") +
+      theme_minimal(base_size = 12)
+    
+    ggsave("./results/gamma_vs_expression.pdf", 
+           p_gamma_expr, width = 8, height = 6)
+    
+    # Plot 3: Gamma vs CAI (if available)
+    if ("CAI" %in% names(validation_results)) {
+      p_gamma_cai <- ggplot(validation_results, 
+                            aes(x = CAI, y = Mean_Gamma)) +
+        geom_point(aes(color = N_Significant > 0), alpha = 0.5) +
+        geom_smooth(method = "lm", color = "blue", se = TRUE) +
+        geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+        scale_color_manual(values = c("FALSE" = "gray50", "TRUE" = "red"),
+                          labels = c("No sig. AA", "Has sig. AA")) +
+        labs(title = "Selection Coefficient vs Codon Adaptation Index",
+             x = "CAI", y = "Mean γ per Gene",
+             color = "Significant\nSelection") +
+        theme_minimal(base_size = 12)
+      
+      ggsave("./results/gamma_vs_CAI.pdf", 
+             p_gamma_cai, width = 9, height = 6)
+    }
+    
+    cat("✓ Plots saved to ./results/\n\n")
+    
+    # --- STEP 9: Summary Report ---
+    cat("=== POLYMORPHISM-BASED SELECTION INFERENCE: SUMMARY ===\n\n")
+    
+    cat("NEUTRAL MUTATION PARAMETERS (from introns):\n")
+    cat(sprintf("  G sites: α = %.6f, β = %.6f (π = %.6f)\n",
+                neutral_params$alpha_G, neutral_params$beta_G,
+                neutral_params$pi_G_expected))
+    cat(sprintf("  C sites: α = %.6f, β = %.6f (π = %.6f)\n\n",
+                neutral_params$alpha_C, neutral_params$beta_C,
+                neutral_params$pi_C_expected))
+    
+    cat("SELECTION INFERENCE:\n")
+    cat(sprintf("  Genes analyzed: %d\n", 
+                length(unique(gamma_results$Gene))))
+    cat(sprintf("  Gene x AA combinations: %d\n", nrow(gamma_results)))
+    cat(sprintf("  Significant positive selection: %d (%.1f%%)\n",
+                sum(gamma_results$Gamma > 1.92, na.rm = TRUE),
+                100 * mean(gamma_results$Gamma > 1.92, na.rm = TRUE)))
+    cat(sprintf("  Significant negative selection: %d (%.1f%%)\n\n",
+                sum(gamma_results$Gamma < -1.92, na.rm = TRUE),
+                100 * mean(gamma_results$Gamma < -1.92, na.rm = TRUE)))
+    
+    cat("BIOLOGICAL INTERPRETATION:\n")
+    cat("  • Positive γ: Preferred codons favored by selection\n")
+    cat("  • Negative γ: Preferred codons under purifying selection\n")
+    cat("  • |γ| > 1.92 ≈ significant at α = 0.05 (chi-square(1) threshold)\n\n")
+    
+    cat("Analysis complete!\n\n")
+  }
+}
+
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
