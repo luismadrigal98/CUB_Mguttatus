@@ -28,7 +28,8 @@ def parse_gff_introns(gff_file):
     genes = {}
     exons = {}
     
-    # 1. Parse Genes and Exons
+    # 1. Parse Genes and mRNA/CDS features
+    # Note: Some GFF3 files use 'exon', others use 'CDS' - we handle both
     with open(gff_file, 'r') as f:
         for line in f:
             if line.startswith('#'): continue
@@ -44,7 +45,17 @@ def parse_gff_introns(gff_file):
                 gid_match = re.search(r'ID=([^;]+)', attributes)
                 if gid_match:
                     genes[gid_match.group(1)] = {'chrom': chrom, 'start': start, 'end': end, 'strand': strand}
-            elif feature == 'exon':
+            elif feature == 'mRNA':
+                # Store mRNA as gene-level feature (some GFFs only have mRNA, not gene)
+                mid_match = re.search(r'ID=([^;]+)', attributes)
+                pid_match = re.search(r'Parent=([^;]+)', attributes)
+                if mid_match:
+                    mrna_id = mid_match.group(1)
+                    # Link mRNA to gene parent if exists
+                    if pid_match and pid_match.group(1) not in genes:
+                        genes[pid_match.group(1)] = {'chrom': chrom, 'start': start, 'end': end, 'strand': strand}
+            elif feature in ['exon', 'CDS']:
+                # CDS features define coding exons
                 pid_match = re.search(r'Parent=([^;]+)', attributes)
                 if pid_match:
                     parent = pid_match.group(1)
@@ -55,13 +66,51 @@ def parse_gff_introns(gff_file):
     introns = {}
     print("Calculating intron coordinates...")
     count_introns = 0
+    count_genes_processed = 0
     
+    # For GFF3 files with mRNA->CDS hierarchy, we need to:
+    # 1. Find all mRNA IDs
+    # 2. Get their parent genes
+    # 3. Use CDS as exons
+    
+    # Build mRNA to gene mapping
+    mrna_to_gene = {}
     for gid, gene_info in genes.items():
-        if gid not in exons: continue
+        # Gene IDs often have pattern: MgIM767.01G000100.v2.1
+        # mRNA IDs often have pattern: MgIM767.01G000100.1.v2.1
+        # We need to match them
+        pass  # We'll handle this in the loop below
+    
+    for parent_id, exon_list in exons.items():
+        # parent_id might be mRNA ID, we need to find the gene
+        # Try to find matching gene
+        gene_info = None
+        
+        # Strategy 1: Direct match (parent_id is gene ID)
+        if parent_id in genes:
+            gene_info = genes[parent_id]
+            gene_id = parent_id
+        else:
+            # Strategy 2: Parent is mRNA, find its gene parent
+            # Look for gene ID by removing transcript suffix
+            # Example: MgIM767.01G000100.1.v2.1 -> MgIM767.01G000100.v2.1
+            for gid in genes:
+                if parent_id.startswith(gid.rsplit('.', 2)[0]):  # Match base name
+                    gene_info = genes[gid]
+                    gene_id = gid
+                    break
+        
+        if not gene_info:
+            continue  # Skip if we can't find gene info
+        
+        count_genes_processed += 1
         chrom, strand = gene_info['chrom'], gene_info['strand']
         
         # Sort exons by position
-        sorted_exons = sorted(exons[gid], key=lambda x: x[0])
+        sorted_exons = sorted(exon_list, key=lambda x: x[0])
+        
+        if len(sorted_exons) < 2:
+            continue  # Need at least 2 exons to have an intron
         
         # Introns are gaps between exons
         current_pos = sorted_exons[0][1]
@@ -88,6 +137,18 @@ def parse_gff_introns(gff_file):
         introns[chrom].sort(key=lambda x: x[0])
         
     print(f"Loaded {count_introns} introns across {len(introns)} chromosomes.")
+    print(f"Processed {count_genes_processed} genes with CDS/exon annotations.")
+    
+    if count_introns == 0:
+        print("\n⚠️  WARNING: No introns found!")
+        print("Possible issues:")
+        print("  1. GFF3 file may not contain multi-exon genes")
+        print("  2. CDS features may not be properly formatted")
+        print("  3. Parent-child relationships may be incorrect")
+        print("\nShowing first few genes and their exon counts:")
+        for i, (parent_id, exon_list) in enumerate(list(exons.items())[:5]):
+            print(f"  {parent_id}: {len(exon_list)} exons")
+    
     return introns
 
 def binary_search_intron(chrom, pos, intron_dict):

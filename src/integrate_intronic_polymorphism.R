@@ -65,7 +65,6 @@ load_and_estimate_neutral_params <- function(sfs_G_file, sfs_C_file) {
   return(results)
 }
 
-
 annotate_preferred_codons_with_nucleotide <- function(preferred_codons_df) {
   #' Add nucleotide annotation (G vs C ending) to preferred codons table
   #' 
@@ -84,7 +83,6 @@ annotate_preferred_codons_with_nucleotide <- function(preferred_codons_df) {
   
   return(preferred_codons_df)
 }
-
 
 estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data, 
                                                        neutral_params,
@@ -165,8 +163,8 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
   }, by = .(Gene, AA)]
   
   # Calculate significance (using chi-square approximation)
-  # Under neutrality, 2*ln(L_selection / L_neutral) ~ chi-square(1)
-  gamma_results[, Significant := ifelse(!is.na(Gamma), abs(Gamma) > 1.92, FALSE)]
+  # Thr = 1 to align with the Drift Barrier hypothesis
+  gamma_results[, Significant := ifelse(!is.na(Gamma), abs(Gamma) > 1, FALSE)]
   
   cat("\n=== Summary Statistics ===\n\n")
   cat(sprintf("Total Gene x AA combinations: %d\n", nrow(gamma_results)))
@@ -193,7 +191,6 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
   
   return(gamma_results)
 }
-
 
 compare_gamma_with_expression <- function(gamma_results, expression_data) {
   #' Compare estimated selection coefficients with gene expression levels
@@ -256,7 +253,6 @@ compare_gamma_with_expression <- function(gamma_results, expression_data) {
   
   return(merged)
 }
-
 
 validate_against_cai <- function(gamma_results, integrated_data) {
   #' Cross-validate gamma estimates against CAI-based bias metrics
