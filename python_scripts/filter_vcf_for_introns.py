@@ -192,7 +192,6 @@ def process_batch(lines):
     for line in lines:
         if line.startswith('#'): continue
         
-        # Fast split
         parts = line.strip().split('\t')
         if len(parts) < 10: continue
         
@@ -202,80 +201,69 @@ def process_batch(lines):
         except ValueError:
             continue
             
-        # 1. Filter: Intron Check
         in_intron, strand = binary_search_intron(chrom, pos, INTRON_INDEX)
         if not in_intron:
             continue
             
         ref_genomic = parts[3]
         alt_genomic = parts[4]
-        
-        # 2. Check for Invariant/Variant status
-        # Invariants often denoted by '.' or '<NON_REF>' or just REF=N, ALT=.
         is_invariant = (alt_genomic == '.' or alt_genomic == '<NON_REF>' or alt_genomic == '*')
         
-        # Skip Indels/Complex if not invariant
         if not is_invariant and (len(ref_genomic) > 1 or len(alt_genomic) > 1 or ',' in alt_genomic):
             continue
 
-        # 3. Get Allele Counts from AD (Allele Depth)
-        # With bcftools -c flag, missing data shows as 0/0:0,0,0:0/0
-        # We need to check AD field to filter out missing data
+        # --- CORRECTED LOGIC START ---
         try:
             fmt = parts[8]
             fmt_fields = fmt.split(':')
             
-            # Find AD index in FORMAT
             try:
+                gt_idx = fmt_fields.index('GT')
                 ad_idx = fmt_fields.index('AD')
             except ValueError:
-                # No AD field, skip this variant
+                # If GT or AD is missing, we can't perform this specific filter
                 continue
             
-            c0 = 0 # Ref allele depth
-            c1 = 0 # Alt allele depth
+            c0 = 0 # Ref allele count (Haplotypes)
+            c1 = 0 # Alt allele count (Haplotypes)
             
-            # Iterate samples starting at index 9
             for sample_str in parts[9:]:
                 sample_fields = sample_str.split(':')
-                
-                # Check if we have enough fields
-                if len(sample_fields) <= ad_idx:
+                if len(sample_fields) <= max(gt_idx, ad_idx):
                     continue
                 
-                # Parse AD field (format: "ref_depth,alt_depth")
+                # 1. CHECK DEPTH (AD)
                 ad_val = sample_fields[ad_idx]
-                
-                # Skip missing data (AD = 0,0,0 or just 0,0 or empty)
-                if ad_val == '.' or ad_val == '0,0,0' or ad_val == '0,0':
-                    continue
-                
-                # Parse ref and alt depths
-                ad_parts = ad_val.split(',')
-                if len(ad_parts) < 2:
-                    continue
+                if ad_val == '.' or ad_val == '': continue
                 
                 try:
-                    ref_depth = int(ad_parts[0])
-                    alt_depth = int(ad_parts[1])
-                    
-                    # Skip if both are 0 (missing data)
-                    if ref_depth == 0 and alt_depth == 0:
-                        continue
-                    
-                    c0 += ref_depth
-                    c1 += alt_depth
-                    
+                    # Handle "0,0" or "0,0,0" etc
+                    depths = [int(x) for x in ad_val.split(',') if x != '.']
+                    total_depth = sum(depths)
                 except ValueError:
                     continue
                 
-        except (ValueError, IndexError):
+                # FILTER: If total depth is 0, this is missing data
+                if total_depth == 0:
+                    continue
+                
+                # 2. COUNT GENOTYPES (GT)
+                # Only if depth > 0 do we trust the call
+                gt_val = sample_fields[gt_idx]
+                
+                # Count alleles (0 or 1)
+                # This ensures n is sample size, not read depth
+                c0 += gt_val.count('0')
+                c1 += gt_val.count('1')
+                
+        except Exception:
             continue
+        # --- CORRECTED LOGIC END ---
 
         total_n = c0 + c1
-        if total_n < 10: continue # Skip low coverage
+        if total_n < 10: continue 
 
-        # 4. Strand Correction
+        # Strand Correction
         if strand == '+':
             ref_coding = ref_genomic
             alt_coding = alt_genomic
@@ -284,32 +272,25 @@ def process_batch(lines):
         else: # Negative Strand
             ref_coding = get_complement(ref_genomic)
             alt_coding = get_complement(alt_genomic)
-            # The REF index (0) now refers to the complement of Genomic REF
             count_ref = c0 
             count_alt = c1
 
-        # 5. Populate SFS G (Target = G)
+        # Populate SFS G
         k_g = -1
-        
-        # If the Reference (Coding) is G, then all Ref alleles count towards k
         if ref_coding == 'G':
             k_g = count_ref
-        # If the Alt (Coding) is G, then all Alt alleles count towards k
         elif not is_invariant and alt_coding == 'G':
             k_g = count_alt
-        # If neither is G, but site is invariant (Fixed Non-G), k=0
         elif is_invariant and ref_coding != 'G':
             k_g = 0
-        # If variant A <-> T, neither is G, so k=0 for G-process
         elif not is_invariant and ref_coding != 'G' and alt_coding != 'G':
             k_g = 0
             
         if k_g != -1:
             local_sfs_G[(total_n, k_g)] += 1
 
-        # 6. Populate SFS C (Target = C)
+        # Populate SFS C
         k_c = -1
-        
         if ref_coding == 'C':
             k_c = count_ref
         elif not is_invariant and alt_coding == 'C':
