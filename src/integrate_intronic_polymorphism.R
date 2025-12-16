@@ -752,7 +752,11 @@ validate_against_cai <- function(gamma_results, integrated_data) {
 compare_gamma_with_anacoda <- function(gamma_gene_level, anacoda_intensity) {
   #' Direct comparison of gamma-based vs AnaCoDa-based selection metrics
   #' 
-  #' Validates that both methods yield consistent biological inferences
+  #' **DEPRECATED:** This function uses incorrect aggregation.
+  #' Use contrast_gamma_anacoda() instead for mathematically correct comparison.
+  #' 
+  #' This function is kept for backward compatibility but will issue a warning
+  #' and suggest using the correct function.
   #' 
   #' @param gamma_gene_level Output from aggregate_gamma_per_gene()
   #'                         Must have: Gene_name, Selection_Intensity
@@ -766,7 +770,15 @@ compare_gamma_with_anacoda <- function(gamma_gene_level, anacoda_intensity) {
   if (!is.data.table(gamma_gene_level)) setDT(gamma_gene_level)
   if (!is.data.table(anacoda_intensity)) setDT(anacoda_intensity)
   
-  cat("\n=== Comparing Gamma vs AnaCoDa Selection Coefficients ===\n\n")
+  cat("\n⚠️  WARNING: compare_gamma_with_anacoda() uses INCORRECT aggregation!\n")
+  cat("   This function compares gene-level aggregates, not codon-level selection.\n")
+  cat("   For mathematically correct comparison, use:\n")
+  cat("     contrast_gamma_anacoda(gamma_results, codon_usage, preferred_codons,\n")
+  cat("                            anacoda_intensity, genetic_code)\n\n")
+  cat("   Continuing with simple aggregate comparison for diagnostic purposes...\n\n")
+  
+  cat("\n=== Comparing Gamma vs AnaCoDa Selection Coefficients ===\n")
+  cat("   (Note: This is a simplified comparison, not the rigorous formula)\n\n")
   
   # Merge datasets
   setkey(gamma_gene_level, Gene_name)
@@ -1066,11 +1078,12 @@ estimate_gamma_gradient <- function(codon_vcf_data, neutral_params,
   # 1. Calculate relative position for each site (0.0 to 1.0)
   cat("Calculating relative positions...\n")
   
-  vcf_with_pos <- codon_vcf_data[, {
-    gene_length <- max(Codon_Pos)
-    rel_pos <- Codon_Pos / gene_length
-    .SD[, Relative_Position := rel_pos]
-  }, by = Gene]
+  # Calculate gene lengths first
+  gene_lengths <- codon_vcf_data[, .(Gene_Length = max(Codon_Pos)), by = Gene]
+  
+  # Merge and calculate relative positions
+  vcf_with_pos <- merge(codon_vcf_data, gene_lengths, by = "Gene")
+  vcf_with_pos[, Relative_Position := Codon_Pos / Gene_Length]
   
   # 2. Assign each site to a positional bin
   vcf_with_pos[, Position_Bin := cut(Relative_Position, 
