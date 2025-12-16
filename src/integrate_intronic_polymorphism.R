@@ -908,6 +908,17 @@ contrast_gamma_anacoda <- function(gamma_results, codon_usage, preferred_codons,
   cat(sprintf("Processing %d genes with %d codons...\n", 
               nrow(codon_usage), length(codon_cols)))
   
+  # Standardize gene names in gamma_results
+  # gamma_results has 'Gene', codon_usage has 'Gene_name'
+  gamma_for_lookup <- copy(gamma_results)
+  if ("Gene" %in% names(gamma_for_lookup) && !"Gene_name" %in% names(gamma_for_lookup)) {
+    setnames(gamma_for_lookup, "Gene", "Gene_name")
+  }
+  
+  cat(sprintf("Gamma results: %d rows, %d unique genes\n",
+              nrow(gamma_for_lookup),
+              length(unique(gamma_for_lookup$Gene_name))))
+  
   # Calculate S_poly for each gene
   cat("Calculating polymorphism-based selection load (S_poly)...\n")
   
@@ -938,8 +949,8 @@ contrast_gamma_anacoda <- function(gamma_results, codon_usage, preferred_codons,
         # If this is an UNPREFERRED codon
         if (!is.na(pref_codon) && codon != pref_codon) {
           
-          # Get gamma for this AA in this gene
-          gamma_val <- gamma_results[Gene == gene_name & AA == aa, Gamma]
+          # Get gamma for this AA in this gene (now using Gene_name)
+          gamma_val <- gamma_for_lookup[Gene_name == gene_name & AA == aa, Gamma]
           
           if (length(gamma_val) > 0 && !is.na(gamma_val[1])) {
             # Count of this unpreferred codon
@@ -968,10 +979,34 @@ contrast_gamma_anacoda <- function(gamma_results, codon_usage, preferred_codons,
   # Remove genes with missing data
   contrast_data <- contrast_data[!is.na(S_poly) & !is.na(S_coeff)]
   
-  cat(sprintf("\nGenes in comparison: %d\n\n", nrow(contrast_data)))
+  cat(sprintf("\nGenes in comparison: %d\n", nrow(contrast_data)))
+  
+  # Diagnostic: Check variance
+  cat(sprintf("S_poly: Mean=%.4f, SD=%.4f, Range=[%.4f, %.4f]\n",
+              mean(contrast_data$S_poly), sd(contrast_data$S_poly),
+              min(contrast_data$S_poly), max(contrast_data$S_poly)))
+  cat(sprintf("S_coeff: Mean=%.4f, SD=%.4f, Range=[%.4f, %.4f]\n\n",
+              mean(contrast_data$S_coeff), sd(contrast_data$S_coeff),
+              min(contrast_data$S_coeff), max(contrast_data$S_coeff)))
   
   # Calculate Spearman correlation
   if (nrow(contrast_data) > 10) {
+    
+    # Check if there's variance in both variables
+    if (sd(contrast_data$S_poly) == 0) {
+      warning("⚠️  S_poly has zero variance! All values are identical.")
+      cat("This means no selection load was calculated.\n")
+      cat("Possible issues:\n")
+      cat("  1. No matching genes between gamma_results and codon_usage\n")
+      cat("  2. All gamma values are NA\n")
+      cat("  3. Column name mismatch\n\n")
+      return(contrast_data)
+    }
+    
+    if (sd(contrast_data$S_coeff) == 0) {
+      warning("⚠️  S_coeff has zero variance! All AnaCoDa values are identical.")
+      return(contrast_data)
+    }
     
     cor_result <- cor.test(contrast_data$S_poly, 
                            contrast_data$S_coeff,
@@ -983,10 +1018,10 @@ contrast_gamma_anacoda <- function(gamma_results, codon_usage, preferred_codons,
     cat(sprintf("p-value = %.2e\n\n", cor_result$p.value))
     
     # Interpretation
-    if (cor_result$estimate > 0.5 && cor_result$p.value < 0.01) {
+    if (!is.na(cor_result$estimate) && cor_result$estimate > 0.5 && cor_result$p.value < 0.01) {
       cat("✓ STRONG CONCORDANCE: Both methods identify the same selection signal!\n")
       cat("  Polymorphism-based inference validates AnaCoDa mechanistic model.\n\n")
-    } else if (cor_result$estimate > 0.3 && cor_result$p.value < 0.05) {
+    } else if (!is.na(cor_result$estimate) && cor_result$estimate > 0.3 && cor_result$p.value < 0.05) {
       cat("⚠ MODERATE CONCORDANCE: General agreement with some discrepancies.\n")
       cat("  Methods capture similar but not identical aspects of selection.\n\n")
     } else {
@@ -1091,18 +1126,41 @@ estimate_gamma_gradient <- function(codon_vcf_data, neutral_params,
                                       labels = 1:n_bins,
                                       include.lowest = TRUE)]
   
-  cat(sprintf("Sites binned into %d positional categories\\n", n_bins))
-  cat(sprintf("Sites per bin: %.0f (median)\\n\\n", 
+  cat(sprintf("Sites binned into %d positional categories\n", n_bins))
+  cat(sprintf("Sites per bin: %.0f (median)\n\n", 
               median(table(vcf_with_pos$Position_Bin))))
   
   # 3. Add terminal nucleotide annotation
+  cat("Adding terminal nucleotide annotations...\n")
+  
+  # Standardize AA names first
+  vcf_with_pos <- standardize_aa_names(vcf_with_pos, "AA")
+  preferred_codons_df <- standardize_aa_names(preferred_codons_df, "AA")
+  
+  # Annotate preferred codons if not already done
+  if (!"Terminal_Nucleotide" %in% names(preferred_codons_df)) {
+    preferred_codons_df <- annotate_preferred_codons_with_nucleotide(preferred_codons_df)
+  }
+  
+  # Get minimal columns for merging
   pref_minimal <- preferred_codons_df[, .(AA, Preferred_Codon, Terminal_Nucleotide)]
+  
+  # Merge by both AA and Preferred_Codon
   setkey(vcf_with_pos, AA, Preferred_Codon)
   setkey(pref_minimal, AA, Preferred_Codon)
   
   vcf_annotated <- merge(vcf_with_pos, pref_minimal, 
                          by = c("AA", "Preferred_Codon"),
                          all.x = TRUE)
+  
+  # Check for missing annotations
+  n_missing <- sum(is.na(vcf_annotated$Terminal_Nucleotide))
+  if (n_missing > 0) {
+    cat(sprintf("⚠️  Warning: %d sites missing terminal nucleotide annotation\n", n_missing))
+    vcf_annotated <- vcf_annotated[!is.na(Terminal_Nucleotide)]
+  }
+  
+  cat(sprintf("Sites with annotations: %d\n\n", nrow(vcf_annotated)))
   
   # 4. Estimate gamma for each bin (pooling across all genes)
   cat("Estimating gamma for each positional bin...\\n")
