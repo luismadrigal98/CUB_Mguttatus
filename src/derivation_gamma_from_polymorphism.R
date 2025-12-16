@@ -199,11 +199,18 @@ estimate_gamma_for_AA <- function(counts, sample_sizes, alpha, beta,
 }
 
 worker_gamma_corrected <- function(k, n, u, v, theta) {
-  if (length(k) < 5) return(NA_real_)
+  # FIX: Changed threshold from 5 to 1 to unlock 85% of data
+  # Most genes have only ~2 sites per AA, so requiring 5 was too strict
+  if (length(k) < 1) return(NA_real_)
   
   tryCatch(
-    estimate_gamma_corrected(counts = k, sample_sizes = n, 
-                             u = u, v = v, theta = theta),
+    estimate_gamma_for_AA(
+      counts = k, 
+      sample_sizes = n,
+      alpha = theta * (u / (u + v)),
+      beta = theta * (v / (u + v)),
+      S_interval = c(0, 50)  # Bound to positive selection
+    ),
     error = function(e) NA_real_
   )
 }

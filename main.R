@@ -3421,8 +3421,86 @@ cat("✓ Gamma estimates saved: ./results/gamma_estimates_by_gene_and_aa.csv\n\n
 
 gamma_gene_level <- aggregate_gamma_per_gene(
   gamma_results = gamma_results,
-  codon_usage_df = codon_usage  # Your codon usage matrix
+  codon_usage_df = codon_usage,
+  genetic_code = genetic_code_df
 )
 
 # STEP 5: Contrast results with AnaCoDa selection intensity ----
 
+comparison <- compare_gamma_with_anacoda(
+  gamma_gene_level = gamma_gene_level,
+  anacoda_intensity = selection_coeff_intensity
+)
+
+# Scatter plot: Gamma vs AnaCoDa
+p1 <- ggplot(comparison, aes(x = S_coeff, y = Selection_Intensity)) +
+  geom_point(alpha = 0.3, size = 1.5) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(
+    title = "Comparison: Gamma vs AnaCoDa Selection Coefficients",
+    subtitle = sprintf("Spearman ρ = %.3f (n = %d genes)",
+                       cor(comparison$S_coeff, comparison$Selection_Intensity, 
+                           method = "spearman"),
+                       nrow(comparison)),
+    x = "AnaCoDa Selection Intensity (S_coeff)",
+    y = "Gamma Selection Intensity (mean |γ|)"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 11)
+  )
+
+# Log-log plot for better dynamic range
+p2 <- ggplot(comparison, aes(x = log10(S_coeff + 0.01), 
+                             y = log10(Selection_Intensity + 0.01))) +
+  geom_point(alpha = 0.3, size = 1.5) +
+  geom_smooth(method = "lm", color = "blue", se = TRUE) +
+  labs(
+    title = "Log-Scale Comparison",
+    x = "log10(AnaCoDa S_coeff + 0.01)",
+    y = "log10(Gamma Intensity + 0.01)"
+  ) +
+  theme_bw()
+
+# Combine plots
+combined_plot <- p1 / p2
+
+ggsave("./results/gamma_vs_anacoda_comparison.pdf", 
+       plot = combined_plot, 
+       width = 10, height = 12)
+
+# STEP 6: Check fo gBGC ----
+
+check_intragenic_gradient <- function(gamma_results) {
+  # Add relative position column (0 = Start, 1 = End)
+  # Assuming gamma_results has 'Codon_Pos' and we can derive gene length
+  
+  # 1. Calculate Gene Lengths
+  gene_lengths <- gamma_results[, .(Max_Pos = max(Codon_Pos)), by = Gene]
+  
+  # 2. Merge and Calculate Relative Position
+  grad_data <- merge(gamma_results, gene_lengths, by = "Gene")
+  grad_data[, Rel_Pos := Codon_Pos / Max_Pos]
+  
+  # 3. Bin positions (e.g., 5' end vs 3' end)
+  grad_data[, Region := cut(Rel_Pos, 
+                            breaks = c(0, 0.25, 0.75, 1.0), 
+                            labels = c("5' End", "Middle", "3' End"))]
+  
+  # 4. Plot Gamma by Region
+  p <- ggplot(grad_data[!is.na(Gamma) & !is.na(Region)], 
+              aes(x = Region, y = Gamma)) +
+    geom_boxplot(outlier.shape = NA, fill = "lightblue") +
+    coord_cartesian(ylim = c(-2, 10)) +
+    labs(title = "Intragenic Gradient of Selection (Gamma)",
+         subtitle = "Testing for 5' Recombination Bias (gBGC Signature)",
+         y = "Gamma (4Nes)", x = "Gene Region") +
+    theme_minimal()
+  
+  print(p)
+  
+  # 5. Statistical Test
+  res <- kruskal.test(Gamma ~ Region, data = grad_data)
+  print(res)
+}

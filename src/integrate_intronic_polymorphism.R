@@ -98,6 +98,65 @@ load_and_estimate_neutral_params <- function(sfs_G_file, sfs_C_file) {
   return(results)
 }
 
+standardize_aa_names <- function(dt, aa_col = "AA") {
+  #' Robustly convert amino acid names to single-letter codes
+  #' Handles 3-letter codes (Ala, Ser) and split variants (Ser_2, Arg_4, Leu_6)
+  #' 
+  #' @param dt data.table to modify
+  #' @param aa_col Name of the amino acid column (default: "AA")
+  #' @return Modified data.table with standardized single-letter AA codes
+  #' ___________________________________________________________________________
+  
+  require(data.table)
+  
+  # Comprehensive mapping including all split variants
+  aa_map <- c(
+    "Ala" = "A", "Arg" = "R", "Arg_2" = "R", "Arg_4" = "R", "Arg_6" = "R",
+    "Asn" = "N", "Asp" = "D", "Cys" = "C", "Gln" = "Q", "Glu" = "E",
+    "Gly" = "G", "His" = "H", "Ile" = "I", 
+    "Leu" = "L", "Leu_2" = "L", "Leu_4" = "L", "Leu_6" = "L",
+    "Lys" = "K", "Met" = "M", "Phe" = "F", "Pro" = "P",
+    "Ser" = "S", "Ser_2" = "S", "Ser_4" = "S", "Ser_6" = "S",
+    "Thr" = "T", "Trp" = "W", "Tyr" = "Y", "Val" = "V",
+    # Already standardized (pass through)
+    "A" = "A", "R" = "R", "N" = "N", "D" = "D", "C" = "C",
+    "Q" = "Q", "E" = "E", "G" = "G", "H" = "H", "I" = "I",
+    "L" = "L", "K" = "K", "M" = "M", "F" = "F", "P" = "P",
+    "S" = "S", "T" = "T", "W" = "W", "Y" = "Y", "V" = "V"
+  )
+  
+  # Check if column exists
+  if (!aa_col %in% names(dt)) {
+    stop(sprintf("Column '%s' not found in data.table", aa_col))
+  }
+  
+  # Get original values for reporting
+  original_values <- unique(dt[[aa_col]])
+  
+  # Update column in place
+  dt[, (aa_col) := ifelse(get(aa_col) %in% names(aa_map), 
+                          aa_map[get(aa_col)], 
+                          get(aa_col))]
+  
+  # Report any unmapped values
+  new_values <- unique(dt[[aa_col]])
+  unmapped <- setdiff(original_values, names(aa_map))
+  
+  if (length(unmapped) > 0) {
+    warning(sprintf("Unmapped amino acid codes found: %s", 
+                    paste(unmapped, collapse = ", ")))
+  }
+  
+  # Report conversion summary
+  if (!all(original_values %in% c("A","R","N","D","C","Q","E","G","H","I",
+                                   "L","K","M","F","P","S","T","W","Y","V"))) {
+    cat(sprintf("✓ Standardized AA names: %s\n", 
+                paste(original_values[1:min(3, length(original_values))], collapse = ", ")))
+  }
+  
+  return(dt)
+}
+
 annotate_preferred_codons_with_nucleotide <- function(preferred_codons_df) {
   #' Add nucleotide annotation (G vs C ending) to preferred codons table
   #' 
@@ -218,6 +277,11 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
   
   cat("\n=== Estimating Selection Coefficients (Gamma) ===\n\n")
   
+  # FIX 2: Standardize AA names before processing
+  cat("Standardizing amino acid names...\n")
+  codon_vcf_data <- standardize_aa_names(codon_vcf_data, "AA")
+  preferred_codons_df <- standardize_aa_names(preferred_codons_df, "AA")
+  
   # Annotate preferred codons with terminal nucleotide
   pref_annotated <- annotate_preferred_codons_with_nucleotide(preferred_codons_df)
   
@@ -294,7 +358,8 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
     # The likelihood function will integrate over all sites
     
     # Quality check: Need sufficient sites AND reasonable sample sizes
-    min_sites <- 5        # Need at least 5 independent loci
+    # FIX: Lowered from 5 to 1 to unlock data for genes with few sites
+    min_sites <- 1        # Changed from 5 to 1 (85% of genes have <5 sites per AA)
     min_sample_per_site <- 50  # Each site needs ≥50 alleles
     
     # Check if we have enough data
@@ -369,7 +434,7 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
               sum(gamma_results$N_Sites < 5, na.rm = TRUE),
               100 * mean(gamma_results$N_Sites < 5, na.rm = TRUE)))
   
-  cat(sprintf("\nMean alleles per site: %.1f (should be ~374 for 187 individuals)\n", 
+  cat(sprintf("\nMean alleles per site: %.1f \n", 
               mean(gamma_results$Mean_Alleles_Per_Site, na.rm = TRUE)))
   
   if (mean(gamma_results$N_Sites, na.rm = TRUE) < 2) {
@@ -972,4 +1037,170 @@ contrast_gamma_anacoda <- function(gamma_results, codon_usage, preferred_codons,
   }
   
   return(contrast_data)
+}
+
+estimate_gamma_gradient <- function(codon_vcf_data, neutral_params, 
+                                    preferred_codons_df, n_bins = 10) {
+  #' Test for gBGC signature: Is selection stronger at 5' end of genes?
+  #' 
+  #' Gene conversion and recombination-driven gBGC are expected to be 
+  #' stronger near the 5' end due to recombination rate gradients.
+  #' This function bins sites by relative position within genes and
+  #' estimates a global gamma for each positional bin.
+  #' 
+  #' @param codon_vcf_data Output from prepare_vcf_for_gamma_estimation()
+  #' @param neutral_params Output from load_and_estimate_neutral_params()
+  #' @param preferred_codons_df Data frame with AA, Preferred_Codon, Terminal_Nucleotide
+  #' @param n_bins Number of positional bins (default: 10 = deciles)
+  #' @return Data table with gamma estimates per positional bin
+  #' ___________________________________________________________________________
+  
+  require(data.table)
+  require(ggplot2)
+  
+  if (!is.data.table(codon_vcf_data)) setDT(codon_vcf_data)
+  if (!is.data.table(preferred_codons_df)) setDT(preferred_codons_df)
+  
+  cat("\n=== Testing for gBGC Gradient Along Genes ===\n\n")
+  
+  # 1. Calculate relative position for each site (0.0 to 1.0)
+  cat("Calculating relative positions...\n")
+  
+  vcf_with_pos <- codon_vcf_data[, {
+    gene_length <- max(Codon_Pos)
+    rel_pos <- Codon_Pos / gene_length
+    .SD[, Relative_Position := rel_pos]
+  }, by = Gene]
+  
+  # 2. Assign each site to a positional bin
+  vcf_with_pos[, Position_Bin := cut(Relative_Position, 
+                                      breaks = seq(0, 1, length.out = n_bins + 1),
+                                      labels = 1:n_bins,
+                                      include.lowest = TRUE)]
+  
+  cat(sprintf("Sites binned into %d positional categories\\n", n_bins))
+  cat(sprintf("Sites per bin: %.0f (median)\\n\\n", 
+              median(table(vcf_with_pos$Position_Bin))))
+  
+  # 3. Add terminal nucleotide annotation
+  pref_minimal <- preferred_codons_df[, .(AA, Preferred_Codon, Terminal_Nucleotide)]
+  setkey(vcf_with_pos, AA, Preferred_Codon)
+  setkey(pref_minimal, AA, Preferred_Codon)
+  
+  vcf_annotated <- merge(vcf_with_pos, pref_minimal, 
+                         by = c("AA", "Preferred_Codon"),
+                         all.x = TRUE)
+  
+  # 4. Estimate gamma for each bin (pooling across all genes)
+  cat("Estimating gamma for each positional bin...\\n")
+  
+  gradient_results <- vcf_annotated[, {
+    
+    # Select appropriate alpha/beta based on terminal nucleotide
+    term_nuc <- Terminal_Nucleotide[1]
+    
+    if (term_nuc == "G") {
+      alpha_use <- neutral_params$alpha_G
+      beta_use <- neutral_params$beta_G
+    } else {  # C
+      alpha_use <- neutral_params$alpha_C
+      beta_use <- neutral_params$beta_C
+    }
+    
+    # Estimate gamma pooling all sites in this bin
+    n_sites_bin <- .N
+    
+    if (n_sites_bin < 10) {
+      # Not enough sites in this bin
+      list(
+        Bin_Center = mean(Relative_Position),
+        Gamma = NA_real_,
+        N_Sites = n_sites_bin,
+        Mean_Freq_Pref = NA_real_
+      )
+    } else {
+      # Estimate gamma
+      gamma_est <- tryCatch({
+        estimate_gamma_for_AA(
+          counts = k,
+          sample_sizes = n,
+          alpha = alpha_use,
+          beta = beta_use,
+          S_interval = c(0, 50)
+        )
+      },
+      error = function(e) NA_real_)
+      
+      list(
+        Bin_Center = mean(Relative_Position),
+        Gamma = gamma_est,
+        N_Sites = n_sites_bin,
+        Mean_Freq_Pref = mean(p, na.rm = TRUE)
+      )
+    }
+    
+  }, by = Position_Bin]
+  
+  # 5. Test for gradient (correlation between position and gamma)
+  if (sum(!is.na(gradient_results$Gamma)) >= 3) {
+    
+    valid_data <- gradient_results[!is.na(Gamma)]
+    
+    cor_test <- cor.test(valid_data$Bin_Center, valid_data$Gamma,
+                         method = "spearman")
+    
+    cat("\\n=== Gradient Analysis Results ===\\n\\n")
+    cat(sprintf("Spearman correlation (Position vs Gamma): ρ = %.3f\\n",
+                cor_test$estimate))
+    cat(sprintf("P-value: %.4f\\n\\n", cor_test$p.value))
+    
+    if (cor_test$estimate < 0 && cor_test$p.value < 0.05) {
+      cat("✓ SIGNIFICANT NEGATIVE GRADIENT: Gamma decreases toward 3' end\\n")
+      cat("  → Consistent with gBGC (stronger selection at 5' end)\\n\\n")
+    } else if (cor_test$estimate > 0 && cor_test$p.value < 0.05) {
+      cat("✓ SIGNIFICANT POSITIVE GRADIENT: Gamma increases toward 3' end\\n")
+      cat("  → NOT consistent with typical gBGC pattern\\n\\n")
+    } else {
+      cat("✗ NO SIGNIFICANT GRADIENT detected\\n")
+      cat("  → Selection appears uniform along gene length\\n\\n")
+    }
+    
+    # 6. Plot the gradient
+    p <- ggplot(gradient_results[!is.na(Gamma)], 
+                aes(x = Bin_Center, y = Gamma)) +
+      geom_point(aes(size = N_Sites), alpha = 0.7) +
+      geom_smooth(method = "lm", se = TRUE, color = "blue", linetype = "dashed") +
+      labs(
+        title = "Gamma Gradient Along Gene Length (gBGC Test)",
+        subtitle = sprintf("Spearman ρ = %.3f, p = %.4f", 
+                          cor_test$estimate, cor_test$p.value),
+        x = "Relative Position (0 = 5' end, 1 = 3' end)",
+        y = "Gamma (Selection Coefficient)",
+        size = "Sites per Bin"
+      ) +
+      theme_bw() +
+      theme(
+        plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank()
+      )
+    
+    print(p)
+    
+    # Save plot
+    if (!dir.exists("./results")) dir.create("./results")
+    ggsave("./results/gamma_gradient_gBGC_test.pdf", 
+           plot = p, 
+           width = 8, height = 6)
+    
+    cat("✓ Plot saved: ./results/gamma_gradient_gBGC_test.pdf\\n\\n")
+    
+    # Add correlation stats to output
+    gradient_results[, Spearman_rho := cor_test$estimate]
+    gradient_results[, Spearman_p := cor_test$p.value]
+    
+  } else {
+    warning("Not enough bins with valid gamma estimates (need ≥3)")
+  }
+  
+  return(gradient_results)
 }
