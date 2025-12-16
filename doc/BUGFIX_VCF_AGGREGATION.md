@@ -24,8 +24,10 @@ Mean   :1      Mean   :  4281
 **Critical indicators:**
 - `N_Sites = 1` (always) → Only one "site" per Gene×AA
 - `Total_Alleles ≈ 4,281` → Sum of ALL codon positions
-- Expected: `n ≈ 374` per site (187 diploid individuals)
+- Expected: `n ≈ 187` per site (**inbred lines** = homozygous genotypes only)
 - Actual: `n ≈ 4,000+` → Clearly pooled across ~10+ positions
+
+**Note on Sample Size:** For **inbred lines**, n represents the number of homozygous individuals, not allele count. With 187 inbred lines, expect n≈187. Heterozygous calls indicate residual heterozygosity and are excluded.
 
 ### Why This Is Critical
 
@@ -105,8 +107,10 @@ if (n_sites < min_sites) {
 **Added validation output:**
 ```r
 Mean sites per Gene×AA: %.1f (should be >5)
-Mean alleles per site: %.1f (should be ~374, NOT >1000)
+Mean alleles per site: %.1f (should be ~187 for INBRED lines, NOT >500)
 ```
+
+**Important:** For inbred lines, sample size reflects homozygous genotypes only. Residual heterozygosity is filtered out as unreliable.
 
 ---
 
@@ -118,17 +122,18 @@ Mean alleles per site: %.1f (should be ~374, NOT >1000)
 ```r
 summary(gamma_results)
      N_Sites          Total_Alleles    Mean_Alleles_Per_Site
- Min.   : 1.0      Min.   :   220      Min.   : 200
- 1st Qu.: 8.0      1st Qu.:  2496      1st Qu.: 360
- Median :15.0      Median :  5610      Median : 374
- Mean   :18.3      Mean   :  6847      Mean   : 380
- 3rd Qu.:25.0      3rd Qu.:  9350      3rd Qu.: 400
+ Min.   : 1.0      Min.   :   110      Min.   : 100
+ 1st Qu.: 8.0      1st Qu.:  1248      1st Qu.: 180
+ Median :15.0      Median :  2805      Median : 187
+ Mean   :18.3      Mean   :  3424      Mean   : 190
+ 3rd Qu.:25.0      3rd Qu.:  4675      3rd Qu.: 200
 ```
 
 **Key indicators:**
 - ✅ `N_Sites > 1` for most Gene×AA (multiple independent loci)
-- ✅ `Mean_Alleles_Per_Site ≈ 374` (matches 187 diploid individuals)
-- ✅ `Total_Alleles = N_Sites × 374` (sum across independent sites)
+- ✅ `Mean_Alleles_Per_Site ≈ 187` (matches 187 inbred lines, homozygous only)
+- ✅ `Total_Alleles = N_Sites × 187` (sum across independent sites)
+- ✅ Heterozygous calls excluded (residual heterozygosity safeguard)
 
 #### Statistical Behavior
 - **Wider confidence intervals** (correctly accounting for drift variance)
@@ -159,19 +164,20 @@ cat("Mean n per row:", mean(vcf_prepared$n), "\n")
 
 # CRITICAL CHECKS:
 stopifnot(nrow(vcf_prepared) > nrow(unique(vcf_prepared[, .(Gene, AA)])))
-stopifnot(mean(vcf_prepared$n) < 500)  # Should be ~374, not thousands
+stopifnot(mean(vcf_prepared$n) < 250)  # Should be ~187 for inbred lines
 ```
 
 ### Expected Warnings (GOOD!)
 If you see these after the fix, the code is working correctly:
 ```
 ⚠️  Gene×AA with <5 sites: XXX (should be low but non-zero)
-Mean alleles per site: 374.2 ✓
+Mean alleles per site: 187.4 ✓
 ```
 
 If you see these, something is STILL WRONG:
 ```
 ⚠️  CRITICAL: Sample sizes are too large! Sites are being pooled!
+⚠️  WARNING: Sample sizes suggest diploid counting. For inbred lines, expect n≈187.
 ⚠️  CRITICAL ERROR: N_Sites is too low! Data is still collapsed!
 ```
 

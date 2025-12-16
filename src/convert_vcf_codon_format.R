@@ -137,14 +137,18 @@ prepare_vcf_for_gamma_estimation <- function(vcf_codon_dt, genetic_code_df) {
     warning("⚠️  CRITICAL: Most Gene×AA have only 1 site! Check Codon_Pos grouping!")
   }
   
-  # Check sample sizes (should be ~374 for diploid individuals, not thousands)
-  cat("Sample size distribution (n = synonymous alleles per site):\n")
+  # Check sample sizes (should be ~187 for inbred lines, not diploid count)
+  cat("Sample size distribution (n = homozygous genotypes per site):\n")
   cat(sprintf("  Mean: %.1f\n", mean(result$n)))
   cat(sprintf("  Median: %.0f\n", median(result$n)))
   cat(sprintf("  Range: %d - %d\n\n", min(result$n), max(result$n)))
   
-  if (mean(result$n) > 1000) {
+  if (mean(result$n) > 500) {
     warning("⚠️  CRITICAL: Sample sizes are too large! You may be summing across sites!")
+  }
+  
+  if (mean(result$n) > 250) {
+    warning("⚠️  WARNING: Sample sizes suggest diploid counting. For inbred lines, expect n≈187.")
   }
   
   # Check amino acid coverage

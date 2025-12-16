@@ -224,8 +224,9 @@ def process_batch(lines):
                 # If GT or AD is missing, we can't perform this specific filter
                 continue
             
-            c0 = 0 # Ref allele count (Haplotypes)
-            c1 = 0 # Alt allele count (Haplotypes)
+            c0 = 0 # Ref allele count (Haplotypes counted as homozygotes only)
+            c1 = 0 # Alt allele count (Haplotypes counted as homozygotes only)
+            het_count = 0 # Track heterozygous calls
             
             for sample_str in parts[9:]:
                 sample_fields = sample_str.split(':')
@@ -251,10 +252,16 @@ def process_batch(lines):
                 # Only if depth > 0 do we trust the call
                 gt_val = sample_fields[gt_idx]
                 
-                # Count alleles (0 or 1)
-                # This ensures n is sample size, not read depth
-                c0 += gt_val.count('0')
-                c1 += gt_val.count('1')
+                # INBRED LINES: Count only homozygous calls
+                # Residual heterozygosity is tracked but excluded
+                if gt_val == '0/0' or gt_val == '0|0':
+                    c0 += 1  # One homozygous individual = 1 allele count
+                elif gt_val == '1/1' or gt_val == '1|1':
+                    c1 += 1  # One homozygous individual = 1 allele count
+                elif '/' in gt_val or '|' in gt_val:
+                    # Heterozygous call - skip due to residual heterozygosity
+                    het_count += 1
+                    continue
                 
         except Exception:
             continue
