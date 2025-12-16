@@ -176,15 +176,17 @@ solve_alpha_and_beta_from_introns <- function(sfs_file) {
 #   u, v: Mutation rates for this specific Amino Acid family
 
 estimate_gamma_for_AA <- function(counts, sample_sizes, alpha, beta, 
-                                  S_interval = c(0, 20)) {
+                                  S_interval = c(0, 50)) {
   #' Estimate gamma (4Nes) using pre-computed alpha and beta from introns
+  #' Constrained to POSITIVE values only (gamma >= 0) to match AnaCoDa framework
+  #' where preferred codon is optimal and gamma measures selection favorability
   #' 
   #' @param counts Vector of preferred codon counts (k)
   #' @param sample_sizes Vector of total sample sizes (n)
   #' @param alpha Pre-computed 4N*u (unpreferred -> preferred mutation rate)
   #' @param beta Pre-computed 4N*v (preferred -> unpreferred mutation rate)
-  #' @param S_interval Search interval for gamma
-  #' @return Estimated gamma value
+  #' @param S_interval Search interval for gamma (default: [0, 50] for positive selection)
+  #' @return Estimated gamma value (gamma >= 0)
   
   nll <- function(S) {
     log_probs <- mapply(function(k, n) {

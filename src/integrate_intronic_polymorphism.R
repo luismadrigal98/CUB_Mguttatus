@@ -3,6 +3,39 @@
 #' This module handles the workflow for estimating selection coefficients (gamma)
 #' using mutation rate parameters (alpha, beta) derived from neutral intronic sites.
 #' 
+#' =============================================================================
+#' COMPARISON WITH ANACODA SELECTION COEFFICIENTS
+#' =============================================================================
+#' 
+#' Gamma (this approach):
+#'   - Definition: gamma = 4N*s, selection coefficient favoring PREFERRED codon
+#'   - Sign: POSITIVE = selection FOR preferred codon
+#'           NEGATIVE = selection AGAINST preferred codon
+#'   - Unit: Per amino acid position
+#'   - Model: Wright-Fisher diffusion with biallelic mutation-selection balance
+#'   - Interpretation: gamma > 1.92 means selection dominates drift (|4Nes| > 1)
+#' 
+#' AnaCoDa deltaEta (selection parameter):
+#'   - Definition: Selection coefficient RELATIVE to reference codon
+#'   - Sign: NEGATIVE for non-preferred codons (penalties)
+#'           ZERO for reference codon
+#'   - Unit: Per codon (not per AA position)
+#'   - Model: ROC multinomial with mutation (deltaM) + selection (deltaEta)
+#'   - Interpretation: More negative = stronger penalty = less preferred
+#' 
+#' Gene-Level Aggregation (for comparability):
+#'   - AnaCoDa: Sum(|deltaEta_i| * Count_i) / Total_Synonymous_Codons
+#'     --> Mean absolute selection per codon position
+#'   
+#'   - Gamma: Sum(|gamma_AA| * N_AA_positions) / Total_Synonymous_Codons
+#'     --> Mean absolute selection per AA position
+#'     OR: mean(|gamma_AA|) weighted by sample size
+#'     
+#' Expected Correlation:
+#'   - Positive correlation: Both identify genes under selection for codon bias
+#'   - Higher values in both = stronger selection
+#'   - But magnitudes not directly comparable (different scales/models)
+#' 
 #' @author Luis Javier Madrigal-Roca and John K. Kelly
 #' _____________________________________________________________________________
 
@@ -252,31 +285,35 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
       beta_use <- neutral_params$beta_C
     }
     
-    # Always return same structure
+    # Get site-level data
     n_sites <- .N  # Number of polymorphic sites for this Gene x AA
     mean_p <- mean(p, na.rm = TRUE)
     
-    # For single aggregated observation, we CAN estimate gamma
-    # The k and n values represent the aggregated counts across all sites
-    # We just need enough alleles sampled (n should be large)
+    # CRITICAL FIX: We now have MULTIPLE sites per Gene×AA
+    # k and n are VECTORS with one element per codon position
+    # The likelihood function will integrate over all sites
     
-    # Skip only if sample size is too small
-    min_sample_size <- 100  # Need at least 100 alleles total
+    # Quality check: Need sufficient sites AND reasonable sample sizes
+    min_sites <- 5        # Need at least 5 independent loci
+    min_sample_per_site <- 50  # Each site needs ≥50 alleles
     
-    if (n[1] < min_sample_size) {
+    # Check if we have enough data
+    if (n_sites < min_sites) {
       gamma_est <- NA_real_
-      skip_reason <- "Sample size too small"
+      skip_reason <- "Too few polymorphic sites"
+    } else if (any(n < min_sample_per_site)) {
+      gamma_est <- NA_real_
+      skip_reason <- "Some sites have insufficient sample size"
     } else {
-      # Estimate gamma
-      # NOTE: k and n are VECTORS if we have multiple observations
-      # But in your case, each Gene x AA has ONE row with aggregated counts
+      # Estimate gamma using VECTORS of k and n across all sites
+      # This properly accounts for variance between sites (drift)
       gamma_est <- tryCatch({
         estimate_gamma_for_AA(
-          counts = k,
-          sample_sizes = n,
+          counts = k,              # Vector of preferred counts
+          sample_sizes = n,        # Vector of sample sizes
           alpha = alpha_use,
           beta = beta_use,
-          S_interval = c(-10, 30)
+          S_interval = c(0, 50)    # Positive only: comparable to AnaCoDa |4Nes|
         )
       },
       error = function(e) {
@@ -286,6 +323,7 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
             Gene = Gene[1],
             AA = AA[1],
             error = e$message,
+            n_sites = n_sites,
             k = k,
             n = n,
             alpha = alpha_use,
@@ -300,8 +338,9 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
     # Return consistent structure
     list(
       Gamma = gamma_est,
-      N_Sites = n_sites,
-      Total_Alleles = sum(n),
+      N_Sites = n_sites,                    # Now correctly shows multiple sites
+      Total_Alleles = sum(n),               # Sum across all sites
+      Mean_Alleles_Per_Site = mean(n),      # NEW: Average sample size per site
       Terminal_Nuc = term_nuc,
       Mean_Freq_Preferred = mean_p,
       Alpha_Used = alpha_use,
@@ -322,6 +361,25 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
               sum(gamma_results$Significant, na.rm = TRUE),
               100 * mean(gamma_results$Significant, na.rm = TRUE)))
   
+  # CRITICAL VALIDATION: Check data structure
+  cat("=== DATA STRUCTURE VALIDATION ===\n")
+  cat(sprintf("Mean sites per Gene×AA: %.1f\n", mean(gamma_results$N_Sites, na.rm = TRUE)))
+  cat(sprintf("Median sites per Gene×AA: %.0f\n", median(gamma_results$N_Sites, na.rm = TRUE)))
+  cat(sprintf("Gene×AA with <5 sites: %d (%.1f%% - should be low!)\n",
+              sum(gamma_results$N_Sites < 5, na.rm = TRUE),
+              100 * mean(gamma_results$N_Sites < 5, na.rm = TRUE)))
+  
+  cat(sprintf("\nMean alleles per site: %.1f (should be ~374 for 187 individuals)\n", 
+              mean(gamma_results$Mean_Alleles_Per_Site, na.rm = TRUE)))
+  
+  if (mean(gamma_results$N_Sites, na.rm = TRUE) < 2) {
+    warning("\n⚠️  CRITICAL ERROR: N_Sites is too low! Data is still collapsed!\n")
+  }
+  if (mean(gamma_results$Mean_Alleles_Per_Site, na.rm = TRUE) > 1000) {
+    warning("\n⚠️  CRITICAL ERROR: Sample sizes are too large! Sites are being pooled!\n")
+  }
+  cat("\n")
+  
   # Summary by terminal nucleotide
   summary_by_nuc <- gamma_results[!is.na(Gamma), .(
     N = .N,
@@ -329,7 +387,9 @@ estimate_gamma_by_gene_with_neutral_params <- function(codon_vcf_data,
     Median_Gamma = median(Gamma),
     SD_Gamma = sd(Gamma),
     Prop_Positive = mean(Gamma > 0),
-    Prop_Significant = mean(Significant)
+    Prop_Significant = mean(Significant),
+    Mean_Sites = mean(N_Sites),
+    Mean_Sample_Per_Site = mean(Mean_Alleles_Per_Site)
   ), by = Terminal_Nuc]
   
   cat("=== Gamma Distribution by Terminal Nucleotide ===\n\n")
@@ -401,6 +461,109 @@ compare_gamma_with_expression <- function(gamma_results, expression_data) {
   return(merged)
 }
 
+aggregate_gamma_per_gene <- function(gamma_results, codon_usage_df) {
+  #' Aggregate gamma values to gene-level selection intensity
+  #' Comparable to AnaCoDa's selection coefficient aggregation
+  #' 
+  #' Logic for comparability:
+  #' - AnaCoDa: Sum(|deltaEta_i| * Count_i) / Total_Synonymous_Codons
+  #'   where deltaEta_i is NEGATIVE for non-preferred codons
+  #'   
+  #' - Gamma: Sum(gamma_AA * N_AA_positions) / Total_Synonymous_Codons
+  #'   where gamma is POSITIVE for selection favoring preferred codon
+  #'   
+  #' Both measure "mean selection intensity per codon position"
+  #' Higher values = stronger selection for codon bias
+  #' 
+  #' @param gamma_results Output from estimate_gamma_by_gene_with_neutral_params()
+  #'                      Must have columns: Gene, AA, Gamma, Total_Alleles
+  #' @param codon_usage_df Codon usage matrix with amino acid counts per gene
+  #'                       Should have Gene_name column + AA columns
+  #' @return Data table with gene-level selection metrics
+  #' ___________________________________________________________________________
+  
+  require(data.table)
+  
+  if (!is.data.table(gamma_results)) gamma_results <- as.data.table(gamma_results)
+  if (!is.data.table(codon_usage_df)) codon_usage_df <- as.data.table(codon_usage_df)
+  
+  cat("\n=== Aggregating Gamma to Gene-Level Selection Intensity ===\n\n")
+  
+  # Get amino acid counts per gene from codon usage
+  # Note: codon_usage_df has columns for each codon, need to sum by AA
+  
+  # Create AA-level counts from codon usage
+  # This requires knowing which codons map to which AA
+  # We'll use gamma_results to identify which AAs are present per gene
+  
+  # Strategy: Use the total alleles (sample size) from gamma_results 
+  # as a proxy for AA frequency, since n = 2 * N_individuals * N_sites
+  # Higher n suggests more positions with that AA in the gene
+  
+  # For weighted mean: weight by sample size (more data = more weight)
+  gamma_weighted <- gamma_results[!is.na(Gamma), .(
+    
+    # Weighted mean gamma (weighted by sample size)
+    Gamma_Weighted_Mean = weighted.mean(Gamma, w = Total_Alleles, na.rm = TRUE),
+    
+    # Simple mean gamma (all AAs equally weighted)
+    Gamma_Mean = mean(Gamma, na.rm = TRUE),
+    
+    # Median gamma (robust to outliers)
+    Gamma_Median = median(Gamma, na.rm = TRUE),
+    
+    # Total "selection load" = sum of |gamma| values
+    # Analogous to AnaCoDa's total_selection_load
+    Total_Selection_Load = sum(abs(Gamma), na.rm = TRUE),
+    
+    # Selection intensity = mean(|gamma|) per AA position
+    # Directly comparable to AnaCoDa's S_coeff
+    Selection_Intensity = mean(abs(Gamma), na.rm = TRUE),
+    
+    # Count statistics
+    N_AA_Analyzed = .N,
+    N_Positive_Gamma = sum(Gamma > 0, na.rm = TRUE),
+    N_Negative_Gamma = sum(Gamma < 0, na.rm = TRUE),
+    N_Significant = sum(Significant, na.rm = TRUE),
+    
+    # Proportion metrics
+    Prop_Positive = mean(Gamma > 0, na.rm = TRUE),
+    Prop_Significant = mean(Significant, na.rm = TRUE),
+    
+    # Range
+    Max_Gamma = max(Gamma, na.rm = TRUE),
+    Min_Gamma = min(Gamma, na.rm = TRUE),
+    
+    # Total sample size across all AA
+    Total_Sample_Size = sum(Total_Alleles, na.rm = TRUE)
+    
+  ), by = Gene]
+  
+  # Rename Gene to Gene_name for consistency with other data frames
+  setnames(gamma_weighted, "Gene", "Gene_name")
+  
+  # Summary
+  cat(sprintf("Genes with gamma estimates: %d\n", nrow(gamma_weighted)))
+  cat(sprintf("Median AAs per gene: %.0f\n", 
+              median(gamma_weighted$N_AA_Analyzed)))
+  cat("\nSelection Intensity Distribution:\n")
+  print(summary(gamma_weighted$Selection_Intensity))
+  cat("\nWeighted Mean Gamma Distribution:\n")
+  print(summary(gamma_weighted$Gamma_Weighted_Mean))
+  cat("\n")
+  
+  # Compare distributions
+  cat("Positive vs Negative Selection:\n")
+  cat(sprintf("  Genes with net positive gamma: %d (%.1f%%)\n",
+              sum(gamma_weighted$Gamma_Mean > 0),
+              100 * mean(gamma_weighted$Gamma_Mean > 0)))
+  cat(sprintf("  Genes with net negative gamma: %d (%.1f%%)\n\n",
+              sum(gamma_weighted$Gamma_Mean < 0),
+              100 * mean(gamma_weighted$Gamma_Mean < 0)))
+  
+  return(gamma_weighted)
+}
+
 validate_against_cai <- function(gamma_results, integrated_data) {
   #' Cross-validate gamma estimates against CAI-based bias metrics
   #' 
@@ -457,4 +620,294 @@ validate_against_cai <- function(gamma_results, integrated_data) {
   cat("\n")
   
   return(validation_data)
+}
+
+compare_gamma_with_anacoda <- function(gamma_gene_level, anacoda_intensity) {
+  #' Direct comparison of gamma-based vs AnaCoDa-based selection metrics
+  #' 
+  #' Validates that both methods yield consistent biological inferences
+  #' 
+  #' @param gamma_gene_level Output from aggregate_gamma_per_gene()
+  #'                         Must have: Gene_name, Selection_Intensity
+  #' @param anacoda_intensity AnaCoDa selection intensity data
+  #'                          Must have: Gene_name, S_coeff
+  #' @return Merged comparison table
+  #' ___________________________________________________________________________
+  
+  require(data.table)
+  
+  if (!is.data.table(gamma_gene_level)) setDT(gamma_gene_level)
+  if (!is.data.table(anacoda_intensity)) setDT(anacoda_intensity)
+  
+  cat("\n=== Comparing Gamma vs AnaCoDa Selection Coefficients ===\n\n")
+  
+  # Merge datasets
+  setkey(gamma_gene_level, Gene_name)
+  setkey(anacoda_intensity, Gene_name)
+  
+  comparison <- anacoda_intensity[gamma_gene_level, nomatch = 0]
+  
+  cat(sprintf("Genes in both analyses: %d\n\n", nrow(comparison)))
+  
+  # Key comparison: Selection_Intensity (gamma) vs S_coeff (AnaCoDa)
+  # Both should be POSITIVE and measure "mean selection per codon"
+  
+  if ("S_coeff" %in% names(comparison) && "Selection_Intensity" %in% names(comparison)) {
+    
+    cor_intensity <- cor.test(comparison$Selection_Intensity, 
+                              comparison$S_coeff,
+                              method = "spearman", exact = FALSE)
+    
+    cat("Correlation: Gamma Selection_Intensity vs AnaCoDa S_coeff\n")
+    cat(sprintf("  Spearman ρ = %.3f\n", cor_intensity$estimate))
+    cat(sprintf("  p-value = %.2e\n\n", cor_intensity$p.value))
+    
+    # Interpretation guide
+    if (cor_intensity$estimate > 0.5 && cor_intensity$p.value < 0.01) {
+      cat("✓ Strong positive correlation - methods are consistent!\n")
+      cat("  Both identify the same genes under strong codon bias selection.\n\n")
+    } else if (cor_intensity$estimate > 0.3 && cor_intensity$p.value < 0.05) {
+      cat("⚠ Moderate positive correlation - generally consistent.\n")
+      cat("  Methods agree on general trends but may differ in details.\n\n")
+    } else {
+      cat("✗ Weak or no correlation - methods may be measuring different aspects.\n")
+      cat("  Check for systematic differences in gene sets or AA coverage.\n\n")
+    }
+    
+    # Quartile comparison
+    q_gamma <- quantile(comparison$Selection_Intensity, c(0.25, 0.75))
+    q_anacoda <- quantile(comparison$S_coeff, c(0.25, 0.75))
+    
+    cat("Distribution Comparison:\n")
+    cat(sprintf("  Gamma Intensity:  Q1=%.3f, Median=%.3f, Q3=%.3f\n",
+                q_gamma[1], 
+                median(comparison$Selection_Intensity),
+                q_gamma[2]))
+    cat(sprintf("  AnaCoDa S_coeff:  Q1=%.3f, Median=%.3f, Q3=%.3f\n\n",
+                q_anacoda[1],
+                median(comparison$S_coeff),
+                q_anacoda[2]))
+  }
+  
+  # Also compare weighted means
+  if ("Gamma_Weighted_Mean" %in% names(comparison) && "S_coeff" %in% names(comparison)) {
+    
+    cor_weighted <- cor.test(comparison$Gamma_Weighted_Mean,
+                             comparison$S_coeff,
+                             method = "spearman", exact = FALSE)
+    
+    cat("Correlation: Gamma Weighted_Mean vs AnaCoDa S_coeff\n")
+    cat(sprintf("  Spearman ρ = %.3f\n", cor_weighted$estimate))
+    cat(sprintf("  p-value = %.2e\n\n", cor_weighted$p.value))
+  }
+  
+  return(comparison)
+}
+
+contrast_gamma_anacoda <- function(gamma_results, codon_usage, preferred_codons, 
+                                   anacoda_intensity, genetic_code) {
+  #' Mathematical contrast of polymorphism-based gamma vs AnaCoDa selection
+  #' 
+  #' Implements the rigorous aggregation formula:
+  #'   S_poly = (1/L) * Sum_AA(Count_Unpref_AA * gamma_AA)
+  #' 
+  #' where:
+  #'   - L = total gene length in codons
+  #'   - Count_Unpref_AA = number of UNPREFERRED codons for each AA in the gene
+  #'   - gamma_AA = selection coefficient favoring the preferred codon
+  #' 
+  #' This measures the "selection load" from using unpreferred codons,
+  #' directly comparable to AnaCoDa's selection intensity (phi * deltaEta)
+  #' 
+  #' @param gamma_results Output from estimate_gamma_by_gene_with_neutral_params()
+  #'                      Must have: Gene, AA, Gamma
+  #' @param codon_usage Codon usage matrix (genes × codons)
+  #'                    Must have: Gene_name, [codon columns]
+  #' @param preferred_codons Table mapping AA to preferred codon
+  #'                         Must have: AA, Preferred_Codon (or Codon)
+  #' @param anacoda_intensity AnaCoDa selection intensity
+  #'                          Must have: Gene_name, S_coeff
+  #' @param genetic_code Mapping of codons to amino acids
+  #'                     Must have: Codon, AA (or named vector)
+  #' @return Merged data.table with S_poly, S_coeff, correlation stats, and plot
+  #' ___________________________________________________________________________
+  
+  require(data.table)
+  require(ggplot2)
+  
+  if (!is.data.table(gamma_results)) gamma_results <- as.data.table(gamma_results)
+  if (!is.data.table(codon_usage)) codon_usage <- as.data.table(codon_usage)
+  if (!is.data.table(preferred_codons)) preferred_codons <- as.data.table(preferred_codons)
+  if (!is.data.table(anacoda_intensity)) anacoda_intensity <- as.data.table(anacoda_intensity)
+  
+  cat("\n=== Mathematical Contrast: Polymorphism vs AnaCoDa ===\n\n")
+  
+  # Convert genetic code to data.table if needed
+  if (is.vector(genetic_code)) {
+    genetic_code <- data.table(
+      Codon = names(genetic_code),
+      AA = as.character(genetic_code)
+    )
+  }
+  if (!is.data.table(genetic_code)) genetic_code <- as.data.table(genetic_code)
+  
+  # Get preferred codon for each AA
+  pref_col <- if ("Preferred_Codon" %in% names(preferred_codons)) {
+    "Preferred_Codon"
+  } else {
+    "Codon"
+  }
+  
+  aa_to_pref <- setNames(preferred_codons[[pref_col]], preferred_codons$AA)
+  
+  # Create codon-to-AA mapping
+  codon_to_aa <- setNames(genetic_code$AA, genetic_code$Codon)
+  
+  # Get all codon columns from usage matrix
+  codon_cols <- setdiff(names(codon_usage), "Gene_name")
+  
+  cat(sprintf("Processing %d genes with %d codons...\n", 
+              nrow(codon_usage), length(codon_cols)))
+  
+  # Calculate S_poly for each gene
+  cat("Calculating polymorphism-based selection load (S_poly)...\n")
+  
+  S_poly_results <- codon_usage[, {
+    
+    gene_name <- Gene_name
+    
+    # Calculate total gene length
+    total_length <- sum(unlist(.SD), na.rm = TRUE)
+    
+    if (total_length == 0) {
+      list(S_poly = NA_real_, Gene_Length = 0)
+    } else {
+      
+      # Calculate selection load from unpreferred codons
+      selection_load <- 0
+      
+      for (codon in codon_cols) {
+        # Get AA for this codon
+        aa <- codon_to_aa[codon]
+        
+        # Skip if AA not found or is Met/Trp/STOP
+        if (is.na(aa) || aa %in% c("M", "W", "STOP")) next
+        
+        # Check if this codon is the PREFERRED one for its AA
+        pref_codon <- aa_to_pref[aa]
+        
+        # If this is an UNPREFERRED codon
+        if (!is.na(pref_codon) && codon != pref_codon) {
+          
+          # Get gamma for this AA in this gene
+          gamma_val <- gamma_results[Gene == gene_name & AA == aa, Gamma]
+          
+          if (length(gamma_val) > 0 && !is.na(gamma_val[1])) {
+            # Count of this unpreferred codon
+            count_unpref <- .SD[[codon]]
+            
+            # Add to selection load: count * gamma
+            selection_load <- selection_load + (count_unpref * gamma_val[1])
+          }
+        }
+      }
+      
+      # Normalize by gene length
+      s_poly <- selection_load / total_length
+      
+      list(S_poly = s_poly, Gene_Length = total_length)
+    }
+    
+  }, by = Gene_name, .SDcols = codon_cols]
+  
+  # Merge with AnaCoDa results
+  setkey(S_poly_results, Gene_name)
+  setkey(anacoda_intensity, Gene_name)
+  
+  contrast_data <- anacoda_intensity[S_poly_results, nomatch = 0]
+  
+  # Remove genes with missing data
+  contrast_data <- contrast_data[!is.na(S_poly) & !is.na(S_coeff)]
+  
+  cat(sprintf("\nGenes in comparison: %d\n\n", nrow(contrast_data)))
+  
+  # Calculate Spearman correlation
+  if (nrow(contrast_data) > 10) {
+    
+    cor_result <- cor.test(contrast_data$S_poly, 
+                           contrast_data$S_coeff,
+                           method = "spearman", 
+                           exact = FALSE)
+    
+    cat("=== Correlation Analysis ===\n")
+    cat(sprintf("Spearman ρ = %.4f\n", cor_result$estimate))
+    cat(sprintf("p-value = %.2e\n\n", cor_result$p.value))
+    
+    # Interpretation
+    if (cor_result$estimate > 0.5 && cor_result$p.value < 0.01) {
+      cat("✓ STRONG CONCORDANCE: Both methods identify the same selection signal!\n")
+      cat("  Polymorphism-based inference validates AnaCoDa mechanistic model.\n\n")
+    } else if (cor_result$estimate > 0.3 && cor_result$p.value < 0.05) {
+      cat("⚠ MODERATE CONCORDANCE: General agreement with some discrepancies.\n")
+      cat("  Methods capture similar but not identical aspects of selection.\n\n")
+    } else {
+      cat("✗ WEAK CONCORDANCE: Methods may be measuring different signals.\n")
+      cat("  Investigate systematic differences between approaches.\n\n")
+    }
+    
+    # Summary statistics
+    cat("=== Distribution Summary ===\n")
+    cat(sprintf("S_poly (Polymorphism):\n"))
+    cat(sprintf("  Mean = %.4f, Median = %.4f\n", 
+                mean(contrast_data$S_poly), median(contrast_data$S_poly)))
+    cat(sprintf("  Q1 = %.4f, Q3 = %.4f\n\n", 
+                quantile(contrast_data$S_poly, 0.25), 
+                quantile(contrast_data$S_poly, 0.75)))
+    
+    cat(sprintf("S_coeff (AnaCoDa):\n"))
+    cat(sprintf("  Mean = %.4f, Median = %.4f\n", 
+                mean(contrast_data$S_coeff), median(contrast_data$S_coeff)))
+    cat(sprintf("  Q1 = %.4f, Q3 = %.4f\n\n", 
+                quantile(contrast_data$S_coeff, 0.25), 
+                quantile(contrast_data$S_coeff, 0.75)))
+    
+    # Create scatter plot
+    cat("Generating scatter plot...\n")
+    
+    p <- ggplot(contrast_data, aes(x = S_coeff, y = S_poly)) +
+      geom_point(alpha = 0.4, size = 1.5, color = "steelblue") +
+      geom_smooth(method = "lm", color = "red", se = TRUE, linewidth = 1.2) +
+      labs(
+        title = "Validation: Polymorphism-Based vs AnaCoDa Selection Estimates",
+        subtitle = sprintf("Spearman ρ = %.3f, p = %.2e | n = %d genes",
+                           cor_result$estimate, 
+                           cor_result$p.value,
+                           nrow(contrast_data)),
+        x = expression(bar(S)[AnaCoDa]~"(Selection Intensity)"),
+        y = expression(bar(S)[poly]~"(Polymorphism-Based Load)")
+      ) +
+      theme_bw(base_size = 12) +
+      theme(
+        plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(size = 11),
+        axis.title = element_text(size = 12),
+        panel.grid.minor = element_blank()
+      )
+    
+    # Save plot
+    ggsave("./results/gamma_anacoda_contrast.pdf", 
+           plot = p, 
+           width = 8, height = 7)
+    
+    cat("✓ Plot saved: ./results/gamma_anacoda_contrast.pdf\n\n")
+    
+    # Add correlation stats to output
+    contrast_data[, Spearman_rho := cor_result$estimate]
+    contrast_data[, Spearman_p := cor_result$p.value]
+    
+  } else {
+    warning("Not enough data for correlation analysis (n < 10)")
+  }
+  
+  return(contrast_data)
 }

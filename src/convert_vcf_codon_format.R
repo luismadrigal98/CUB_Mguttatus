@@ -80,6 +80,8 @@ prepare_vcf_for_gamma_estimation <- function(vcf_codon_dt, genetic_code_df) {
               nrow(dt_expanded) - nrow(dt_syn)))
   
   # Aggregate: Calculate k and n from synonymous variants only
+  # CRITICAL: Group by Codon_Pos to preserve independent sites
+  # DO NOT collapse across positions - that destroys variance!
   result <- dt_syn[, {
     
     # Skip Met and Trp (single codon)
@@ -104,7 +106,7 @@ prepare_vcf_for_gamma_estimation <- function(vcf_codon_dt, genetic_code_df) {
         p = freq_pref
       )
     }
-  }, by = .(Gene, AA, Preferred_Codon)]
+  }, by = .(Gene, Codon_Pos, AA, Preferred_Codon)]  # <-- FIXED: Added Codon_Pos]
   
   # Remove sites with no data or monomorphic
   result <- result[!is.na(k) & n > 0]
@@ -112,16 +114,38 @@ prepare_vcf_for_gamma_estimation <- function(vcf_codon_dt, genetic_code_df) {
   
   # Quality control
   cat("=== Quality Control ===\n")
-  cat(sprintf("Unique sites after filtering: %d\n", nrow(result)))
+  cat(sprintf("Total polymorphic sites (one row = one codon position): %d\n", nrow(result)))
   cat(sprintf("Sites removed (Met/Trp): %d\n", 
               sum(vcf_codon_dt$AA %in% c("M", "W"))))
-  cat(sprintf("Sites removed (monomorphic): %d\n\n", 
+  cat(sprintf("Sites removed (monomorphic or fixed): %d\n\n", 
               nrow(vcf_codon_dt) - nrow(result) - sum(vcf_codon_dt$AA %in% c("M", "W"))))
   
-  # Check sample sizes
-  cat("Sample size distribution (n = synonymous alleles):\n")
-  print(table(result$n))
-  cat("\n")
+  # CRITICAL VALIDATION: Check that we have MULTIPLE sites per Gene×AA
+  sites_per_gene_aa <- result[, .N, by = .(Gene, AA)]
+  
+  cat("=== CRITICAL VALIDATION ===\n")
+  cat(sprintf("Mean sites per Gene×AA: %.1f\n", mean(sites_per_gene_aa$N)))
+  cat(sprintf("Median sites per Gene×AA: %.0f\n", median(sites_per_gene_aa$N)))
+  cat(sprintf("Gene×AA with single site: %d (%.1f%% - BAD if high!)\n",
+              sum(sites_per_gene_aa$N == 1),
+              100 * mean(sites_per_gene_aa$N == 1)))
+  cat(sprintf("Gene×AA with ≥5 sites: %d (%.1f%% - GOOD!)\n\n",
+              sum(sites_per_gene_aa$N >= 5),
+              100 * mean(sites_per_gene_aa$N >= 5)))
+  
+  if (mean(sites_per_gene_aa$N) < 2) {
+    warning("⚠️  CRITICAL: Most Gene×AA have only 1 site! Check Codon_Pos grouping!")
+  }
+  
+  # Check sample sizes (should be ~374 for diploid individuals, not thousands)
+  cat("Sample size distribution (n = synonymous alleles per site):\n")
+  cat(sprintf("  Mean: %.1f\n", mean(result$n)))
+  cat(sprintf("  Median: %.0f\n", median(result$n)))
+  cat(sprintf("  Range: %d - %d\n\n", min(result$n), max(result$n)))
+  
+  if (mean(result$n) > 1000) {
+    warning("⚠️  CRITICAL: Sample sizes are too large! You may be summing across sites!")
+  }
   
   # Check amino acid coverage
   cat("Sites per amino acid:\n")
