@@ -36,7 +36,8 @@ source("./src/derivation_gamma_from_polymorphism.R")
 # This function creates gene-level metrics comparable to AnaCoDa
 gamma_gene_level <- aggregate_gamma_per_gene(
   gamma_results = gamma_results,
-  codon_usage_df = codon_usage  # Your codon usage matrix
+  codon_usage_df = codon_usage,  # Your codon usage matrix
+  genetic_code = genetic_code_dna_long  # Codon to AA mapping
 )
 
 # Output columns:

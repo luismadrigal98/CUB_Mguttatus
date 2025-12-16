@@ -461,7 +461,7 @@ compare_gamma_with_expression <- function(gamma_results, expression_data) {
   return(merged)
 }
 
-aggregate_gamma_per_gene <- function(gamma_results, codon_usage_df) {
+aggregate_gamma_per_gene <- function(gamma_results, codon_usage_df, genetic_code) {
   #' Aggregate gamma values to gene-level selection intensity
   #' Comparable to AnaCoDa's selection coefficient aggregation
   #' 
@@ -469,16 +469,17 @@ aggregate_gamma_per_gene <- function(gamma_results, codon_usage_df) {
   #' - AnaCoDa: Sum(|deltaEta_i| * Count_i) / Total_Synonymous_Codons
   #'   where deltaEta_i is NEGATIVE for non-preferred codons
   #'   
-  #' - Gamma: Sum(gamma_AA * N_AA_positions) / Total_Synonymous_Codons
+  #' - Gamma: Sum(|gamma_AA| * N_AA_positions) / Total_Synonymous_Codons
   #'   where gamma is POSITIVE for selection favoring preferred codon
   #'   
   #' Both measure "mean selection intensity per codon position"
   #' Higher values = stronger selection for codon bias
   #' 
   #' @param gamma_results Output from estimate_gamma_by_gene_with_neutral_params()
-  #'                      Must have columns: Gene, AA, Gamma, Total_Alleles
+  #'                      Must have columns: Gene, AA, Gamma
   #' @param codon_usage_df Codon usage matrix with amino acid counts per gene
-  #'                       Should have Gene_name column + AA columns
+  #'                       Must have: Gene_name column + codon columns
+  #' @param genetic_code Named vector or data.table mapping codons to AAs
   #' @return Data table with gene-level selection metrics
   #' ___________________________________________________________________________
   
@@ -487,41 +488,96 @@ aggregate_gamma_per_gene <- function(gamma_results, codon_usage_df) {
   if (!is.data.table(gamma_results)) gamma_results <- as.data.table(gamma_results)
   if (!is.data.table(codon_usage_df)) codon_usage_df <- as.data.table(codon_usage_df)
   
+  # Standardize gene names
+  gamma_results <- gamma_results |>
+    dplyr::mutate(Gene_name = paste0("MgIM767.", Gene))
+  
   cat("\n=== Aggregating Gamma to Gene-Level Selection Intensity ===\n\n")
   
-  # Get amino acid counts per gene from codon usage
-  # Note: codon_usage_df has columns for each codon, need to sum by AA
+  # Convert genetic code to mapping
+  if (is.vector(genetic_code)) {
+    codon_to_aa <- genetic_code
+  } else if (is.data.table(genetic_code) || is.data.frame(genetic_code)) {
+    codon_to_aa <- setNames(genetic_code$AA, genetic_code$Codon)
+  } else {
+    stop("genetic_code must be a named vector or data.table with Codon and AA columns")
+  }
   
-  # Create AA-level counts from codon usage
-  # This requires knowing which codons map to which AA
-  # We'll use gamma_results to identify which AAs are present per gene
+  # Get all codon columns from usage matrix
+  codon_cols <- setdiff(names(codon_usage_df), "Gene_name")
   
-  # Strategy: Use the total alleles (sample size) from gamma_results 
-  # as a proxy for AA frequency, since n = 2 * N_individuals * N_sites
-  # Higher n suggests more positions with that AA in the gene
+  cat(sprintf("Converting codon counts to AA counts for %d genes...\n", 
+              nrow(codon_usage_df)))
   
-  # For weighted mean: weight by sample size (more data = more weight)
-  gamma_weighted <- gamma_results[!is.na(Gamma), .(
+  # Convert codon usage to AA usage
+  aa_usage <- codon_usage_df[, {
     
-    # Weighted mean gamma (weighted by sample size)
-    Gamma_Weighted_Mean = weighted.mean(Gamma, w = Total_Alleles, na.rm = TRUE),
+    gene_name <- Gene_name
     
-    # Simple mean gamma (all AAs equally weighted)
+    # Sum codons by amino acid
+    aa_counts <- list()
+    
+    for (codon in codon_cols) {
+      aa <- codon_to_aa[codon]
+      
+      # Skip if AA not found or is STOP
+      if (is.na(aa) || aa == "STOP") next
+      
+      count <- .SD[[codon]]
+      
+      if (aa %in% names(aa_counts)) {
+        aa_counts[[aa]] <- aa_counts[[aa]] + count
+      } else {
+        aa_counts[[aa]] <- count
+      }
+    }
+    
+    # Convert to data.table format
+    data.table(
+      AA = names(aa_counts),
+      AA_Count = unlist(aa_counts)
+    )
+    
+  }, by = Gene_name, .SDcols = codon_cols]
+  
+  # Calculate total synonymous codons per gene (exclude Met and Trp)
+  gene_lengths <- aa_usage[!AA %in% c("M", "W"), .(
+    Total_Synonymous_Codons = sum(AA_Count)
+  ), by = Gene_name]
+  
+  # Merge gamma results with AA counts
+  setkey(gamma_results, Gene_name, AA)
+  setkey(aa_usage, Gene_name, AA)
+  
+  gamma_with_counts <- merge(gamma_results[!is.na(Gamma)], aa_usage, 
+                             by = c("Gene_name", "AA"), 
+                             all.x = TRUE)
+  
+  # Handle missing AA counts (shouldn't happen but safe)
+  if (any(is.na(gamma_with_counts$AA_Count))) {
+    cat("⚠️  Warning: Some AAs in gamma_results not found in codon_usage\n")
+    gamma_with_counts <- gamma_with_counts[!is.na(AA_Count)]
+  }
+  
+  # Calculate weighted aggregates per gene
+  gamma_weighted <- gamma_with_counts[, .(
+    
+    # CORRECT FORMULA: Weight by actual AA counts from gene sequence
+    # Selection_Load = Sum(|gamma_AA| * AA_Count_AA)
+    Total_Selection_Load = sum(abs(Gamma) * AA_Count, na.rm = TRUE),
+    
+    # Weighted mean gamma (weighted by AA occurrence)
+    Gamma_Weighted_Mean = weighted.mean(Gamma, w = AA_Count, na.rm = TRUE),
+    
+    # Simple mean gamma (all AAs equally weighted - for comparison)
     Gamma_Mean = mean(Gamma, na.rm = TRUE),
     
     # Median gamma (robust to outliers)
     Gamma_Median = median(Gamma, na.rm = TRUE),
     
-    # Total "selection load" = sum of |gamma| values
-    # Analogous to AnaCoDa's total_selection_load
-    Total_Selection_Load = sum(abs(Gamma), na.rm = TRUE),
-    
-    # Selection intensity = mean(|gamma|) per AA position
-    # Directly comparable to AnaCoDa's S_coeff
-    Selection_Intensity = mean(abs(Gamma), na.rm = TRUE),
-    
     # Count statistics
     N_AA_Analyzed = .N,
+    N_AA_Positions = sum(AA_Count),  # Total AA positions with gamma estimates
     N_Positive_Gamma = sum(Gamma > 0, na.rm = TRUE),
     N_Negative_Gamma = sum(Gamma < 0, na.rm = TRUE),
     N_Significant = sum(Significant, na.rm = TRUE),
@@ -532,20 +588,26 @@ aggregate_gamma_per_gene <- function(gamma_results, codon_usage_df) {
     
     # Range
     Max_Gamma = max(Gamma, na.rm = TRUE),
-    Min_Gamma = min(Gamma, na.rm = TRUE),
+    Min_Gamma = min(Gamma, na.rm = TRUE)
     
-    # Total sample size across all AA
-    Total_Sample_Size = sum(Total_Alleles, na.rm = TRUE)
-    
-  ), by = Gene]
+  ), by = Gene_name]
   
-  # Rename Gene to Gene_name for consistency with other data frames
-  setnames(gamma_weighted, "Gene", "Gene_name")
+  # Merge with gene lengths to calculate Selection_Intensity
+  setkey(gamma_weighted, Gene_name)
+  setkey(gene_lengths, Gene_name)
+  
+  gamma_weighted <- gene_lengths[gamma_weighted, nomatch = 0]
+  
+  # Calculate Selection Intensity (normalized by total synonymous codons)
+  # This is DIRECTLY comparable to AnaCoDa's S_coeff
+  gamma_weighted[, Selection_Intensity := Total_Selection_Load / Total_Synonymous_Codons]
   
   # Summary
   cat(sprintf("Genes with gamma estimates: %d\n", nrow(gamma_weighted)))
   cat(sprintf("Median AAs per gene: %.0f\n", 
               median(gamma_weighted$N_AA_Analyzed)))
+  cat(sprintf("Mean AA positions per gene: %.0f\n",
+              mean(gamma_weighted$N_AA_Positions)))
   cat("\nSelection Intensity Distribution:\n")
   print(summary(gamma_weighted$Selection_Intensity))
   cat("\nWeighted Mean Gamma Distribution:\n")

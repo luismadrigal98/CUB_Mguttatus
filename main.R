@@ -3397,7 +3397,7 @@ write.csv(neutral_params_df,
 
 cat("✓ Neutral parameters saved: ./results/neutral_mutation_parameters.csv\n\n")
 
-# Step 3: Estimate gamma ----
+# STEP 3: Estimate gamma ----
 
 # Validate and convert (now with synonymous filtering)
 validate_vcf_format(vcf_codon)
@@ -3416,4 +3416,13 @@ write.csv(gamma_results,
           row.names = FALSE)
 
 cat("✓ Gamma estimates saved: ./results/gamma_estimates_by_gene_and_aa.csv\n\n")
+
+# STEP 4: Aggregate results per gene ----
+
+gamma_gene_level <- aggregate_gamma_per_gene(
+  gamma_results = gamma_results,
+  codon_usage_df = codon_usage  # Your codon usage matrix
+)
+
+# STEP 5: Contrast results with AnaCoDa selection intensity ----
 

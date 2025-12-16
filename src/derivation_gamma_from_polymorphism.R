@@ -99,10 +99,9 @@ get_prob_k_analytical_precomputed <- function(k, n, alpha, beta, S) {
 
 solve_alpha_and_beta_from_introns <- function(sfs_file) {
   #' Estimate alpha and beta from neutral (intronic) site frequency spectra
-  #' Uses Beta-Binomial Maximum Likelihood Estimation
+  #' Uses Weighted Beta-Binomial Maximum Likelihood Estimation
   #' 
   #' @param sfs_file Path to CSV file with columns: n, k, count
-  #'                 (output from filter_vcf_for_introns.py)
   #' @return A list containing estimated alpha, beta, and convergence codes
   #' ___________________________________________________________________________
   
@@ -112,19 +111,16 @@ solve_alpha_and_beta_from_introns <- function(sfs_file) {
   # Load SFS data
   sfs_data <- fread(sfs_file)
   
-  # Expand to individual observations (weighted by count)
-  k_vec <- rep(sfs_data$k, sfs_data$count)
-  n_vec <- rep(sfs_data$n, sfs_data$count)
+  # Filter out invalid rows if any
+  dt <- sfs_data[n > 0]
   
-  # Remove sites with 0 coverage
-  valid <- n_vec > 0
-  k <- k_vec[valid]
-  n <- n_vec[valid]
+  # Extract vectors for vectorized calculation
+  k <- dt$k
+  n <- dt$n
+  w <- dt$count # The weights
   
-  # Negative Log-Likelihood Function for Beta-Binomial
-  # L(alpha, beta | k, n) = Product [ Beta(k+alpha, n-k+beta) / Beta(alpha, beta) * (n choose k) ]
-  # We perform optimization on log(alpha) and log(beta) to ensure positivity
-  
+  # Negative Log-Likelihood Function (Weighted)
+  # L = Sum [ count * log( P(k|n, alpha, beta) ) ]
   nll <- function(params) {
     log_alpha <- params[1]
     log_beta <- params[2]
@@ -132,24 +128,23 @@ solve_alpha_and_beta_from_introns <- function(sfs_file) {
     alpha <- exp(log_alpha)
     beta <- exp(log_beta)
     
-    # Calculate log-likelihood terms
-    # lbeta is log(beta_function)
-    # The term lchoose(n, k) is constant w.r.t parameters, so strictly optional for optimization,
-    # but included here for completeness of the probability definition.
-    
+    # Beta-Binomial Log-Probability
+    # const + lbeta(k+a, n-k+b) - lbeta(a, b)
     log_prob <- lchoose(n, k) + 
       lbeta(k + alpha, n - k + beta) - 
       lbeta(alpha, beta)
     
-    # Return negative sum (to minimize)
-    return(-sum(log_prob))
+    # WEIGHTED sum (Critical optimization)
+    return(-sum(w * log_prob))
   }
   
-  # Initial guesses: Start with small values (0.01 is typical for 4Neu)
-  # or approximate based on mean frequency p_hat = a/(a+b)
-  p_hat <- mean(k/n, na.rm=TRUE)
-  start_alpha <- 0.1 * p_hat
-  start_beta <- 0.1 * (1 - p_hat)
+  # Initial guesses based on weighted mean frequency
+  total_alleles <- sum(as.numeric(w) * n)
+  total_k <- sum(as.numeric(w) * k)
+  p_hat <- total_k / total_alleles
+  
+  start_alpha <- 0.01 * p_hat
+  start_beta <- 0.01 * (1 - p_hat)
   
   # Optimize
   opt <- optim(par = c(log(start_alpha), log(start_beta)), 
@@ -160,7 +155,7 @@ solve_alpha_and_beta_from_introns <- function(sfs_file) {
     alpha = exp(opt$par[1]),
     beta = exp(opt$par[2]),
     convergence = opt$convergence,
-    n_sites = length(k)
+    n_sites = sum(as.numeric(w)) # Total number of sites processed
   )
   
   return(results)
