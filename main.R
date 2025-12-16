@@ -2845,52 +2845,6 @@ ggsave("./results/diversity_modeling/Pi_by_expression_group_boxplot.pdf",
 pi_posthoc <- TukeyHSD(aov(lm(Pi_mean_4fold ~ Expression_Group, 
                              data = integrated_data)))
 
-## *****************************************************************************
-## 13) Model Selection for Diversity-Expression Relationship ----
-## _____________________________________________________________________________
-
-# Test whether genetic diversity (Pi, Tajima's D) decreases with expression
-# Using systematic model selection with AIC/BIC comparison
-
-source("./src/model_selection_diversity.R")
-
-# Create output directory
-if (!dir.exists("./results/diversity_modeling")) {
-  dir.create("./results/diversity_modeling", recursive = TRUE)
-}
-
-cat("\n", paste(rep("=", 70), collapse = ""), "\n")
-cat("SYSTEMATIC MODEL SELECTION: Diversity vs Expression\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
-
-# 13.1) Analysis with EMPIRICAL expression (High_exp_log10) ----
-
-cat("=== Using Empirical Expression (High_exp_log10) ===\n\n")
-
-# Run model selection for Pi at 4-fold sites
-cat("--- Response: Pi_mean_4fold ---\n")
-pi_models_empirical <- run_diversity_analysis_pipeline(
-  data = integrated_data,
-  response = "Pi_mean_4fold",
-  expression_var = "High_exp_log10",
-  predictors = c("GC3s", "CDS_length_nt", "GC12"),
-  include_quadratic = TRUE,
-  include_interactions = TRUE,
-  output_dir = "./results/diversity_modeling"
-)
-
-# Run model selection for Tajima's D at 4-fold sites
-cat("\n--- Response: TajimaD_4fold ---\n")
-tajimaD_models_empirical <- run_diversity_analysis_pipeline(
-  data = integrated_data,
-  response = "TajimaD_4fold",
-  expression_var = "High_exp_log10",
-  predictors = c("GC3s", "CDS_length_nt"),
-  include_quadratic = TRUE,
-  include_interactions = TRUE,
-  output_dir = "./results/diversity_modeling"
-)
-
 # 13.2) Exploration of Bulmer effect ----
 
 # Using selection_coeff_intensity, let's define selection group
@@ -3321,43 +3275,6 @@ ggsave("./results/diversity_modeling/Pi_vs_Gamma_Valine.pdf",
        width = 6, height = 4)
 
 ## *****************************************************************************
-## 14) Codon Frequency Spectrum (CFS) Analysis ----
-## _____________________________________________________________________________
-# Analyze preferred codon frequency distributions to detect selection signatures
-# Note: We call this CFS (not SFS) because we lack ancestral state information
-
-cat("\n", paste(rep("=", 70), collapse = ""), "\n")
-cat("CODON FREQUENCY SPECTRUM (CFS) ANALYSIS\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
-
-# Run complete CFS analysis pipeline
-cfs_results <- run_cfs_analysis(
-  data_dir = "./data",
-  output_dir = "./results/cfs_analysis"
-)
-
-# Extract key statistics for integration with other analyses
-cat("\n=== Integration with Expression Analysis ===\n\n")
-
-# The fixation index by amino acid can be compared to expression-related metrics
-fixation_by_aa <- cfs_results$selection_estimates |>
-  dplyr::select(Amino_Acid, Family, Fix_Ratio, Gamma_Estimate, Selection_Direction)
-
-cat("Fixation index summary by degeneracy:\n")
-fixation_summary <- cfs_results$selection_estimates |>
-  group_by(Family) |>
-  summarise(
-    Mean_Fix_Ratio = mean(Fix_Ratio),
-    Mean_Gamma = mean(Gamma_Estimate),
-    n_AA = n(),
-    .groups = "drop"
-  )
-print(fixation_summary)
-
-cat("\nCFS Analysis Complete!\n")
-cat("Results saved to: ./results/cfs_analysis/\n\n")
-
-## *****************************************************************************
 ## 15) Intronic Polymorphism-Based Selection Inference ----
 ## _____________________________________________________________________________
 # Estimate selection coefficients (gamma) using mutation rate parameters
@@ -3427,9 +3344,12 @@ gamma_gene_level <- aggregate_gamma_per_gene(
 
 # STEP 5: Contrast results with AnaCoDa selection intensity ----
 
-comparison <- compare_gamma_with_anacoda(
-  gamma_gene_level = gamma_gene_level,
-  anacoda_intensity = selection_coeff_intensity
+comparison <- contrast_gamma_anacoda(
+  gamma_results = gamma_results,        # Use Gene×AA level data!
+  codon_usage = codon_usage,
+  preferred_codons = preferred_codons,
+  anacoda_intensity = selection_coeff_intensity,
+  genetic_code = genetic_code_df
 )
 
 # Scatter plot: Gamma vs AnaCoDa
@@ -3472,35 +3392,41 @@ ggsave("./results/gamma_vs_anacoda_comparison.pdf",
 
 # STEP 6: Check fo gBGC ----
 
-check_intragenic_gradient <- function(gamma_results) {
-  # Add relative position column (0 = Start, 1 = End)
-  # Assuming gamma_results has 'Codon_Pos' and we can derive gene length
-  
-  # 1. Calculate Gene Lengths
-  gene_lengths <- gamma_results[, .(Max_Pos = max(Codon_Pos)), by = Gene]
-  
-  # 2. Merge and Calculate Relative Position
-  grad_data <- merge(gamma_results, gene_lengths, by = "Gene")
-  grad_data[, Rel_Pos := Codon_Pos / Max_Pos]
-  
-  # 3. Bin positions (e.g., 5' end vs 3' end)
-  grad_data[, Region := cut(Rel_Pos, 
-                            breaks = c(0, 0.25, 0.75, 1.0), 
-                            labels = c("5' End", "Middle", "3' End"))]
-  
-  # 4. Plot Gamma by Region
-  p <- ggplot(grad_data[!is.na(Gamma) & !is.na(Region)], 
-              aes(x = Region, y = Gamma)) +
-    geom_boxplot(outlier.shape = NA, fill = "lightblue") +
-    coord_cartesian(ylim = c(-2, 10)) +
-    labs(title = "Intragenic Gradient of Selection (Gamma)",
-         subtitle = "Testing for 5' Recombination Bias (gBGC Signature)",
-         y = "Gamma (4Nes)", x = "Gene Region") +
-    theme_minimal()
-  
-  print(p)
-  
-  # 5. Statistical Test
-  res <- kruskal.test(Gamma ~ Region, data = grad_data)
-  print(res)
-}
+gradient_results <- estimate_gamma_gradient(codon_vcf_data = vcf_prepared, 
+                                            neutral_params = neutral_params, 
+                                            preferred_codons_df = preferred_codons, 
+                                            n_bins = 10)
+
+# STEP 7: Correct gamma for GC3s background (gBGC + splicing) ----
+
+gamma_corrected <- correct_gamma_for_gc3s(
+  gamma_gene_level = gamma_gene_level,
+  codon_usage = codon_usage,
+  genetic_code = genetic_code_df
+)
+
+# Save corrected gamma estimates
+write.csv(gamma_corrected,
+          "./results/gamma_corrected_for_gc3s.csv",
+          row.names = FALSE)
+
+cat("✓ GC3s-corrected gamma saved: ./results/gamma_corrected_for_gc3s.csv\n\n")
+
+# Optional: Re-run AnaCoDa comparison with corrected gamma
+# (requires merging gamma_corrected back to gene×AA level)
+
+# STEP 8: Visualize SFS shift (model validation) ----
+
+sfs_shift <- visualize_sfs_shift(
+  codon_vcf_data = vcf_prepared,
+  neutral_params = neutral_params,
+  gamma_results = gamma_results,
+  n_bins = 20
+)
+
+# Save SFS shift data
+write.csv(sfs_shift,
+          "./results/sfs_shift_analysis.csv",
+          row.names = FALSE)
+
+cat("✓ SFS shift data saved: ./results/sfs_shift_analysis.csv\n\n")

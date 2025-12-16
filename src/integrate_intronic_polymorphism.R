@@ -1255,15 +1255,13 @@ estimate_gamma_gradient <- function(codon_vcf_data, neutral_params,
         panel.grid.minor = element_blank()
       )
     
-    print(p)
-    
     # Save plot
     if (!dir.exists("./results")) dir.create("./results")
     ggsave("./results/gamma_gradient_gBGC_test.pdf", 
            plot = p, 
            width = 8, height = 6)
     
-    cat("✓ Plot saved: ./results/gamma_gradient_gBGC_test.pdf\\n\\n")
+    cat("✓ Plot saved: ./results/gamma_gradient_gBGC_test.pdf\n\n")
     
     # Add correlation stats to output
     gradient_results[, Spearman_rho := cor_test$estimate]
@@ -1274,4 +1272,388 @@ estimate_gamma_gradient <- function(codon_vcf_data, neutral_params,
   }
   
   return(gradient_results)
+}
+
+correct_gamma_for_gc3s <- function(gamma_gene_level, codon_usage, genetic_code) {
+  #' Residualize gamma to remove GC3s-driven background (gBGC + splicing)
+  #' 
+  #' Polymorphism-based gamma captures TOTAL evolutionary drive:
+  #'   - Translational selection (what we want)
+  #'   - gBGC (bias-creating recombination)
+  #'   - Splicing constraints (structural features)
+  #' 
+  #' Since gBGC and splicing correlate with local GC content, we remove this
+  #' confounding signal by regressing gamma against GC3s (GC at synonymous 3rd positions).
+  #' 
+  #' The residuals represent selection INDEPENDENT of compositional biases,
+  #' making them directly comparable to AnaCoDa (which models translational selection).
+  #' 
+  #' @param gamma_gene_level Output from aggregate_gamma_per_gene()
+  #'                         Must have: Gene_name, Gamma_Weighted_Mean (or Gamma_Mean)
+  #' @param codon_usage Codon usage matrix with all 64 codons
+  #'                    Must have: Gene_name, [codon columns]
+  #' @param genetic_code Mapping of codons to amino acids
+  #' @return Data table with original gamma, GC3s, predicted gamma, and corrected gamma
+  #' ___________________________________________________________________________
+  
+  require(data.table)
+  require(ggplot2)
+  
+  if (!is.data.table(gamma_gene_level)) setDT(gamma_gene_level)
+  if (!is.data.table(codon_usage)) setDT(codon_usage)
+  
+  cat("\n=== GC3s Correction (Residualization) ===\n\n")
+  cat("Removing gBGC and compositional biases from gamma estimates...\n\n")
+  
+  # Convert genetic code to mapping
+  if (is.vector(genetic_code)) {
+    codon_to_aa <- genetic_code
+  } else if (is.data.table(genetic_code) || is.data.frame(genetic_code)) {
+    codon_to_aa <- setNames(genetic_code$AA, genetic_code$Codon)
+  } else {
+    stop("genetic_code must be a named vector or data.table")
+  }
+  
+  # Get codon columns
+  codon_cols <- setdiff(names(codon_usage), "Gene_name")
+  
+  cat(sprintf("Calculating GC3s for %d genes...\n", nrow(codon_usage)))
+  
+  # Calculate GC3s (GC content at synonymous 3rd codon positions)
+  gc3s_data <- codon_usage[, {
+    
+    # Count G/C ending codons (synonymous positions only)
+    gc_count <- 0
+    total_count <- 0
+    
+    for (codon in codon_cols) {
+      aa <- codon_to_aa[codon]
+      
+      # Skip Met, Trp, STOP (not synonymous)
+      if (is.na(aa) || aa %in% c("M", "W", "STOP")) next
+      
+      count <- .SD[[codon]]
+      total_count <- total_count + count
+      
+      # Check if 3rd position is G or C
+      third_base <- substr(codon, 3, 3)
+      if (third_base %in% c("G", "C")) {
+        gc_count <- gc_count + count
+      }
+    }
+    
+    # Calculate GC3s proportion
+    gc3s <- if (total_count > 0) gc_count / total_count else NA_real_
+    
+    list(GC3s = gc3s, Total_Synonymous = total_count)
+    
+  }, by = Gene_name, .SDcols = codon_cols]
+  
+  # Merge with gamma data
+  setkey(gamma_gene_level, Gene_name)
+  setkey(gc3s_data, Gene_name)
+  
+  gamma_with_gc <- merge(gamma_gene_level, gc3s_data, by = "Gene_name")
+  
+  # Remove missing data
+  gamma_with_gc <- gamma_with_gc[!is.na(GC3s) & !is.na(Gamma_Weighted_Mean)]
+  
+  cat(sprintf("Genes with both gamma and GC3s: %d\n\n", nrow(gamma_with_gc)))
+  
+  # Step 2: Fit quadratic regression
+  # gamma ~ β0 + β1*GC3s + β2*GC3s^2
+  cat("Fitting quadratic regression: gamma ~ GC3s + GC3s^2...\n")
+  
+  gamma_with_gc[, GC3s_squared := GC3s^2]
+  
+  model <- lm(Gamma_Weighted_Mean ~ GC3s + GC3s_squared, data = gamma_with_gc)
+  
+  cat("\nRegression Summary:\n")
+  print(summary(model))
+  cat("\n")
+  
+  # Step 3: Calculate residuals (corrected gamma)
+  gamma_with_gc[, Gamma_Predicted := predict(model, newdata = .SD)]
+  gamma_with_gc[, Gamma_Corrected := Gamma_Weighted_Mean - Gamma_Predicted]
+  
+  # Statistics
+  r_squared <- summary(model)$r.squared
+  
+  cat("=== Correction Statistics ===\n")
+  cat(sprintf("R² (GC3s explains gamma): %.3f\n", r_squared))
+  cat(sprintf("Variance removed: %.1f%%\n\n", 100 * r_squared))
+  
+  cat("Original Gamma:\n")
+  cat(sprintf("  Mean = %.3f, SD = %.3f\n", 
+              mean(gamma_with_gc$Gamma_Weighted_Mean),
+              sd(gamma_with_gc$Gamma_Weighted_Mean)))
+  
+  cat("Corrected Gamma (residuals):\n")
+  cat(sprintf("  Mean = %.3f, SD = %.3f\n\n",
+              mean(gamma_with_gc$Gamma_Corrected),
+              sd(gamma_with_gc$Gamma_Corrected)))
+  
+  # Visualization
+  cat("Creating diagnostic plots...\n")
+  
+  # Plot 1: Gamma vs GC3s with fitted curve
+  p1 <- ggplot(gamma_with_gc, aes(x = GC3s, y = Gamma_Weighted_Mean)) +
+    geom_point(alpha = 0.3, size = 1) +
+    geom_smooth(method = "lm", formula = y ~ x + I(x^2), 
+                se = TRUE, color = "red") +
+    labs(
+      title = "Gamma vs GC3s (Background Drive)",
+      subtitle = sprintf("R² = %.3f (%.1f%% of variance explained by GC bias)",
+                        r_squared, 100 * r_squared),
+      x = "GC3s (GC content at synonymous sites)",
+      y = "Gamma (Weighted Mean)"
+    ) +
+    theme_bw()
+  
+  # Plot 2: Residuals (corrected gamma) vs GC3s
+  p2 <- ggplot(gamma_with_gc, aes(x = GC3s, y = Gamma_Corrected)) +
+    geom_point(alpha = 0.3, size = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    geom_smooth(method = "loess", se = TRUE, color = "blue", alpha = 0.2) +
+    labs(
+      title = "Corrected Gamma (Residuals) - GC Bias Removed",
+      subtitle = "Should show no correlation with GC3s if correction successful",
+      x = "GC3s",
+      y = "Gamma Corrected (Residuals)"
+    ) +
+    theme_bw()
+  
+  # Plot 3: Before/After comparison
+  gamma_long <- rbind(
+    gamma_with_gc[, .(Gene_name, GC3s, Gamma = Gamma_Weighted_Mean, Type = "Original")],
+    gamma_with_gc[, .(Gene_name, GC3s, Gamma = Gamma_Corrected, Type = "Corrected")]
+  )
+  
+  p3 <- ggplot(gamma_long, aes(x = GC3s, y = Gamma, color = Type)) +
+    geom_point(alpha = 0.2, size = 1) +
+    geom_smooth(method = "loess", se = TRUE) +
+    scale_color_manual(values = c("Original" = "red", "Corrected" = "blue")) +
+    labs(
+      title = "Before/After GC3s Correction",
+      x = "GC3s",
+      y = "Gamma",
+      color = "Version"
+    ) +
+    theme_bw() +
+    theme(legend.position = "top")
+  
+  # Arrange and save
+  if (!dir.exists("./results")) dir.create("./results")
+  
+  # Combine plots
+  combined_plot <- gridExtra::grid.arrange(p1, p2, p3, ncol = 1)
+  
+  ggsave("./results/gc3s_correction_diagnostics.pdf", 
+         plot = combined_plot, 
+         width = 12, height = 10)
+  
+  cat("✓ Diagnostic plots saved: ./results/gc3s_correction_diagnostics.pdf\n\n")
+  
+  # Return corrected data
+  return(gamma_with_gc[, .(Gene_name, GC3s, 
+                           Gamma_Original = Gamma_Weighted_Mean,
+                           Gamma_Predicted, Gamma_Corrected,
+                           Total_Synonymous)])
+}
+
+visualize_sfs_shift <- function(codon_vcf_data, neutral_params, gamma_results, 
+                                n_bins = 20) {
+  #' Visualize SFS shift to validate selection model
+  #' 
+  #' Compares observed site frequency spectrum (SFS) against:
+  #'   1. Neutral expectation (α, β, γ=0)
+  #'   2. Fitted model (α, β, γ=estimated)
+  #' 
+  #' The "shift" (ratio of observed/neutral) quantifies deviation from neutrality.
+  #' Positive shift at high frequencies = positive selection/drive for preferred codons.
+  #' 
+  #' @param codon_vcf_data Output from prepare_vcf_for_gamma_estimation()
+  #'                       Must have: k, n, p, AA, Preferred_Codon
+  #' @param neutral_params Output from load_and_estimate_neutral_params()
+  #' @param gamma_results Output from estimate_gamma_by_gene_with_neutral_params()
+  #'                      Must have: Gene, AA, Gamma, Terminal_Nuc
+  #' @param n_bins Number of frequency bins (default: 20)
+  #' @return Data table with observed, neutral, and fitted SFS counts per bin
+  #' ___________________________________________________________________________
+  
+  require(data.table)
+  require(ggplot2)
+  
+  if (!is.data.table(codon_vcf_data)) setDT(codon_vcf_data)
+  if (!is.data.table(gamma_results)) setDT(gamma_results)
+  
+  cat("\n=== SFS Shift Analysis (Model Validation) ===\n\n")
+  
+  # Standardize column names
+  if ("Gene" %in% names(gamma_results) && !"Gene_name" %in% names(gamma_results)) {
+    gamma_results <- copy(gamma_results)
+    setnames(gamma_results, "Gene", "Gene_name")
+  }
+  
+  # Merge VCF data with gamma estimates
+  vcf_with_gamma <- merge(
+    codon_vcf_data,
+    gamma_results[, .(Gene_name, AA, Gamma, Terminal_Nuc)],
+    by.x = c("Gene", "AA"),
+    by.y = c("Gene_name", "AA"),
+    all.x = TRUE
+  )
+  
+  cat(sprintf("Sites with gamma estimates: %d\n", sum(!is.na(vcf_with_gamma$Gamma))))
+  cat(sprintf("Sites without gamma: %d\n\n", sum(is.na(vcf_with_gamma$Gamma))))
+  
+  # Define frequency bins
+  freq_breaks <- seq(0, 1, length.out = n_bins + 1)
+  bin_centers <- (freq_breaks[-1] + freq_breaks[-(n_bins + 1)]) / 2
+  
+  # Step 1: Observed SFS
+  cat("Calculating observed SFS...\n")
+  vcf_with_gamma[, Freq_Bin := cut(p, breaks = freq_breaks, 
+                                    include.lowest = TRUE, labels = FALSE)]
+  
+  obs_sfs <- vcf_with_gamma[, .N, by = Freq_Bin]
+  setkey(obs_sfs, Freq_Bin)
+  
+  # Step 2: Theoretical expectations
+  cat("Calculating neutral expectation...\n")
+  cat("Calculating fitted model expectation...\n\n")
+  
+  # For each site, calculate probability under neutral and fitted models
+  sfs_theory <- vcf_with_gamma[, {
+    
+    term_nuc <- Terminal_Nuc[1]
+    
+    # Get appropriate alpha/beta
+    if (!is.na(term_nuc) && term_nuc == "G") {
+      alpha_use <- neutral_params$alpha_G
+      beta_use <- neutral_params$beta_G
+    } else if (!is.na(term_nuc)) {
+      alpha_use <- neutral_params$alpha_C
+      beta_use <- neutral_params$beta_C
+    } else {
+      # Default to C if missing
+      alpha_use <- neutral_params$alpha_C
+      beta_use <- neutral_params$beta_C
+    }
+    
+    gamma_use <- ifelse(is.na(Gamma[1]), 0, Gamma[1])
+    
+    # Calculate probabilities for all possible k values
+    k_obs <- k[1]
+    n_obs <- n[1]
+    
+    # Neutral probability
+    prob_neutral <- get_prob_k_analytical_precomputed(
+      k = k_obs, n = n_obs,
+      alpha = alpha_use, beta = beta_use, S = 0
+    )
+    
+    # Fitted probability
+    prob_fitted <- get_prob_k_analytical_precomputed(
+      k = k_obs, n = n_obs,
+      alpha = alpha_use, beta = beta_use, S = gamma_use
+    )
+    
+    list(
+      Prob_Neutral = prob_neutral,
+      Prob_Fitted = prob_fitted
+    )
+    
+  }, by = .(Freq_Bin, k, n)]
+  
+  # Sum probabilities into bins
+  neutral_sfs <- sfs_theory[, .(Count_Neutral = sum(Prob_Neutral, na.rm = TRUE)), 
+                            by = Freq_Bin]
+  fitted_sfs <- sfs_theory[, .(Count_Fitted = sum(Prob_Fitted, na.rm = TRUE)), 
+                           by = Freq_Bin]
+  
+  # Merge all SFS data
+  sfs_combined <- Reduce(
+    function(x, y) merge(x, y, by = "Freq_Bin", all = TRUE),
+    list(obs_sfs, neutral_sfs, fitted_sfs)
+  )
+  
+  # Add bin centers
+  sfs_combined[, Frequency := bin_centers[Freq_Bin]]
+  
+  # Calculate shift (ratio observed/neutral)
+  sfs_combined[, Shift_Neutral := N / Count_Neutral]
+  sfs_combined[, Shift_Fitted := N / Count_Fitted]
+  sfs_combined[, Log_Shift := log10(Shift_Neutral)]
+  
+  # Statistics
+  cat("=== SFS Shift Summary ===\n\n")
+  cat("Low frequency bins (p < 0.2):\n")
+  cat(sprintf("  Mean shift: %.3f\n", 
+              mean(sfs_combined[Frequency < 0.2]$Shift_Neutral, na.rm = TRUE)))
+  
+  cat("\nHigh frequency bins (p > 0.8):\n")
+  cat(sprintf("  Mean shift: %.3f\n\n", 
+              mean(sfs_combined[Frequency > 0.8]$Shift_Neutral, na.rm = TRUE)))
+  
+  if (mean(sfs_combined[Frequency > 0.8]$Shift_Neutral, na.rm = TRUE) > 1.2) {
+    cat("✓ POSITIVE SHIFT at high frequencies\n")
+    cat("  → Evidence for selection/drive favoring preferred codons\n\n")
+  } else {
+    cat("⚠ WEAK SHIFT at high frequencies\n")
+    cat("  → Selection signal may be weak or estimates are neutral\n\n")
+  }
+  
+  # Visualization
+  cat("Creating SFS shift plots...\n")
+  
+  # Plot 1: Observed vs Expected SFS
+  sfs_long <- rbind(
+    sfs_combined[, .(Frequency, Count = N, Type = "Observed")],
+    sfs_combined[, .(Frequency, Count = Count_Neutral, Type = "Neutral")],
+    sfs_combined[, .(Frequency, Count = Count_Fitted, Type = "Fitted")]
+  )
+  
+  p1 <- ggplot(sfs_long, aes(x = Frequency, y = Count, color = Type)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_y_log10() +
+    scale_color_manual(values = c("Observed" = "black", 
+                                  "Neutral" = "blue", 
+                                  "Fitted" = "red")) +
+    labs(
+      title = "Site Frequency Spectrum",
+      x = "Allele Frequency (preferred codon)",
+      y = "Count of Sites (log scale)",
+      color = "Model"
+    ) +
+    theme_bw() +
+    theme(legend.position = "top")
+  
+  # Plot 2: Shift ratio
+  p2 <- ggplot(sfs_combined, aes(x = Frequency)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_line(aes(y = Log_Shift), color = "darkgreen", linewidth = 1.2) +
+    geom_point(aes(y = Log_Shift), color = "darkgreen", size = 3) +
+    labs(
+      title = "SFS Shift (Deviation from Neutrality)",
+      subtitle = "Positive values = excess of preferred alleles (selection/drive)",
+      x = "Allele Frequency (preferred codon)",
+      y = "log₁₀(Observed / Neutral)"
+    ) +
+    theme_bw()
+  
+  # Save plots
+  if (!dir.exists("./results")) dir.create("./results")
+  
+  # Combine plots
+  combined_plot <- gridExtra::grid.arrange(p1, p2, ncol = 2)
+  
+  ggsave("./results/sfs_shift_analysis.pdf", 
+         plot = combined_plot, 
+         width = 12, height = 6)
+  
+  cat("✓ SFS plots saved: ./results/sfs_shift_analysis.pdf\n\n")
+  
+  return(sfs_combined)
 }
