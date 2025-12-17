@@ -1685,6 +1685,16 @@ selection_coeff_intensity <- selection_coeff_intensity |>
                                               Pi_mean_4fold, TajimaD_4fold)) |>
   na.exclude()
 
+# Relation between log_geom_expression and S
+
+ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_coeff)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth() +
+  theme_custom()
+
+ggsave(filename = "./results/Selection_Coefficient_vs_Geom_Expression.pdf",
+       width = 6, height = 4)
+
 # Correlation between selection metric and CUB metrics
 
 cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_intensity[, 2:5]),
@@ -2830,20 +2840,40 @@ integrated_data <- integrated_data |>
 pi_per_expression <- anova(lm(Pi_mean_4fold ~ Expression_Group, 
                            data = integrated_data))
 
-# Visual
-
-ggplot(data = integrated_data, mapping = aes(x = Expression_Group,
-                                                       y = Pi_mean_4fold)) +
-  geom_boxplot() +
-  theme_custom()
-
-ggsave("./results/diversity_modeling/Pi_by_expression_group_boxplot.pdf",
-       width = 6, height = 4)
-
 # Post-hoc test
 
 pi_posthoc <- TukeyHSD(aov(lm(Pi_mean_4fold ~ Expression_Group, 
-                             data = integrated_data)))
+                              data = integrated_data)))
+
+# Getting required information
+
+plot_data_pi_1 <- integrated_data |>
+  dplyr::select(Gene_name, Pi_mean_4fold, Expression_Group) |>
+  na.exclude()
+
+alpha <- 0.05
+
+plot_data_pi_1_ready <- plot_data_pi_1 |>
+  dplyr::group_by(Expression_Group) |>
+  dplyr::summarize(Mean_pi_4_fold = mean(Pi_mean_4fold),
+                   LL = mean(Pi_mean_4fold) - qt(1 - alpha/2, (n() - 1)) * sd(Pi_mean_4fold) / sqrt(n()),
+                   UL = mean(Pi_mean_4fold) + qt(1 - alpha/2, (n() - 1)) * sd(Pi_mean_4fold) / sqrt(n()))
+
+# Visual (Mean + CI)
+
+ggplot(data = plot_data_pi_1_ready, 
+       mapping = aes(x = Expression_Group,
+                     y = Mean_pi_4_fold)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = LL, ymax = UL), width = 0.2) +
+  theme_custom() +
+  labs(title = "Nucleotide Diversity (Pi) at 4-fold Sites by Expression Group",
+       x = "Expression Group",
+       y = "Mean Pi at 4-fold Sites") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("./results/diversity_modeling/Pi_by_expression_group_Mean_CI.pdf",
+       width = 6, height = 4)
 
 # 13.2) Exploration of Bulmer effect ----
 
