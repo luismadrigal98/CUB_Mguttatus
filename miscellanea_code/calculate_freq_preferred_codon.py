@@ -292,8 +292,20 @@ def extract_codon_genotypes(vcf_file, gene_info, preferred_codons, chrom, n_samp
                 ad = parts[2]
                 
                 try:
-                    ref_count, alt_count = map(int, ad.split(','))
-                except:
+                    # Handle both formats:
+                    # Variant sites: "12,5" (ref,alt)
+                    # Invariant sites: "2" (ref only)
+                    if ',' in ad:
+                        ref_count, alt_count = map(int, ad.split(','))
+                    else:
+                        # Invariant site - only ref depth
+                        ref_count = int(ad)
+                        alt_count = 0
+                except (ValueError, IndexError):
+                    continue
+                
+                # Skip if no coverage (missing data)
+                if ref_count == 0 and alt_count == 0:
                     continue
                 
                 # Determine genotype (simple: use majority allele with depth threshold)

@@ -252,11 +252,24 @@ def parse_vcf_line(line):
         
         try:
             ad_field = parts[2]
-            ad_parts = ad_field.split(',')
-            ref_count = int(ad_parts[0])
-            alt_count = int(ad_parts[1]) if len(ad_parts) > 1 else 0
+            # Handle both formats:
+            # Variant sites: "12,5" (ref,alt)
+            # Invariant sites: "2" (ref only)
+            if ',' in ad_field:
+                ad_parts = ad_field.split(',')
+                ref_count = int(ad_parts[0])
+                alt_count = int(ad_parts[1])
+            else:
+                # Invariant site - only ref depth
+                ref_count = int(ad_field)
+                alt_count = 0
         except (ValueError, IndexError):
             ref_count, alt_count = 0, 0
+        
+        # Validate: skip if no coverage (missing data)
+        if ref_count == 0 and alt_count == 0:
+            genotypes.append(("./.", 0, 0))
+            continue
         
         genotypes.append((gt, ref_count, alt_count))
     
