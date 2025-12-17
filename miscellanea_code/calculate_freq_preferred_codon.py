@@ -247,6 +247,7 @@ def extract_codon_genotypes(vcf_file, gene_info, preferred_codons, chrom, n_samp
     
     # Store variants per position
     variants = {}  # position -> {line_idx: alt_base}
+    missing = defaultdict(set)  # position -> set of line_idx with missing data
     
     print(f"Scanning VCF for variants...")
     line_count = 0
@@ -304,8 +305,9 @@ def extract_codon_genotypes(vcf_file, gene_info, preferred_codons, chrom, n_samp
                 except (ValueError, IndexError):
                     continue
                 
-                # Skip if no coverage (missing data)
+                # Track if no coverage (missing data)
                 if ref_count == 0 and alt_count == 0:
+                    missing[pos].add(line_idx)
                     continue
                 
                 # Determine genotype (simple: use majority allele with depth threshold)
@@ -361,6 +363,15 @@ def extract_codon_genotypes(vcf_file, gene_info, preferred_codons, chrom, n_samp
             line_codons = []
             
             for line_idx in range(n_samples):
+                # Check if ANY position in this codon is missing data for this sample
+                has_missing = any(gpos in missing and line_idx in missing[gpos] 
+                                 for gpos in genomic_positions)
+                
+                if has_missing:
+                    # Skip this sample entirely - don't create fake reference codon
+                    line_codons.append('NNN')  # Mark as missing
+                    continue
+                
                 codon_bases = []
                 
                 for pos_idx, gpos in enumerate(genomic_positions):
@@ -420,7 +431,15 @@ def calculate_preferred_frequency_spectrum(codon_data, preferred_codons):
         
         # Count preferred vs non-preferred
         codon_counts = Counter(line_codons)
-        total_lines = len(line_codons)
+        
+        # Remove missing data marker
+        if 'NNN' in codon_counts:
+            del codon_counts['NNN']
+        
+        total_lines = sum(codon_counts.values())
+        
+        if total_lines == 0:
+            continue  # All samples missing
         
         for codon, count in codon_counts.items():
             if codon not in GENETIC_CODE or GENETIC_CODE[codon] != aa:
