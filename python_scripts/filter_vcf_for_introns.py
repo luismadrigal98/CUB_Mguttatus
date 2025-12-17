@@ -124,9 +124,9 @@ def parse_gff_introns(gff_file):
             
             # 10bp gap check (minimal intron size)
             if exon_start > current_pos + 10:
-                # 30bp trimming from exon boundaries
-                intron_start = current_pos + 30
-                intron_end = exon_start - 30
+                # 50bp trimming from exon boundaries
+                intron_start = current_pos + 50
+                intron_end = exon_start - 50
                 
                 if intron_end > intron_start:
                     introns[chrom].append((intron_start, intron_end, strand))
@@ -238,8 +238,14 @@ def process_batch(lines):
                 if ad_val == '.' or ad_val == '': continue
                 
                 try:
-                    # Handle "0,0" or "0,0,0" etc
-                    depths = [int(x) for x in ad_val.split(',') if x != '.']
+                    # Handle both formats:
+                    # Variant sites: "12,5" (ref,alt)
+                    # Invariant sites: "2" (ref only)
+                    if ',' in ad_val:
+                        depths = [int(x) for x in ad_val.split(',') if x != '.']
+                    else:
+                        # Invariant site - single value
+                        depths = [int(ad_val)]
                     total_depth = sum(depths)
                 except ValueError:
                     continue
