@@ -29,7 +29,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'abind', 'scales', 'mclust', 'coda',
                         'admisc', 'corrr', 'patchwork', 'gprofiler2',
                         'ggnewscale', 'broom', 'reshape2',
-                        'furrr')
+                        'furrr', 'tidyr')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -1665,8 +1665,12 @@ n_synonymous_codons <- rowSums(counts_aligned, na.rm = TRUE)
 
 sel_intensity <- total_selection_load / n_synonymous_codons
 
+# Unweighted selection intensity
+sel_intensity_uw <- rowMeans(abs(sel_aligned), na.rm = TRUE)
+
 selection_coeff_intensity <- data.frame(Gene_name = names(sel_intensity),
-                                        S_coeff = as.vector(sel_intensity))
+                                        S_coeff = as.vector(sel_intensity),
+                                        S_coeff_uw = as.vector(sel_intensity_uw))
 
 # 8.3.1) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
@@ -1685,7 +1689,7 @@ selection_coeff_intensity <- selection_coeff_intensity |>
                                               Pi_mean_4fold, TajimaD_4fold)) |>
   na.exclude()
 
-# Relation between log_geom_expression and S
+# Relation between geom_expression and S
 
 ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_coeff)) +
   geom_point(alpha = 0.5) +
@@ -1695,12 +1699,34 @@ ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_coeff)) +
 ggsave(filename = "./results/Selection_Coefficient_vs_Geom_Expression.pdf",
        width = 6, height = 4)
 
+# Relation between geom_expression and S_uw
+
+ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_coeff_uw)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth() +
+  theme_custom()
+
+ggsave(filename = "./results/Selection_Coefficient_Unweighted_vs_Geom_Expression.pdf",       width = 6, height = 4)
+
+cor.test(selection_coeff_intensity$S_coeff_uw, selection_coeff_intensity$S_coeff)
+
 # Correlation between selection metric and CUB metrics
 
 cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_intensity[, 2:5]),
                                    method = "spearman")
 
 cor.test(selection_coeff_intensity$S_coeff, selection_coeff_intensity$CAI)
+
+# Plot both selection measurements
+
+ggplot(selection_coeff_intensity, aes(x = S_coeff_uw, y = S_coeff)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth() +
+  theme_custom() +
+  labs(x = "Selection Intensity (unweighted)", y = "Selection Intensity (weighted)")
+
+ggsave(filename = "./results/Selection_Coefficient_Weighted_vs_Unweighted.pdf",
+       width = 6, height = 4)
 
 # 8.3.2) Final visualization ----
 # Prepare Plot Data (Final Visualization)
@@ -1709,7 +1735,7 @@ plot_data <- selection_coeff_intensity |>
   mutate(
     # Log Transform Selection Load (Load = Total Cost per Gene)
     # Note: If you want Intensity (per codon), swap S_load for Selection_Intensity
-    Log_S_coeff = log10(S_coeff + 0.01), 
+    Log_S_coeff = log10(S_coeff_uw + 0.01), 
     
     # Log Transform Expression (using the new clear name)
     Log_Phi = log10(Geom_Exp + 0.0001), 
@@ -3305,16 +3331,8 @@ ggsave("./results/diversity_modeling/Pi_vs_Gamma_Valine.pdf",
        width = 6, height = 4)
 
 ## *****************************************************************************
-## 15) Intronic Polymorphism-Based Selection Inference ----
+## 15) Intronic Polymorphism-Based Selection Validation ----
 ## _____________________________________________________________________________
-# Estimate selection coefficients (gamma) using mutation rate parameters
-# (alpha, beta) derived from neutral intronic sites.
-#
-# APPROACH:
-# 1. Run Python script to extract intronic G/C site frequency spectra from VCF
-# 2. Estimate alpha_G, beta_G, alpha_C, beta_C from neutral (S=0) sites
-# 3. Use these empirical parameters to infer gamma at coding sites
-# 4. Validate against CAI, CDC, and expression patterns
 
 # STEP 1: Check for pre-computed intronic SFS files ----
 sfs_G_file <- "./data/sfs_introns_G.csv"
@@ -3322,6 +3340,7 @@ sfs_C_file <- "./data/sfs_introns_C.csv"
 
 # STEP 2: Estimate neutral mutation parameters ----
 neutral_params <- load_and_estimate_neutral_params(sfs_G_file, sfs_C_file)
+str(neutral_params)
 
 # Save neutral parameter estimates
 neutral_params_df <- data.frame(
@@ -3344,119 +3363,212 @@ write.csv(neutral_params_df,
 
 cat("✓ Neutral parameters saved: ./results/neutral_mutation_parameters.csv\n\n")
 
-# STEP 3: Estimate gamma ----
+# STEP 3: Calculate expected SFS for C and G ----
 
-# Validate and convert (now with synonymous filtering)
-validate_vcf_format(vcf_codon)
-vcf_prepared <- prepare_vcf_for_gamma_estimation(vcf_codon, genetic_code_df)
+# To ensure a common sample size, we get the min value of n between G and C
+sfs_C <- read.csv(sfs_C_file) |> dplyr:: filter(n > 90)
+sfs_G <- read.csv(sfs_G_file) |> dplyr:: filter(n > 90)
 
-# Estimate gamma with corrected sample sizes
-gamma_results <- estimate_gamma_by_gene_with_neutral_params(
-  codon_vcf_data = vcf_prepared,
-  neutral_params = neutral_params,
-  preferred_codons_df = preferred_codons
+target_n <- 90
+
+obs_sfs_G <- project_sfs(sfs_G, target_n)
+obs_sfs_C <- project_sfs(sfs_C, target_n)
+
+observed_list <- list(G = obs_sfs_G, C = obs_sfs_C)
+
+# Generate null expectations
+
+expected_sfs <- generate_expected_counts(
+  neutral_param = neutral_params, 
+  observed_sfs_list = observed_list, 
+  target_n = target_n
 )
 
-# Save gamma estimates
-write.csv(gamma_results,
-          "./results/gamma_estimates_by_gene_and_aa.csv",
-          row.names = FALSE)
+sfs_contrast <- data.frame(Num_seq = seq(1, target_n - 1, 1),
+                           Expected_C = expected_sfs$C,
+                           Expected_G = expected_sfs$G) |>
+  tidyr::pivot_longer(cols = c('Expected_C', 'Expected_G'), 
+                      names_to = "Metric", values_to = "Counts")
 
-cat("✓ Gamma estimates saved: ./results/gamma_estimates_by_gene_and_aa.csv\n\n")
+# Visualize null expectations
 
-# STEP 4: Aggregate results per gene ----
+ggplot(sfs_contrast, aes(x = Num_seq, y = Counts, fill = Metric)) + # Changed 'color' to 'fill'
+  geom_col(position = "dodge", width = 0.8) + # 'dodge' places them side-by-side; 'width' adds spacing
+  labs(title = "Expected SFS for Intronic C and G Sites",
+       x = "Number of Sequences with Target Allele",
+       y = "Expected Count") +
+  scale_fill_manual(values = c("Expected_C" = "blue", 
+                               "Expected_G" = "red"),
+                    labels = c("C Sites", "G Sites"),
+                    name = "Site Type") +
+  theme_custom()
 
-gamma_gene_level <- aggregate_gamma_per_gene(
-  gamma_results = gamma_results,
-  codon_usage_df = codon_usage,
-  genetic_code = genetic_code_df
+ggsave("./results/diversity_modeling/Expected_SFS_C_G.pdf",
+       width = 6, height = 4)
+
+# STEP 4: Calculate the observed SFS for C and G at third positions ----
+
+# --- 1. Define Top 5% Genes (High Selection Regime) ---
+# Assuming 'selection_coeff_intensity' exists from your previous code
+# and has columns: Gene_name, S_coeff
+top_cutoff <- quantile(integrated_data$Geom_Exp, 0.95, na.rm = TRUE)
+
+top_genes <- integrated_data |>
+  dplyr::filter(Geom_Exp >= top_cutoff) |>
+  pull(Gene_name)
+
+cat("Identified", length(top_genes), 
+    "genes in the Top 5% expression tier (>", round(top_cutoff, 3),").\n")
+
+# --- 2. Load and Clean the Synonymous Variant File ---
+# Replace 'your_variants_file.tsv' with your actual filename
+raw_variants <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt", stringsAsFactors = FALSE)
+
+# Fix Gene Names to match the ID format (MgIM767...)
+# The file has "01G..." but we need "MgIM767.01G..."
+raw_variants <- raw_variants |>
+  dplyr::mutate(Gene = paste0("MgIM767.", Gene)) |>
+  # Keep only genes in the Top 5%
+  dplyr::filter(Gene %in% top_genes)
+
+# --- 3. Parse the 'Codon_Variants' Column ---
+# We need to extract:
+#   n = sum of all counts (total depth)
+#   k = count of the Preferred Codon
+#   Target_Base = last letter of Preferred Codon
+
+parsed_sfs_data <- raw_variants |>
+  rowwise() |>
+  dplyr::mutate(
+    # A. Identify Target Base (G or C)
+    Target_Base = substring(Preferred_Codon, 3, 3),
+    
+    # B. Parse Counts from string "AAA:100;AAG:2"
+    # Split into individual codon entries
+    entries = list(str_split(Codon_Variants, ";")[[1]]),
+    
+    # Extract counts for all variants at this site
+    all_counts = list(as.numeric(sub(".*:", "", entries))),
+    all_codons = list(sub(":.*", "", entries)),
+    
+    # Calculate Total Depth (n)
+    n = sum(all_counts),
+    
+    # Calculate Count of Preferred Allele (k)
+    # Match the Preferred_Codon to the parsed codons and get the corresponding count
+    k_index = match(Preferred_Codon, all_codons),
+    k = ifelse(is.na(k_index), 0, all_counts[k_index])
+  ) |>
+  ungroup() |>
+  # Filter for valid sites (n > 0) and only G/C targets
+  dplyr::filter(n > 0, Target_Base %in% c("G", "C")) |>
+  dplyr::select(Gene, Target_Base, n, k)
+
+# --- 4. Project and Aggregate (Observed SFS) ---
+
+# Define the projection size (must match your intron analysis)
+target_n <- 90 
+
+# A. Process G-ending Sites
+syn_G_summary <- parsed_sfs_data |>
+  dplyr::filter(Target_Base == "G") |>
+  dplyr::count(n, k, name = "count") # Groups by specific (n,k) pairs
+
+obs_sfs_G_top5 <- project_sfs(syn_G_summary, target_n)
+
+# B. Process C-ending Sites
+syn_C_summary <- parsed_sfs_data |>
+  dplyr::filter(Target_Base == "C") |>
+  dplyr::count(n, k, name = "count")
+
+obs_sfs_C_top5 <- project_sfs(syn_C_summary, target_n)
+
+# --- 5. Combine for Plotting ---
+freq_bins <- 1:length(obs_sfs_G_top5)
+
+# Build Observed Dataframe
+sfs_observed_top5 <- data.frame(
+  Num_seq = rep(freq_bins, 2),
+  Counts = c(obs_sfs_C_top5, obs_sfs_G_top5),
+  Metric = rep(c("Observed_Top5_C", "Observed_Top5_G"), each = length(freq_bins))
 )
 
-# STEP 5: Contrast results with AnaCoDa selection intensity ----
+# --- 6. Generate Matching Neutral Expectations ---
+# Scale the neutral shape (from introns) to the sample size of the Top 5% data
+obs_list_top5 <- list(G = obs_sfs_G_top5, C = obs_sfs_C_top5)
 
-comparison <- contrast_gamma_anacoda(
-  gamma_results = gamma_results,        # Use Gene×AA level data!
-  codon_usage = codon_usage,
-  preferred_codons = preferred_codons,
-  anacoda_intensity = selection_coeff_intensity,
-  genetic_code = genetic_code_df
+expected_sfs_top5 <- generate_expected_counts(
+  neutral_param = neutral_params,
+  observed_sfs_list = obs_list_top5, 
+  target_n = target_n
 )
 
-# Scatter plot: Gamma vs AnaCoDa
-p1 <- ggplot(comparison, aes(x = S_coeff, y = Selection_Intensity)) +
-  geom_point(alpha = 0.3, size = 1.5) +
-  geom_smooth(method = "lm", color = "red", se = TRUE) +
-  labs(
-    title = "Comparison: Gamma vs AnaCoDa Selection Coefficients",
-    subtitle = sprintf("Spearman ρ = %.3f (n = %d genes)",
-                       cor(comparison$S_coeff, comparison$Selection_Intensity, 
-                           method = "spearman"),
-                       nrow(comparison)),
-    x = "AnaCoDa Selection Intensity (S_coeff)",
-    y = "Gamma Selection Intensity (mean |γ|)"
-  ) +
-  theme_bw() +
-  theme(
-    plot.title = element_text(face = "bold", size = 14),
-    plot.subtitle = element_text(size = 11)
+# Build Expected Dataframe
+sfs_neutral_top5 <- data.frame(
+  Num_seq = rep(freq_bins, 2),
+  Counts = c(expected_sfs_top5$C, expected_sfs_top5$G),
+  Metric = rep(c("Expected_Neutral_C", "Expected_Neutral_G"), each = length(freq_bins))
+)
+
+# Combine Everything
+final_plot_data <- rbind(sfs_observed_top5, sfs_neutral_top5)
+
+cat("✓ Step 4 Complete: Data parsed and ready for plotting.\n")
+
+plot_ready <- final_plot_data |>
+  dplyr::mutate(
+    # Identify if it is C or G based on the suffix
+    Target = ifelse(grepl("_C$", Metric), "C-ending Codons", "G-ending Codons"),
+    
+    # Identify if it is Observed or Expected
+    Type = ifelse(grepl("Observed", Metric), "Observed", "Expected")
   )
 
-# Log-log plot for better dynamic range
-p2 <- ggplot(comparison, aes(x = log10(S_coeff + 0.01), 
-                             y = log10(Selection_Intensity + 0.01))) +
-  geom_point(alpha = 0.3, size = 1.5) +
-  geom_smooth(method = "lm", color = "blue", se = TRUE) +
+# 2. Generate the Plot
+p <- ggplot(plot_ready, aes(x = Num_seq, y = Counts)) +
+  
+  # --- Layer 1: The Observed Data (Bars) ---
+  # We subset data strictly for 'Observed' rows
+  geom_col(data = subset(plot_ready, Type == "Observed"), 
+           aes(fill = Target), 
+           alpha = 0.7, width = 0.8) +
+  
+  # --- Layer 2: The Neutral Expectation (Line + Points) ---
+  # We subset data strictly for 'Expected' rows
+  geom_line(data = subset(plot_ready, Type == "Expected"), 
+            aes(color = "Neutral Expectation (Introns)"), 
+            size = 1, linetype = "solid") +
+  
+  geom_point(data = subset(plot_ready, Type == "Expected"), 
+             color = "black", size = 1.5) +
+  
+  # --- Layout: Side-by-Side Facets ---
+  facet_wrap(~Target, scales = "free") +
+  
+  # --- Styling ---
+  scale_fill_manual(values = c("C-ending Codons" = "#1f78b4",  # Blue
+                               "G-ending Codons" = "#e31a1c"), # Red
+                    guide = "none") + # Hide fill legend (redundant with title)
+  
+  scale_color_manual(name = "", values = c("Neutral Expectation (Introns)" = "black")) +
+  
   labs(
-    title = "Log-Scale Comparison",
-    x = "log10(AnaCoDa S_coeff + 0.01)",
-    y = "log10(Gamma Intensity + 0.01)"
+    title = "Evidence of Translational Selection in Top 5% Expressed Genes",
+    subtitle = "Observed synonymous frequency spectrum (bars) vs. Neutral expectation (line)",
+    x = "Allele Frequency (Number of Sequences with Preferred Allele)",
+    y = "Number of Variant Sites"
   ) +
-  theme_bw()
+  theme_custom() +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),   # Big facet labels
+    strip.background = element_rect(fill = "#f0f0f0", color = NA),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom",                            # Legend at bottom
+    panel.grid.minor = element_blank()
+  )
 
-# Combine plots
-combined_plot <- p1 / p2
+# 3. Save
+ggsave("results/SFS_Observed_vs_Expected_Top5.pdf", plot = p, width = 10, height = 6)
 
-ggsave("./results/gamma_vs_anacoda_comparison.pdf", 
-       plot = combined_plot, 
-       width = 10, height = 12)
+# STEP 5: Statistical Validation (Goodness of Fit) ----
 
-# STEP 6: Check fo gBGC ----
-
-gradient_results <- estimate_gamma_gradient(codon_vcf_data = vcf_prepared, 
-                                            neutral_params = neutral_params, 
-                                            preferred_codons_df = preferred_codons, 
-                                            n_bins = 10)
-
-# STEP 7: Correct gamma for GC3s background (gBGC + splicing) ----
-
-gamma_corrected <- correct_gamma_for_gc3s(
-  gamma_gene_level = gamma_gene_level,
-  codon_usage = codon_usage,
-  genetic_code = genetic_code_df
-)
-
-# Save corrected gamma estimates
-write.csv(gamma_corrected,
-          "./results/gamma_corrected_for_gc3s.csv",
-          row.names = FALSE)
-
-cat("✓ GC3s-corrected gamma saved: ./results/gamma_corrected_for_gc3s.csv\n\n")
-
-# Optional: Re-run AnaCoDa comparison with corrected gamma
-# (requires merging gamma_corrected back to gene×AA level)
-
-# STEP 8: Visualize SFS shift (model validation) ----
-
-sfs_shift <- visualize_sfs_shift(
-  codon_vcf_data = vcf_prepared,
-  neutral_params = neutral_params,
-  gamma_results = gamma_results,
-  n_bins = 20
-)
-
-# Save SFS shift data
-write.csv(sfs_shift,
-          "./results/sfs_shift_analysis.csv",
-          row.names = FALSE)
-
-cat("✓ SFS shift data saved: ./results/sfs_shift_analysis.csv\n\n")
