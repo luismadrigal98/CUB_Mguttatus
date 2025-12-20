@@ -2905,7 +2905,104 @@ ggsave("./results/diversity_modeling/Pi_by_expression_group_Mean_CI.pdf",
 
 # 12.1) Tracking frequency of preferred allele as a function of expression ----
 
+preferred_data <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt", 
+                             stringsAsFactors = FALSE) |>
+  dplyr::mutate(Gene = paste0("MgIM767.", Gene))
 
+preferred_data <- preferred_data |>
+  dplyr::select(Gene, Preferred_Freq) |>
+  dplyr::rename(Gene_name = Gene) |>
+  dplyr::group_by(Gene_name) |>
+  summarize(
+    Mean_preferred_freq = mean(Preferred_Freq),
+    n_codons = n()
+  ) |>
+  ungroup()
+
+integrated_data <- integrated_data |>
+  left_join(preferred_data) |>
+  na.exclude()
+
+summary(lm(Mean_preferred_freq ~ High_exp_log10, data = integrated_data))
+
+# Assesing significance of expression over the detrended residuals
+
+cat("\n=== Kruskal-Wallis Test: Frequency of preferred codons across Groups ===\n")
+
+kw_preferred_freq <- kruskal.test(Mean_preferred_freq ~ Expression_Group, 
+                                  data = integrated_data)
+
+# Plotting and assessing significance using Dunn
+
+print(kw_preferred_freq)
+if (kw_detrended$p.value < 0.05) {
+  cat("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
+  cat("\n=== Dunn's Test: Pairwise Comparisons with FDR Correction ===\n")
+  
+  # Perform Dunn's test with FDR correction
+  dunn_result_detrended <- dunn.test::dunn.test(
+    x = integrated_data$Mean_preferred_freq,
+    g = integrated_data$Expression_Group,
+    method = "bh",
+    kw = TRUE,
+    label = TRUE,
+    wrap = FALSE,
+    table = TRUE,
+    list = FALSE,
+    altp = TRUE
+  )
+} else {
+  cat("\nNo significant difference among groups (p >= 0.05)\n")
+  cat("Post-hoc tests not necessary.\n")
+}
+
+# Extract groups for effect size calculations
+top5_preferred <- integrated_data |>
+  dplyr::filter(Expression_Group == "Top 5%") |>
+  dplyr::pull(Mean_preferred_freq)
+
+middle_preferred <- integrated_data |>
+  dplyr::filter(Expression_Group == "Middle 90%") |>
+  dplyr::pull(Mean_preferred_freq)
+
+bottom5_preferred <- integrated_data |>
+  dplyr::filter(Expression_Group == "Bottom 5%") |>
+  dplyr::pull(Mean_preferred_freq)
+
+# Calculate effect sizes
+if (length(top5_preferred) > 0 && length(middle_preferred) > 0) {
+  d_top_middle_preferred <- cohens_d_calc(top5_preferred, middle_preferred)
+  cat(sprintf("Top 5%% vs Middle 90%%: d = %.3f\n", d_top_middle_preferred))
+}
+
+if (length(top5_preferred) > 0 && length(bottom5_preferred) > 0) {
+  d_top_bottom_preferred <- cohens_d_calc(top5_preferred, bottom5_preferred)
+  cat(sprintf("Top 5%% vs Bottom 5%%: d = %.3f\n", d_top_bottom_preferred))
+}
+
+if (length(middle_preferred) > 0 && length(bottom5_preferred) > 0) {
+  d_middle_bottom_preferred <- cohens_d_calc(middle_preferred, bottom5_preferred)
+  cat(sprintf("Middle 90%% vs Bottom 5%%: d = %.3f\n", d_middle_bottom_preferred))
+}
+
+# Ploting box plot
+
+p_boxplot_preferred <- ggplot(integrated_data, aes(x = Expression_Group, 
+                                                   y = Mean_preferred_freq, 
+                                                   fill = Expression_Group)) +
+  geom_violin(alpha = 0.3) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
+  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
+                               "Bottom 5%" = "#377EB8",
+                               "Middle 90%" = "#999999")) +
+  labs(y = "Mean Frequency of Preferred Codon",
+       x = "Expression Group") +
+  theme_custom() +
+  theme(legend.position = "none")
+
+ggsave("./results/Frequency_preferred_by_expression_group.pdf", 
+       p_boxplot_preferred, width = 8, height = 6)
 
 ## *****************************************************************************
 ## 13) Intronic Polymorphism-Based Selection Validation ----
