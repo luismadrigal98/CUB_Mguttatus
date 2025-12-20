@@ -314,13 +314,13 @@ get_inergenic_sequences <- function(fasta_file, ann_file,
     dss <- Biostrings::DNAStringSet(extracted_list)
     names(dss) <- names(granges_obj)
     
-    # 3. Handle Strand (Reverse Complement Negative Strand)
-    # For reduced intergenic regions, strand is "*" (unstranded)
-    # Only apply RC if explicitly negative strand
-    neg_strand <- as.character(GenomicRanges::strand(granges_obj)) == "-"
-    if (any(neg_strand)) {
-      dss[neg_strand] <- Biostrings::reverseComplement(dss[neg_strand])
-    }
+    # # 3. Handle Strand (Reverse Complement Negative Strand)
+    # # For reduced intergenic regions, strand is "*" (unstranded)
+    # # Only apply RC if explicitly negative strand
+    # neg_strand <- as.character(GenomicRanges::strand(granges_obj)) == "-"
+    # if (any(neg_strand)) {
+    #   dss[neg_strand] <- Biostrings::reverseComplement(dss[neg_strand])
+    # } >> Not necessary for intergeinc regions
     
     return(dss)
   }
