@@ -2901,437 +2901,14 @@ ggplot(data = plot_data_pi_1_ready,
 ggsave("./results/diversity_modeling/Pi_by_expression_group_Mean_CI.pdf",
        width = 6, height = 4)
 
-# 13.2) Exploration of Bulmer effect ----
 
-# Using selection_coeff_intensity, let's define selection group
 
-selection_coeff_intensity <- selection_coeff_intensity |>
-  dplyr::mutate(
-    Selection_group = case_when(
-      S_coeff < 1 ~ "Negligible (Drift)",
-      S_coeff >= 1 & S_coeff < 5 ~ "Weak Selection",
-      S_coeff >= 5 ~ "Strong Selection"
-    ),
-    # distinct step to enforce order
-    Selection_group = factor(Selection_group, 
-                             levels = c("Negligible (Drift)", "Weak Selection", "Strong Selection"))
-  )
+# 12.1) Tracking frequency of preferred allele as a function of expression ----
 
-# Check the counts
-table(selection_coeff_intensity$Selection_group)
 
-# ANOVA
-
-selection_pi_anova <- anova(lm(Pi_mean_4fold ~ Selection_group, 
-                               data = selection_coeff_intensity))
-
-ggplot(data = selection_coeff_intensity, mapping = aes(x = Selection_group,
-                                                       y = Pi_mean_4fold)) +
-  geom_boxplot() +
-  theme_custom()
-
-ggsave("./results/diversity_modeling/Pi_by_selection_group_boxplot.pdf",
-       width = 6, height = 4)
-
-tapply(selection_coeff_intensity$Pi_mean_4fold, 
-       selection_coeff_intensity$Selection_group, 
-       mean, na.rm=TRUE)
-       
-# ANOVA results is an artifact of aggregation. This analysis must be done per\
-# amino acid, because mutational bias are going to be different (also, ANOVA is\
-# not appropriate here)
-
-ggplot(data = selection_coeff_intensity |> dplyr::filter(Pi_mean_4fold < 0.05), 
-       mapping = aes(x = S_coeff, y = Pi_mean_4fold)) +
-  geom_point() +
-  geom_smooth() +
-  theme_custom()
-
-ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_smooth.pdf",
-       width = 6, height = 4)
-
-# 1. Prepare the Theoretical Curve Data
-# We create a dummy dataset spanning the range of AnaCoDa S values
-theory_curve <- data.frame(
-  S_val = seq(-1, 15, length.out = 100) # Range of X-axis
-) %>%
-  rowwise() %>%
-  dplyr::mutate(
-    # Use the mean u and v from your whole genome (or a specific AA like Valine)
-    u_mean = mean(final_gene_stats$u),
-    v_mean = mean(final_gene_stats$v),
-    
-    # Calculate Alpha/Beta using the Global Theta
-    theta_global = 0.0312,
-    alpha = theta_global * (u_mean / (u_mean + v_mean)),
-    beta  = theta_global * (v_mean / (u_mean + v_mean)),
-    
-    # Calculate Pi using the AnaCoDa S (S_val) as the Gamma input
-    Pi_Theory = calculate_pi_analytical(alpha, beta, S_val)
-  )
-
-# 2. Plot AnaCoDa Data with Theory Overlay
-ggplot() +
-  # A. The Real Data (AnaCoDa S vs. VCF Pi)
-  geom_jitter(data = selection_coeff_intensity, mapping = aes(x = Selection_group,
-                                                              y = Pi_mean_4fold),
-              alpha = 0.15, width = 0.1, color = "gray60") +
-  
-  # B. The Empirical Trend (Blue)
-  geom_smooth(data = selection_coeff_intensity, mapping = aes(x = Selection_group,
-                                                              y = Pi_mean_4fold),
-              method = "gam", color = "blue", fill = "blue", alpha = 0.2) +
-  
-  # C. The Theory Line (Red) - NOW ADDED
-  geom_line(data = theory_curve, aes(x = S_val, y = Pi_Theory),
-            color = "red", linetype = "dashed", size = 1.2) +
-  
-  # D. Formatting
-  coord_cartesian(xlim = c(-1, 10), ylim = c(0, 0.04)) + # Zoom in on the hump
-  labs(title = "Independent Validation: AnaCoDa S predicts Current Diversity",
-       x = "AnaCoDa Selection Coefficient (S)",
-       y = "Nucleotide Diversity (Pi)") +
-  theme_custom()
-
-ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_with_theory.pdf",
-       width = 6, height = 4)
-
-# 1. Create Bins for AnaCoDa S
-# We group genes into bins of size 0.5 or 1.0
-binned_data <- selection_coeff_intensity |>
-  dplyr::filter(Pi_mean_4fold < 0.05) |>     # Remove artifacts
-  dplyr::mutate(
-    S_Bin = cut(S_coeff, breaks = seq(0, 18, by = 0.5))
-  ) %>%
-  group_by(S_Bin) |>
-  summarise(
-    Mean_S = mean(S_coeff),
-    Mean_Pi = mean(Pi_mean_4fold),
-    SE_Pi = sd(Pi_mean_4fold) / sqrt(n()), # Standard Error
-    N_Genes = n()
-  ) #|>
-  #dplyr::filter(N_Genes > 10)
-
-# 2. Plot Binned Data vs Theory
-ggplot() +
-  # A. The Theoretical Curve (Red Dashed)
-  # (Re-use the 'theory_curve' dataframe from the previous step)
-  # geom_line(data = theory_curve, aes(x = S_val, y = Pi_Theory),
-  #           color = "#e74c3c", linetype = "dashed", size = 1.2) +
-  
-  # B. The Binned Data (Points with Error Bars)
-  geom_point(data = binned_data, aes(x = Mean_S, y = Mean_Pi), 
-             size = 3, color = "black") +
-  geom_errorbar(data = binned_data, 
-                aes(x = Mean_S, ymin = Mean_Pi - 2*SE_Pi, ymax = Mean_Pi + 2*SE_Pi),
-                width = 0.2, color = "black") +
-  
-  # C. Formatting
-  labs(
-    title = "Validation of Selection: Binned Analysis",
-    x = "Selection Coefficient (AnaCoDa S)",
-    y = "Nucleotide Diversity (Pi)"
-  ) +
-  theme_custom()
-
-ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_binned_with_theory.pdf",
-       width = 6, height = 4)
-
-# 13.3) Per amino-acid derivation of pi at synonymous places ----
-
-# Mutational biases per amino acid family ----
-
-Q <- solve_Q_matrix(pi_A = dM_results$global_stats_introns[, "avg_pi_A"], 
-                    pi_C = dM_results$global_stats_introns[, "avg_pi_C"], 
-                    pi_G = dM_results$global_stats_introns[, "avg_pi_G"], 
-                    pi_T = dM_results$global_stats_introns[, "avg_pi_T"], 
-                    kappa = 2)
-
-preferred_codons_list <- list()
-
-for (i in 1:nrow(preferred_codons)) {
-  preferred_codons_list[[preferred_codons[i, 'aa']]] <- preferred_codons[i, 'Codon']
-}
-
-# Define the Genetic Code (Standard, One letter compatible with AnaCoda)
-genetic_code <- list(
-  'A' = c('GCT', 'GCC', 'GCA', 'GCG'),
-  'C' = c('TGT', 'TGC'),
-  'D' = c('GAT', 'GAC'),
-  'E' = c('GAA', 'GAG'),
-  'F' = c('TTT', 'TTC'),
-  'G' = c('GGT', 'GGC', 'GGA', 'GGG'),
-  'H' = c('CAT', 'CAC'),
-  'I' = c('ATT', 'ATC', 'ATA'),
-  'K' = c('AAA', 'AAG'),
-  'L' = c('TTA', 'TTG', 'CTT', 'CTC', 'CTA', 'CTG'),
-  'M' = c('ATG'),
-  'N' = c('AAT', 'AAC'),
-  'P' = c('CCT', 'CCC', 'CCA', 'CCG'),
-  'Q' = c('CAA', 'CAG'),
-  'R' = c('CGT', 'CGC', 'CGA', 'CGG', 'AGA', 'AGG'),
-  'S' = c('TCT', 'TCC', 'TCA', 'TCG'),
-  'T' = c('ACT', 'ACC', 'ACA', 'ACG'),
-  'V' = c('GTT', 'GTC', 'GTA', 'GTG'),
-  'W' = c('TGG'),
-  'Y' = c('TAT', 'TAC'),
-  'Z' = c('AGT', 'AGC')
-)
-
-genetic_code_df <- data.frame(
-  AA = rep(names(genetic_code), times = sapply(genetic_code, length)),
-  Codon = unlist(genetic_code),
-  stringsAsFactors = FALSE
-)
-
-aa_mut_rates <- get_aa_mutation_rates(Q, preferred_codons_list, genetic_code)
-
-# Solve for Gamma ----
-
-vcf_codon <- fread("./data/all_chromosomes.codon_frequencies_preferred.txt")
-
-# Use the enhanced function that calculates both codon-level and nucleotide-level pi
-site_data_ready <- process_codon_vcf_with_nucleotide_pi(vcf_codon, 
-                                                         aa_mut_rates, 
-                                                         genetic_code_df)
-
-gene_aa_inputs <- site_data_ready |>
-  group_by(Gene, AA) |>
-  summarise(
-    # Use nucleotide-level pi for comparison with theta
-    Mean_Pi_Observed = mean(Site_Pi_Nucleotide, na.rm = TRUE),
-    # Also track codon-level heterozygosity for reference
-    Mean_Codon_Het = mean(Site_Pi_Codon, na.rm = TRUE),
-    N_Sites = n(),
-    u = first(u),
-    v = first(v),
-    
-    # Store vectors k and n in a lightweight list
-    # This avoids the overhead of a full data.frame per row
-    k_vec = list(k),
-    n_vec = list(n),
-    
-    .groups = "drop"
-  )
-
-gamma_results <- gene_aa_inputs |>
-  dplyr::mutate(
-    Gamma_SFS = future_pmap_dbl(
-      list(k_vec, n_vec, u, v), 
-      worker_gamma_est,
-      .options = furrr_options(seed = TRUE) # Ensures reproducibility
-    )
-  ) |>
-  dplyr::select(-k_vec, -n_vec) |> # Clean up heavy columns
-  dplyr::filter(!is.na(Gamma_SFS))
-
-calc_pi_vec <- Vectorize(calculate_pi_analytical)
-
-# Run the calculation purely with column vectors (Instantaneous)
-# Note: Mean_Pi_Observed now represents TRUE nucleotide diversity at synonymous sites
-# This is directly comparable to theta = 0.0312 (expected values: 0.001-0.05)
-final_gene_stats <- gamma_results |>
-  dplyr::mutate(
-    theta_global = 0.0312,
-    alpha_theory = theta_global * (u / (u + v)),
-    beta_theory  = theta_global * (v / (u + v)),
-    
-    # Calculate Pi Expected using the vectorized function
-    # This gives expected nucleotide diversity under Wright-Fisher model with selection
-    Pi_Expected = calc_pi_vec(alpha_theory, beta_theory, Gamma_SFS)
-  )
-
-final_gene_stats$Pi_Ratio <- final_gene_stats$Mean_Pi_Observed / final_gene_stats$Pi_Expected
 
 ## *****************************************************************************
-## 13.5) Aggregate to Gene Level ----
-## _____________________________________________________________________________
-
-cat("\n", paste(rep("=", 70), collapse = ""), "\n")
-cat("AGGREGATING TO GENE LEVEL\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
-
-# Filter at AA level before aggregating
-aa_filtered <- final_gene_stats |>
-  dplyr::filter(
-    N_Sites >= 15,           # Adequate coverage
-    Gamma_SFS >= 0,          # Positive selection only
-    !is.na(Gamma_SFS),       # Valid estimate
-    Mean_Pi_Observed < 0.1   # Remove extreme outliers
-  )
-
-cat("AA-level filtering:\n")
-cat("  Original rows:", nrow(final_gene_stats), "\n")
-cat("  After filtering:", nrow(aa_filtered), "\n")
-cat("  Retained:", round(100 * nrow(aa_filtered) / nrow(final_gene_stats), 1), "%\n\n")
-
-# Aggregate to gene level with weighted means
-gene_level_stats <- aa_filtered |>
-  group_by(Gene) |>
-  summarise(
-    # Weighted means (weight by N_Sites)
-    Mean_Pi_Obs = weighted.mean(Mean_Pi_Observed, N_Sites, na.rm = TRUE),
-    Mean_Gamma = weighted.mean(Gamma_SFS, N_Sites, na.rm = TRUE),
-    Mean_Pi_Exp = weighted.mean(Pi_Expected, N_Sites, na.rm = TRUE),
-    
-    # Summary statistics
-    Total_Sites = sum(N_Sites, na.rm = TRUE),
-    N_AA_Used = n(),
-    SD_Gamma = sd(Gamma_SFS, na.rm = TRUE),
-    Max_Gamma = max(Gamma_SFS, na.rm = TRUE),
-    Min_Gamma = min(Gamma_SFS, na.rm = TRUE),
-    
-    .groups = "drop"
-  ) |>
-  # Filter genes with insufficient data
-  dplyr::filter(
-    N_AA_Used >= 3,      # At least 3 amino acids
-    Total_Sites >= 50    # Good overall coverage
-  ) |>
-  # Add Pi_Ratio at gene level
-  mutate(Pi_Ratio = Mean_Pi_Obs / Mean_Pi_Exp)
-
-cat("Gene-level aggregation:\n")
-cat("  Total genes:", nrow(gene_level_stats), "\n")
-cat("  Median sites per gene:", median(gene_level_stats$Total_Sites), "\n")
-cat("  Median AAs per gene:", median(gene_level_stats$N_AA_Used), "\n\n")
-
-cat("Gene-level summary:\n")
-print(summary(gene_level_stats))
-
-# Save gene-level statistics
-fwrite(gene_level_stats, "./results/diversity_modeling/gene_level_statistics.csv")
-
-## *****************************************************************************
-## 13.6) Visualize Hump Effect at Gene Level ----
-## _____________________________________________________________________________
-
-cat("\n", paste(rep("=", 70), collapse = ""), "\n")
-cat("VISUALIZING HUMP EFFECT (Gene Level)\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
-
-# Create binned data for clearer visualization
-gene_level_stats$Gamma_Bin <- cut(
-  gene_level_stats$Mean_Gamma,
-  breaks = c(0, 0.5, 1, 1.5, 2, 3, 5, 10, 20),
-  labels = c("0-0.5", "0.5-1", "1-1.5", "1.5-2", "2-3", "3-5", "5-10", "10-20")
-)
-
-binned_summary <- gene_level_stats |>
-  filter(!is.na(Gamma_Bin)) |>
-  group_by(Gamma_Bin) |>
-  summarise(
-    Mean_Pi_Obs = mean(Mean_Pi_Obs, na.rm = TRUE),
-    Mean_Pi_Exp = mean(Mean_Pi_Exp, na.rm = TRUE),
-    SE_Obs = sd(Mean_Pi_Obs, na.rm = TRUE) / sqrt(n()),
-    SE_Exp = sd(Mean_Pi_Exp, na.rm = TRUE) / sqrt(n()),
-    N_Genes = n(),
-    Gamma_Mid = mean(Mean_Gamma, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-cat("Binned summary:\n")
-print(binned_summary)
-
-# Create two-panel plot: scatter + binned
-library(gridExtra)
-
-# Panel 1: Scatter plot with smoothers
-p1 <- ggplot(gene_level_stats, aes(x = Mean_Gamma, y = Mean_Pi_Obs)) +
-  geom_point(alpha = 0.2, color = "gray50", size = 0.8) +
-  geom_smooth(aes(color = "Observed"), method = "gam", se = TRUE, linewidth = 1.2) +
-  geom_line(aes(y = Mean_Pi_Exp, color = "Expected"), linewidth = 1.2) +
-  scale_color_manual(
-    name = "Pi",
-    values = c("Observed" = "blue", "Expected" = "red"),
-    labels = c("Observed" = "Observed (GAM smooth)", "Expected" = "Wright-Fisher prediction")
-  ) +
-  labs(
-    title = "Hump Effect: Observed vs Expected Nucleotide Diversity",
-    subtitle = sprintf("Gene-level analysis (n = %d genes)", nrow(gene_level_stats)),
-    x = "Selection Coefficient (Gamma)",
-    y = "Nucleotide Diversity (Pi)"
-  ) +
-  coord_cartesian(xlim = c(0, 10), ylim = c(0, 0.03)) +
-  theme_custom() +
-  theme(legend.position = "bottom")
-
-# Panel 2: Binned means with error bars
-p2 <- ggplot(binned_summary, aes(x = Gamma_Mid)) +
-  geom_line(aes(y = Mean_Pi_Obs, color = "Observed"), linewidth = 1.2) +
-  geom_point(aes(y = Mean_Pi_Obs, color = "Observed"), size = 3) +
-  geom_errorbar(aes(ymin = Mean_Pi_Obs - SE_Obs, ymax = Mean_Pi_Obs + SE_Obs, color = "Observed"),
-                width = 0.2, linewidth = 0.8) +
-  geom_line(aes(y = Mean_Pi_Exp, color = "Expected"), linewidth = 1.2, linetype = "dashed") +
-  geom_point(aes(y = Mean_Pi_Exp, color = "Expected"), size = 3, shape = 17) +
-  scale_color_manual(
-    name = "Pi",
-    values = c("Observed" = "blue", "Expected" = "red")
-  ) +
-  labs(
-    title = "Binned Means: Clear Hump Pattern",
-    subtitle = "Error bars = SE",
-    x = "Selection Coefficient (Gamma)",
-    y = "Mean Nucleotide Diversity (Pi)"
-  ) +
-  theme_custom() +
-  theme(legend.position = "bottom")
-
-# Save combined plot
-pdf("./results/diversity_modeling/Hump_Effect_Gene_Level.pdf", width = 14, height = 6)
-grid.arrange(p1, p2, ncol = 2)
-dev.off()
-
-cat("\nHump effect plots saved to: ./results/diversity_modeling/Hump_Effect_Gene_Level.pdf\n")
-
-# Statistical test for hump effect
-weak_sel <- gene_level_stats |> filter(Mean_Gamma >= 0.5 & Mean_Gamma < 2)
-strong_sel <- gene_level_stats |> filter(Mean_Gamma >= 2)
-
-cat("\nHump effect test:\n")
-cat("  Weak selection (0.5 < Gamma < 2):\n")
-cat("    Mean Pi_Obs:", round(mean(weak_sel$Mean_Pi_Obs, na.rm = TRUE), 5), "\n")
-cat("    N genes:", nrow(weak_sel), "\n")
-cat("  Strong selection (Gamma >= 2):\n")
-cat("    Mean Pi_Obs:", round(mean(strong_sel$Mean_Pi_Obs, na.rm = TRUE), 5), "\n")
-cat("    N genes:", nrow(strong_sel), "\n")
-cat("  Difference:", round(mean(weak_sel$Mean_Pi_Obs) - mean(strong_sel$Mean_Pi_Obs), 5), "\n")
-
-if (mean(weak_sel$Mean_Pi_Obs) > mean(strong_sel$Mean_Pi_Obs)) {
-  cat("  ✓ HUMP CONFIRMED: Weak selection has higher diversity!\n")
-} else {
-  cat("  ✗ No hump: Strong selection has equal or higher diversity\n")
-}
-
-# Keep AA-level filtered data for amino acid-specific analyses
-final_gene_stats_filtered <- final_gene_stats |>
-  dplyr::filter(Gamma_SFS >= 0.0 &
-                Pi_Ratio < 5)
-
-# --- Visualization for VALINE (Example - AA level) ---
-plot_data <- final_gene_stats_filtered |> dplyr::filter(AA == "V")
-
-ggplot(plot_data, aes(x = Gamma_SFS, y = Mean_Pi_Observed)) +
-  # 1. The Genes (Scatter)
-  geom_point(alpha = 0.3, color = "gray50") +
-  
-  # 2. The Trend of Data (Smoothed)
-  geom_smooth(method = "gam", color = "blue", se = FALSE) +
-  
-  # 3. The Theoretical Prediction (Red Line)
-  geom_line(aes(y = Pi_Expected), color = "red", linetype = "dashed", size = 1) +
-  
-  labs(title = "Validation: Valine (4-fold)",
-       subtitle = "Blue: Data Trend | Red: Theoretical Expectation (Wright)",
-       x = "Selection Coefficient (Gamma) from SFS",
-       y = "Nucleotide Diversity (Pi)") +
-  theme_custom()
-
-ggsave("./results/diversity_modeling/Pi_vs_Gamma_Valine.pdf",
-       width = 6, height = 4)
-
-## *****************************************************************************
-## 15) Intronic Polymorphism-Based Selection Validation ----
+## 13) Intronic Polymorphism-Based Selection Validation ----
 ## _____________________________________________________________________________
 
 # STEP 1: Check for pre-computed intronic SFS files ----
@@ -3384,12 +2961,18 @@ expected_sfs <- generate_expected_counts(
   target_n = target_n
 )
 
-sfs_contrast <- data.frame(Num_seq = seq(1, target_n - 1, 1),
+sfs_contrast <- data.frame(Num_seq = seq(0, target_n, 1),
                            Expected_C = expected_sfs$C,
                            Expected_G = expected_sfs$G) |>
   tidyr::pivot_longer(cols = c('Expected_C', 'Expected_G'), 
                       names_to = "Metric", values_to = "Counts")
 
+sfs_expected_counts <- sfs_contrast |>
+  dplyr::group_by(Metric) |>
+  dplyr::summarise(
+    Expected_p = sum(Num_seq * Counts) / sum(Counts)
+  )
+  
 # Visualize null expectations
 
 ggplot(sfs_contrast, aes(x = Num_seq, y = Counts, fill = Metric)) + # Changed 'color' to 'fill'
@@ -3401,6 +2984,7 @@ ggplot(sfs_contrast, aes(x = Num_seq, y = Counts, fill = Metric)) + # Changed 'c
                                "Expected_G" = "red"),
                     labels = c("C Sites", "G Sites"),
                     name = "Site Type") +
+  scale_y_log10() +
   theme_custom()
 
 ggsave("./results/diversity_modeling/Expected_SFS_C_G.pdf",
@@ -3408,11 +2992,11 @@ ggsave("./results/diversity_modeling/Expected_SFS_C_G.pdf",
 
 # STEP 4: Calculate the observed SFS for C and G at third positions ----
 
-# --- 1. Define Top 5% Genes (High Selection Regime) ---
-# Assuming 'selection_coeff_intensity' exists from your previous code
-# and has columns: Gene_name, S_coeff
-top_cutoff <- quantile(integrated_data$Geom_Exp, 0.95, na.rm = TRUE)
+# --- 1. Define Gene Sets ---
+target_n <- 90  # Define the projection size (must match your intron analysis)
 
+# Top 5% genes (high expression)
+top_cutoff <- quantile(integrated_data$Geom_Exp, 0.95, na.rm = TRUE)
 top_genes <- integrated_data |>
   dplyr::filter(Geom_Exp >= top_cutoff) |>
   pull(Gene_name)
@@ -3420,155 +3004,229 @@ top_genes <- integrated_data |>
 cat("Identified", length(top_genes), 
     "genes in the Top 5% expression tier (>", round(top_cutoff, 3),").\n")
 
-# --- 2. Load and Clean the Synonymous Variant File ---
-# Replace 'your_variants_file.tsv' with your actual filename
-raw_variants <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt", stringsAsFactors = FALSE)
+# Bottom 5% genes (low expression)
+bottom_cutoff <- quantile(integrated_data$Geom_Exp, 0.05, na.rm = TRUE)
+bottom5_genes <- integrated_data |>
+  dplyr::filter(Expression_Group == "Bottom 5%") |>
+  pull(Gene_name)
 
-# Fix Gene Names to match the ID format (MgIM767...)
-# The file has "01G..." but we need "MgIM767.01G..."
-raw_variants <- raw_variants |>
-  dplyr::mutate(Gene = paste0("MgIM767.", Gene)) |>
-  # Keep only genes in the Top 5%
-  dplyr::filter(Gene %in% top_genes)
+# --- DIAGNOSTIC: Check expression levels ---
+cat("\n=== Expression Level Diagnostics ===\n")
+top5_expr <- integrated_data |> 
+  dplyr::filter(Geom_Exp <= top_cutoff) |> 
+  pull(Geom_Exp)
+bottom5_expr <- integrated_data |> 
+  dplyr::filter(Gene_name %in% bottom5_genes) |> 
+  pull(Geom_Exp)
 
-# --- 3. Parse the 'Codon_Variants' Column ---
-# We need to extract:
-#   n = sum of all counts (total depth)
-#   k = count of the Preferred Codon
-#   Target_Base = last letter of Preferred Codon
+cat(sprintf("Top 5%% expression - Mean: %.2f, Median: %.2f, Range: [%.2f, %.2f]\n",
+            mean(top5_expr, na.rm=TRUE), median(top5_expr, na.rm=TRUE), 
+            min(top5_expr, na.rm=TRUE), max(top5_expr, na.rm=TRUE)))
+cat(sprintf("Bottom 5%% expression - Mean: %.2f, Median: %.2f, Range: [%.2f, %.2f]\n\n",
+            mean(bottom5_expr, na.rm=TRUE), median(bottom5_expr, na.rm=TRUE), 
+            min(bottom5_expr, na.rm=TRUE), max(bottom5_expr, na.rm=TRUE)))
 
-parsed_sfs_data <- raw_variants |>
-  rowwise() |>
-  dplyr::mutate(
-    # A. Identify Target Base (G or C)
-    Target_Base = substring(Preferred_Codon, 3, 3),
-    
-    # B. Parse Counts from string "AAA:100;AAG:2"
-    # Split into individual codon entries
-    entries = list(str_split(Codon_Variants, ";")[[1]]),
-    
-    # Extract counts for all variants at this site
-    all_counts = list(as.numeric(sub(".*:", "", entries))),
-    all_codons = list(sub(":.*", "", entries)),
-    
-    # Calculate Total Depth (n)
-    n = sum(all_counts),
-    
-    # Calculate Count of Preferred Allele (k)
-    # Match the Preferred_Codon to the parsed codons and get the corresponding count
-    k_index = match(Preferred_Codon, all_codons),
-    k = ifelse(is.na(k_index), 0, all_counts[k_index])
-  ) |>
-  ungroup() |>
-  # Filter for valid sites (n > 0) and only G/C targets
-  dplyr::filter(n > 0, Target_Base %in% c("G", "C")) |>
-  dplyr::select(Gene, Target_Base, n, k)
+# --- 2. Process Both Gene Sets ---
+top5_sfs <- process_gene_set_sfs(top_genes, "Top 5%", target_n)
+obs_sfs_G_top5 <- top5_sfs$obs_sfs_G
+obs_sfs_C_top5 <- top5_sfs$obs_sfs_C
 
-# --- 4. Project and Aggregate (Observed SFS) ---
+bottom5_sfs <- process_gene_set_sfs(bottom5_genes, "Bottom 5%", target_n)
+obs_sfs_G_bottom5 <- bottom5_sfs$obs_sfs_G
+obs_sfs_C_bottom5 <- bottom5_sfs$obs_sfs_C
 
-# Define the projection size (must match your intron analysis)
-target_n <- 90 
-
-# A. Process G-ending Sites
-syn_G_summary <- parsed_sfs_data |>
-  dplyr::filter(Target_Base == "G") |>
-  dplyr::count(n, k, name = "count") # Groups by specific (n,k) pairs
-
-obs_sfs_G_top5 <- project_sfs(syn_G_summary, target_n)
-
-# B. Process C-ending Sites
-syn_C_summary <- parsed_sfs_data |>
-  dplyr::filter(Target_Base == "C") |>
-  dplyr::count(n, k, name = "count")
-
-obs_sfs_C_top5 <- project_sfs(syn_C_summary, target_n)
+# --- DIAGNOSTIC: Check SFS lengths ---
+cat(sprintf("\nSFS Length Check:\n"))
+cat(sprintf("  Top 5%% G: %d, Top 5%% C: %d\n", 
+            length(obs_sfs_G_top5), length(obs_sfs_C_top5)))
+cat(sprintf("  Bottom 5%% G: %d, Bottom 5%% C: %d\n", 
+            length(obs_sfs_G_bottom5), length(obs_sfs_C_bottom5)))
+cat(sprintf("  Expected length (target_n - 1): %d\n\n", target_n - 1))
 
 # --- 5. Combine for Plotting ---
-freq_bins <- 1:length(obs_sfs_G_top5)
+freq_bins <- 0:target_n
 
-# Build Observed Dataframe
+# Build Observed Dataframe for TOP 5%
 sfs_observed_top5 <- data.frame(
   Num_seq = rep(freq_bins, 2),
   Counts = c(obs_sfs_C_top5, obs_sfs_G_top5),
   Metric = rep(c("Observed_Top5_C", "Observed_Top5_G"), each = length(freq_bins))
 )
 
-# --- 6. Generate Matching Neutral Expectations ---
-# Scale the neutral shape (from introns) to the sample size of the Top 5% data
-obs_list_top5 <- list(G = obs_sfs_G_top5, C = obs_sfs_C_top5)
+# Build Observed Dataframe for BOTTOM 5%
+sfs_observed_bottom5 <- data.frame(
+  Num_seq = rep(freq_bins, 2),
+  Counts = c(obs_sfs_C_bottom5, obs_sfs_G_bottom5),
+  Metric = rep(c("Observed_Bottom5_C", "Observed_Bottom5_G"), each = length(freq_bins))
+)
 
+# --- 6. Generate Matching Neutral Expectations ---
+# Scale the neutral shape (from introns) to the sample size of the data
+
+# For TOP 5%
+obs_list_top5 <- list(G = obs_sfs_G_top5, C = obs_sfs_C_top5)
 expected_sfs_top5 <- generate_expected_counts(
   neutral_param = neutral_params,
   observed_sfs_list = obs_list_top5, 
   target_n = target_n
 )
 
-# Build Expected Dataframe
 sfs_neutral_top5 <- data.frame(
   Num_seq = rep(freq_bins, 2),
   Counts = c(expected_sfs_top5$C, expected_sfs_top5$G),
   Metric = rep(c("Expected_Neutral_C", "Expected_Neutral_G"), each = length(freq_bins))
 )
 
-# Combine Everything
-final_plot_data <- rbind(sfs_observed_top5, sfs_neutral_top5)
+# For BOTTOM 5%
+obs_list_bottom5 <- list(G = obs_sfs_G_bottom5, C = obs_sfs_C_bottom5)
+expected_sfs_bottom5 <- generate_expected_counts(
+  neutral_param = neutral_params,
+  observed_sfs_list = obs_list_bottom5, 
+  target_n = target_n
+)
+
+sfs_neutral_bottom5 <- data.frame(
+  Num_seq = rep(freq_bins, 2),
+  Counts = c(expected_sfs_bottom5$C, expected_sfs_bottom5$G),
+  Metric = rep(c("Expected_Neutral_C", "Expected_Neutral_G"), each = length(freq_bins))
+)
+
+# --- 7. Estimate Gamma for All 4 Groups ---
+cat("\n=== Estimating Gamma (Selection Coefficient) ===\n")
+
+# Calculate mean allele frequency for diagnostics
+mean_freq_top5_G <- sum((0:target_n) * obs_sfs_G_top5) / sum(obs_sfs_G_top5)
+mean_freq_top5_C <- sum((0:target_n) * obs_sfs_C_top5) / sum(obs_sfs_C_top5)
+mean_freq_bottom5_G <- sum((0:target_n) * obs_sfs_G_bottom5) / sum(obs_sfs_G_bottom5)
+mean_freq_bottom5_C <- sum((0:target_n) * obs_sfs_C_bottom5) / sum(obs_sfs_C_bottom5)
+
+cat(sprintf("\nMean allele frequency (preferred codon):\n"))
+cat(sprintf("  Top 5%% G: %.2f/%d = %.3f\n", mean_freq_top5_G, target_n, mean_freq_top5_G/target_n))
+cat(sprintf("  Top 5%% C: %.2f/%d = %.3f\n", mean_freq_top5_C, target_n, mean_freq_top5_C/target_n))
+cat(sprintf("  Bottom 5%% G: %.2f/%d = %.3f\n", mean_freq_bottom5_G, target_n, mean_freq_bottom5_G/target_n))
+cat(sprintf("  Bottom 5%% C: %.2f/%d = %.3f\n\n", mean_freq_bottom5_C, target_n, mean_freq_bottom5_C/target_n))
+
+gamma_top5_G <- estimate_gamma(obs_sfs_G_top5, neutral_params, "G", target_n)
+gamma_top5_C <- estimate_gamma(obs_sfs_C_top5, neutral_params, "C", target_n)
+gamma_bottom5_G <- estimate_gamma(obs_sfs_G_bottom5, neutral_params, "G", target_n)
+gamma_bottom5_C <- estimate_gamma(obs_sfs_C_bottom5, neutral_params, "C", target_n)
+
+cat(sprintf("\n***** GAMMA ESTIMATES *****\n"))
+cat(sprintf("Top 5%% G-ending: γ = %.4f (p = %.2e)\n", 
+            gamma_top5_G$gamma, gamma_top5_G$p_value))
+cat(sprintf("Top 5%% C-ending: γ = %.4f (p = %.2e)\n", 
+            gamma_top5_C$gamma, gamma_top5_C$p_value))
+cat(sprintf("Bottom 5%% G-ending: γ = %.4f (p = %.2e)\n", 
+            gamma_bottom5_G$gamma, gamma_bottom5_G$p_value))
+cat(sprintf("Bottom 5%% C-ending: γ = %.4f (p = %.2e)\n\n", 
+            gamma_bottom5_C$gamma, gamma_bottom5_C$p_value))
+
+# Combine Everything for plotting
+plot_data_top5 <- rbind(sfs_observed_top5, sfs_neutral_top5)
+plot_data_bottom5 <- rbind(sfs_observed_bottom5, sfs_neutral_bottom5)
 
 cat("✓ Step 4 Complete: Data parsed and ready for plotting.\n")
 
-plot_ready <- final_plot_data |>
+# --- 8. Create 4-Panel Validation Plot ---
+cat("\n=== Creating 4-Panel Validation Plot ===\n")
+
+combined_validation_plot <- plot_sfs_validation_4panel(
+  plot_data_top5 = plot_data_top5,
+  plot_data_bottom5 = plot_data_bottom5,
+  gamma_top5_G = gamma_top5_G,
+  gamma_top5_C = gamma_top5_C,
+  gamma_bottom5_G = gamma_bottom5_G,
+  gamma_bottom5_C = gamma_bottom5_C
+)
+
+ggsave("results/SFS_Validation_4Panel_with_Gamma.pdf", 
+       plot = combined_validation_plot, 
+       width = 12, height = 10)
+
+cat("✓ 4-panel validation plot saved: results/SFS_Validation_4Panel_with_Gamma.pdf\n\n")
+
+# --- 9. Statistical Validation ---
+cat("\n=== Statistical Validation (Goodness of Fit Tests) ===\n")
+
+validate_selection_signal(plot_data_top5, "_C")
+validate_selection_signal(plot_data_top5, "_G")
+
+cat("\n✓ Analysis Complete!\n")
+
+## *****************************************************************************
+## 14) Diversity Hump Validation (Pi vs. Selection Intensity) ----
+## _____________________________________________________________________________
+
+# STEP 1: Define the Theoretical Pi Function (Sawyer-Hartl stationary distribution)
+calc_theoretical_pi_gsl <- function(S, alpha, beta) {
+  # Denominator: B(a,b) * 1F1(a, a+b, S)
+  denom_1F1 <- hyperg_1F1(alpha, alpha + beta, S)
+  
+  # Numerator: 2 * B(a+1, b+1) * 1F1(a+1, a+b+2, S)
+  num_1F1 <- 2 * (beta(alpha + 1, beta + 1) / beta(alpha, beta)) * hyperg_1F1(alpha + 1, alpha + beta + 2, S)
+  
+  return(num_1F1 * (1 / denom_1F1))
+}
+
+# STEP 2: Process Empirical Binned Data
+# We bin by S to observe the trend across intensities
+binned_data_robust <- selection_coeff_intensity |>
+  dplyr::filter(Pi_mean_4fold < 0.05) |>  # Remove artifacts/paralogy noise
   dplyr::mutate(
-    # Identify if it is C or G based on the suffix
-    Target = ifelse(grepl("_C$", Metric), "C-ending Codons", "G-ending Codons"),
-    
-    # Identify if it is Observed or Expected
-    Type = ifelse(grepl("Observed", Metric), "Observed", "Expected")
-  )
+    S_Bin = cut(S_coeff, breaks = seq(0, 18, by = 0.5))
+  ) |>
+  dplyr::group_by(S_Bin) |>
+  dplyr::summarise(
+    Mean_S = mean(S_coeff),
+    Mean_Pi = mean(Pi_mean_4fold),
+    SE_Pi = sd(Pi_mean_4fold) / sqrt(n()), 
+    N_Genes = n()
+  ) |>
+  # Filter for robustness (N > 5) to remove high-S stochastic noise
+  dplyr::filter(N_Genes > 5)
 
-# 2. Generate the Plot
-p <- ggplot(plot_ready, aes(x = Num_seq, y = Counts)) +
+# STEP 3: Generate and Scale the Theoretical Curve
+# A. Get mutation parameters
+avg_alpha <- (neutral_params$alpha_G + neutral_params$alpha_C) / 2
+avg_beta  <- (neutral_params$beta_G + neutral_params$beta_C) / 2
+
+# B. Generate unscaled curve (Deep Time Equilibrium)
+s_values <- seq(0, 18, length.out = 100)
+pi_unscaled <- sapply(s_values, calc_theoretical_pi_gsl, alpha = avg_alpha, beta = avg_beta)
+theory_curve <- data.frame(S_val = s_values, Pi_Theory_Unscaled = pi_unscaled)
+
+# C. Calculate robust scaling factor
+# We scale the theoretical curve to pass through the mean of our empirical points
+# This accounts for background selection lowering baseline coding diversity
+empirical_theory_vals <- sapply(binned_data_robust$Mean_S, calc_theoretical_pi_gsl, 
+                                alpha = avg_alpha, beta = avg_beta)
+
+robust_scaling <- mean(binned_data_robust$Mean_Pi / empirical_theory_vals)
+theory_curve$Pi_Theory <- theory_curve$Pi_Theory_Unscaled * robust_scaling
+
+# STEP 4: Generate Publication-Quality Plot
+validation_hump_plot <- ggplot() +
+  # A. Theoretical Curve (Dashed)
+  geom_line(data = theory_curve, aes(x = S_val, y = Pi_Theory),
+            color = "#e74c3c", linetype = "dashed", linewidth = 1.2) +
   
-  # --- Layer 1: The Observed Data (Bars) ---
-  # We subset data strictly for 'Observed' rows
-  geom_col(data = subset(plot_ready, Type == "Observed"), 
-           aes(fill = Target), 
-           alpha = 0.7, width = 0.8) +
+  # B. Empirical Binned Data
+  geom_point(data = binned_data_robust, aes(x = Mean_S, y = Mean_Pi), 
+             size = 4, color = "black") +
+  geom_errorbar(data = binned_data_robust, 
+                aes(x = Mean_S, ymin = Mean_Pi - 2*SE_Pi, ymax = Mean_Pi + 2*SE_Pi),
+                width = 0.15, color = "black") +
   
-  # --- Layer 2: The Neutral Expectation (Line + Points) ---
-  # We subset data strictly for 'Expected' rows
-  geom_line(data = subset(plot_ready, Type == "Expected"), 
-            aes(color = "Neutral Expectation (Introns)"), 
-            size = 1, linetype = "solid") +
-  
-  geom_point(data = subset(plot_ready, Type == "Expected"), 
-             color = "black", size = 1.5) +
-  
-  # --- Layout: Side-by-Side Facets ---
-  facet_wrap(~Target, scales = "free") +
-  
-  # --- Styling ---
-  scale_fill_manual(values = c("C-ending Codons" = "#1f78b4",  # Blue
-                               "G-ending Codons" = "#e31a1c"), # Red
-                    guide = "none") + # Hide fill legend (redundant with title)
-  
-  scale_color_manual(name = "", values = c("Neutral Expectation (Introns)" = "black")) +
-  
-  labs(
-    title = "Evidence of Translational Selection in Top 5% Expressed Genes",
-    subtitle = "Observed synonymous frequency spectrum (bars) vs. Neutral expectation (line)",
-    x = "Allele Frequency (Number of Sequences with Preferred Allele)",
-    y = "Number of Variant Sites"
-  ) +
+  # C. Formatting
+  coord_cartesian(xlim = c(0, 6), ylim = c(0, 0.05)) + 
+  labs(title = "Validation of Selection: The Hump Effect in Mimulus",
+       x = "Selection Coefficient (Si)",
+       y = "Nucleotide Diversity (Pi)") +
   theme_custom() +
-  theme(
-    strip.text = element_text(size = 14, face = "bold"),   # Big facet labels
-    strip.background = element_rect(fill = "#f0f0f0", color = NA),
-    axis.title = element_text(size = 12),
-    legend.position = "bottom",                            # Legend at bottom
-    panel.grid.minor = element_blank()
-  )
+  theme(plot.subtitle = element_text(size = 10, face = "italic"))
 
-# 3. Save
-ggsave("results/SFS_Observed_vs_Expected_Top5.pdf", plot = p, width = 10, height = 6)
+# STEP 5: Save Output
+ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_binned_final.pdf",
+       plot = validation_hump_plot, width = 6, height = 4)
 
-# STEP 5: Statistical Validation (Goodness of Fit) ----
-
+cat("✓ Hump-effect validation plot saved: ./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_binned_final.pdf\n")
