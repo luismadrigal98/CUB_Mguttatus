@@ -3092,135 +3092,103 @@ ggsave("./results/diversity_modeling/Expected_SFS_C_G.pdf",
 # --- 1. Define Gene Sets ---
 target_n <- 90  # Define the projection size (must match your intron analysis)
 
-# Top 5% genes (high expression)
-top_cutoff <- quantile(integrated_data$Geom_Exp, 0.95, na.rm = TRUE)
-top_genes <- integrated_data |>
-  dplyr::filter(Geom_Exp >= top_cutoff) |>
-  pull(Gene_name)
 
-cat("Identified", length(top_genes), 
-    "genes in the Top 5% expression tier (>", round(top_cutoff, 3),").\n")
+# Split the by quantiles in 20 intervals (to match with average S_roc per quantile and
+# determine scaling factor)
 
-# Bottom 5% genes (low expression)
-bottom_cutoff <- quantile(integrated_data$Geom_Exp, 0.05, na.rm = TRUE)
-bottom5_genes <- integrated_data |>
-  dplyr::filter(Expression_Group == "Bottom 5%") |>
-  pull(Gene_name)
+cutoffs_exp <- quantile(integrated_data$Geom_Exp, seq(0, 1, by = 0.05),
+                    na.rm = TRUE)
 
-# --- DIAGNOSTIC: Check expression levels ---
-cat("\n=== Expression Level Diagnostics ===\n")
-top5_expr <- integrated_data |> 
-  dplyr::filter(Geom_Exp <= top_cutoff) |> 
-  pull(Geom_Exp)
-bottom5_expr <- integrated_data |> 
-  dplyr::filter(Gene_name %in% bottom5_genes) |> 
-  pull(Geom_Exp)
+empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1), 
+                           FUN = function(idx)
+{
+  # Generate cutoffs for the data
+  names_quantiles <- names(cutoffs_exp)
+  
+  low_thr <- ifelse(idx == 1, cutoffs_exp[idx] - 0.001, 
+                    cutoffs_exp[idx]) # This ensure that the lowest value is included in subset
+  high_thr <- cutoffs_exp[idx + 1]
+  
+  # Subset the original data as a function of the stablished thresholds
+  sub_data_genes <- integrated_data |>
+    dplyr::filter(Geom_Exp > low_thr & Geom_Exp <= high_thr) |>
+    pull(Gene_name)
+  
+  # Extreact the SFS for the subset of genes
+  SFS_sub <- process_gene_set_sfs(sub_data_genes, 
+                                  paste0(names_quantiles[idx], "-", 
+                                         names_quantiles[idx + 1]), 
+                                  target_n)
+  
+  freq_bins <- 0:target_n
+  
+  obs_sfs_G <- SFS_sub$obs_sfs_G
+  obs_sfs_C <- SFS_sub$obs_sfs_C
+  
+  # Build a data frame with all the information required for plotting 
+  sfs_observed_df <- data.frame(
+    Num_seq = rep(freq_bins, 2),
+    Counts = c(obs_sfs_G, obs_sfs_C),
+    Metric = rep(c(paste0("Observed_", names_quantiles[idx], "-", 
+                          names_quantiles[idx + 1], "_C"), 
+                   paste0("Observed_", names_quantiles[idx], "-", 
+                          names_quantiles[idx + 1], "_G")), 
+                 each = length(freq_bins))
+  )
+  
+  # Generate the null expectations
+  expected_sfs <- generate_expected_counts(
+    neutral_param = neutral_params,
+    observed_sfs_list = list(G = obs_sfs_G, C = obs_sfs_C), 
+    target_n = target_n
+  )
+  
+  sfs_neutral <- data.frame(
+    Num_seq = rep(freq_bins, 2),
+    Counts = c(expected_sfs$C, expected_sfs$G),
+    Metric = rep(c(paste0("Expected_", names_quantiles[idx], "-", 
+                          names_quantiles[idx + 1], "_C"), 
+                   paste0("Expected_", names_quantiles[idx], "-", 
+                          names_quantiles[idx + 1], "_G")), 
+                 each = length(freq_bins))
+  )
+  
+  result <- list(Observed_df = sfs_observed_df,
+                 Neutral_df = sfs_neutral)
+  names(result) <- paste0(names_quantiles[idx], "-", 
+                          names_quantiles[idx + 1])
+  return(result)
+})
 
-cat(sprintf("Top 5%% expression - Mean: %.2f, Median: %.2f, Range: [%.2f, %.2f]\n",
-            mean(top5_expr, na.rm=TRUE), median(top5_expr, na.rm=TRUE), 
-            min(top5_expr, na.rm=TRUE), max(top5_expr, na.rm=TRUE)))
-cat(sprintf("Bottom 5%% expression - Mean: %.2f, Median: %.2f, Range: [%.2f, %.2f]\n\n",
-            mean(bottom5_expr, na.rm=TRUE), median(bottom5_expr, na.rm=TRUE), 
-            min(bottom5_expr, na.rm=TRUE), max(bottom5_expr, na.rm=TRUE)))
-
-# --- 2. Process Both Gene Sets ---
-top5_sfs <- process_gene_set_sfs(top_genes, "Top 5%", target_n)
-obs_sfs_G_top5 <- top5_sfs$obs_sfs_G
-obs_sfs_C_top5 <- top5_sfs$obs_sfs_C
-
-bottom5_sfs <- process_gene_set_sfs(bottom5_genes, "Bottom 5%", target_n)
-obs_sfs_G_bottom5 <- bottom5_sfs$obs_sfs_G
-obs_sfs_C_bottom5 <- bottom5_sfs$obs_sfs_C
-
-# --- DIAGNOSTIC: Check SFS lengths ---
-cat(sprintf("\nSFS Length Check:\n"))
-cat(sprintf("  Top 5%% G: %d, Top 5%% C: %d\n", 
-            length(obs_sfs_G_top5), length(obs_sfs_C_top5)))
-cat(sprintf("  Bottom 5%% G: %d, Bottom 5%% C: %d\n", 
-            length(obs_sfs_G_bottom5), length(obs_sfs_C_bottom5)))
-cat(sprintf("  Expected length (target_n - 1): %d\n\n", target_n - 1))
-
-# --- 5. Combine for Plotting ---
-freq_bins <- 0:target_n
-
-# Build Observed Dataframe for TOP 5%
-sfs_observed_top5 <- data.frame(
-  Num_seq = rep(freq_bins, 2),
-  Counts = c(obs_sfs_C_top5, obs_sfs_G_top5),
-  Metric = rep(c("Observed_Top5_C", "Observed_Top5_G"), each = length(freq_bins))
-)
-
-# Build Observed Dataframe for BOTTOM 5%
-sfs_observed_bottom5 <- data.frame(
-  Num_seq = rep(freq_bins, 2),
-  Counts = c(obs_sfs_C_bottom5, obs_sfs_G_bottom5),
-  Metric = rep(c("Observed_Bottom5_C", "Observed_Bottom5_G"), each = length(freq_bins))
-)
-
-# --- 6. Generate Matching Neutral Expectations ---
-# Scale the neutral shape (from introns) to the sample size of the data
-
-# For TOP 5%
-obs_list_top5 <- list(G = obs_sfs_G_top5, C = obs_sfs_C_top5)
-expected_sfs_top5 <- generate_expected_counts(
-  neutral_param = neutral_params,
-  observed_sfs_list = obs_list_top5, 
-  target_n = target_n
-)
-
-sfs_neutral_top5 <- data.frame(
-  Num_seq = rep(freq_bins, 2),
-  Counts = c(expected_sfs_top5$C, expected_sfs_top5$G),
-  Metric = rep(c("Expected_Neutral_C", "Expected_Neutral_G"), each = length(freq_bins))
-)
-
-# For BOTTOM 5%
-obs_list_bottom5 <- list(G = obs_sfs_G_bottom5, C = obs_sfs_C_bottom5)
-expected_sfs_bottom5 <- generate_expected_counts(
-  neutral_param = neutral_params,
-  observed_sfs_list = obs_list_bottom5, 
-  target_n = target_n
-)
-
-sfs_neutral_bottom5 <- data.frame(
-  Num_seq = rep(freq_bins, 2),
-  Counts = c(expected_sfs_bottom5$C, expected_sfs_bottom5$G),
-  Metric = rep(c("Expected_Neutral_C", "Expected_Neutral_G"), each = length(freq_bins))
-)
-
-# --- 7. Estimate Gamma for All 4 Groups ---
+# --- 7. Estimate Gamma for G and C in all groups ---
 cat("\n=== Estimating Gamma (Selection Coefficient) ===\n")
 
-# Calculate mean allele frequency for diagnostics
-mean_freq_top5_G <- sum((0:target_n) * obs_sfs_G_top5) / sum(obs_sfs_G_top5)
-mean_freq_top5_C <- sum((0:target_n) * obs_sfs_C_top5) / sum(obs_sfs_C_top5)
-mean_freq_bottom5_G <- sum((0:target_n) * obs_sfs_G_bottom5) / sum(obs_sfs_G_bottom5)
-mean_freq_bottom5_C <- sum((0:target_n) * obs_sfs_C_bottom5) / sum(obs_sfs_C_bottom5)
-
-cat(sprintf("\nMean allele frequency (preferred codon):\n"))
-cat(sprintf("  Top 5%% G: %.2f/%d = %.3f\n", mean_freq_top5_G, target_n, mean_freq_top5_G/target_n))
-cat(sprintf("  Top 5%% C: %.2f/%d = %.3f\n", mean_freq_top5_C, target_n, mean_freq_top5_C/target_n))
-cat(sprintf("  Bottom 5%% G: %.2f/%d = %.3f\n", mean_freq_bottom5_G, target_n, mean_freq_bottom5_G/target_n))
-cat(sprintf("  Bottom 5%% C: %.2f/%d = %.3f\n\n", mean_freq_bottom5_C, target_n, mean_freq_bottom5_C/target_n))
-
-gamma_top5_G <- estimate_gamma(obs_sfs_G_top5, neutral_params, "G", target_n)
-gamma_top5_C <- estimate_gamma(obs_sfs_C_top5, neutral_params, "C", target_n)
-gamma_bottom5_G <- estimate_gamma(obs_sfs_G_bottom5, neutral_params, "G", target_n)
-gamma_bottom5_C <- estimate_gamma(obs_sfs_C_bottom5, neutral_params, "C", target_n)
-
-cat(sprintf("\n***** GAMMA ESTIMATES *****\n"))
-cat(sprintf("Top 5%% G-ending: γ = %.4f (p = %.2e)\n", 
-            gamma_top5_G$gamma, gamma_top5_G$p_value))
-cat(sprintf("Top 5%% C-ending: γ = %.4f (p = %.2e)\n", 
-            gamma_top5_C$gamma, gamma_top5_C$p_value))
-cat(sprintf("Bottom 5%% G-ending: γ = %.4f (p = %.2e)\n", 
-            gamma_bottom5_G$gamma, gamma_bottom5_G$p_value))
-cat(sprintf("Bottom 5%% C-ending: γ = %.4f (p = %.2e)\n\n", 
-            gamma_bottom5_C$gamma, gamma_bottom5_C$p_value))
-
-# Combine Everything for plotting
-plot_data_top5 <- rbind(sfs_observed_top5, sfs_neutral_top5)
-plot_data_bottom5 <- rbind(sfs_observed_bottom5, sfs_neutral_bottom5)
+gamma_estimates <- future_lapply(X = 1:length(empirical_SFS), 
+                                 FUN = function(idx)
+{
+   # Extract sublist name for result naming
+   name_sublist <- names(empirical_SFS)[idx]
+                                   
+   # Extract the sub-list (each sub-list is an interval)
+   sublist <- empirical_SFS[[idx]]
+   
+   # Extract relevant counts
+   sfs_C <- sublist$Observed_df[grepl(pattern = "_C", 
+                                     x = sublist$Observed_df$Metric), "Counts"]
+   sfs_C <- sublist$Observed_df[grepl(pattern = "_C", 
+                                      x = sublist$Observed_df$Metric), "Counts"]
+   
+   # Estimate Gamma
+   Gamma_C <- estimate_gamma(sfs_C, neutral_params, "C", target_n)
+   Gamma_G <- estimate_gamma(sfs_G, neutral_params, "G", target_n)
+   
+   result <- list(Gamma_C = Gamma_C,
+                  Gamma_G = Gamma_G)
+   
+   names(result) <- name_sublist
+   
+   return(result)
+})
 
 cat("✓ Step 4 Complete: Data parsed and ready for plotting.\n")
 

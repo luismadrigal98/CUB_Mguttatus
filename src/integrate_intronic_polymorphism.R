@@ -10,31 +10,17 @@
 #' Gamma (this approach):
 #'   - Definition: gamma = 4N*s, selection coefficient favoring PREFERRED codon
 #'   - Sign: POSITIVE = selection FOR preferred codon
-#'           NEGATIVE = selection AGAINST preferred codon
 #'   - Unit: Per amino acid position
 #'   - Model: Wright-Fisher diffusion with biallelic mutation-selection balance
 #'   - Interpretation: gamma > 1.92 means selection dominates drift (|4Nes| > 1)
 #' 
-#' AnaCoDa deltaEta (selection parameter):
-#'   - Definition: Selection coefficient RELATIVE to reference codon
+#' AnaCoDa selection parameter:
+#'   - Definition: Selection coefficient RELATIVE to optimal codon
 #'   - Sign: NEGATIVE for non-preferred codons (penalties)
 #'           ZERO for reference codon
-#'   - Unit: Per codon (not per AA position)
+#'   - Unit: Per codon per gene
 #'   - Model: ROC multinomial with mutation (deltaM) + selection (deltaEta)
 #'   - Interpretation: More negative = stronger penalty = less preferred
-#' 
-#' Gene-Level Aggregation (for comparability):
-#'   - AnaCoDa: Sum(|deltaEta_i| * Count_i) / Total_Synonymous_Codons
-#'     --> Mean absolute selection per codon position
-#'   
-#'   - Gamma: Sum(|gamma_AA| * N_AA_positions) / Total_Synonymous_Codons
-#'     --> Mean absolute selection per AA position
-#'     OR: mean(|gamma_AA|) weighted by sample size
-#'     
-#' Expected Correlation:
-#'   - Positive correlation: Both identify genes under selection for codon bias
-#'   - Higher values in both = stronger selection
-#'   - But magnitudes not directly comparable (different scales/models)
 #' 
 #' @author Luis Javier Madrigal-Roca and John K. Kelly
 #' _____________________________________________________________________________
@@ -116,13 +102,14 @@ standardize_aa_names <- function(dt, aa_col = "AA") {
     "Gly" = "G", "His" = "H", "Ile" = "I", 
     "Leu" = "L", "Leu_2" = "L", "Leu_4" = "L", "Leu_6" = "L",
     "Lys" = "K", "Met" = "M", "Phe" = "F", "Pro" = "P",
-    "Ser" = "S", "Ser_2" = "S", "Ser_4" = "S", "Ser_6" = "S",
+    "Ser" = "S", "Ser_2" = "Z", "Ser_4" = "S", "Ser_6" = "S",
     "Thr" = "T", "Trp" = "W", "Tyr" = "Y", "Val" = "V",
     # Already standardized (pass through)
     "A" = "A", "R" = "R", "N" = "N", "D" = "D", "C" = "C",
     "Q" = "Q", "E" = "E", "G" = "G", "H" = "H", "I" = "I",
     "L" = "L", "K" = "K", "M" = "M", "F" = "F", "P" = "P",
-    "S" = "S", "T" = "T", "W" = "W", "Y" = "Y", "V" = "V"
+    "S" = "S", "T" = "T", "W" = "W", "Y" = "Y", "V" = "V",
+    "Z" =
   )
   
   # Check if column exists
@@ -204,7 +191,7 @@ annotate_preferred_codons_with_nucleotide <- function(preferred_codons_df) {
       "Gly" = "G", "His" = "H", "Ile" = "I", 
       "Leu_2" = "L", "Leu_4" = "L", "Leu_6" = "L",
       "Lys" = "K", "Met" = "M", "Phe" = "F", "Pro" = "P",
-      "Ser_2" = "S", "Ser_4" = "S", "Ser_6" = "S",
+      "Ser_2" = "Z", "Ser_4" = "S", "Ser_6" = "S",
       "Thr" = "T", "Trp" = "W", "Tyr" = "Y", "Val" = "V"
     )
     
