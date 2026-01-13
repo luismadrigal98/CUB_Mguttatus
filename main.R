@@ -3099,12 +3099,13 @@ target_n <- 90  # Define the projection size (must match your intron analysis)
 cutoffs_exp <- quantile(integrated_data$Geom_Exp, seq(0, 1, by = 0.05),
                     na.rm = TRUE)
 
+names_quantiles <- names(cutoffs_exp)
+interval_names <- paste0(names_quantiles[-length(names_quantiles)], "-", 
+                         names_quantiles[-1])
+
 empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1), 
                            FUN = function(idx)
 {
-  # Generate cutoffs for the data
-  names_quantiles <- names(cutoffs_exp)
-  
   low_thr <- ifelse(idx == 1, cutoffs_exp[idx] - 0.001, 
                     cutoffs_exp[idx]) # This ensure that the lowest value is included in subset
   high_thr <- cutoffs_exp[idx + 1]
@@ -3116,8 +3117,7 @@ empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1),
   
   # Extreact the SFS for the subset of genes
   SFS_sub <- process_gene_set_sfs(sub_data_genes, 
-                                  paste0(names_quantiles[idx], "-", 
-                                         names_quantiles[idx + 1]), 
+                                  interval_names[idx], 
                                   target_n)
   
   freq_bins <- 0:target_n
@@ -3129,10 +3129,8 @@ empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1),
   sfs_observed_df <- data.frame(
     Num_seq = rep(freq_bins, 2),
     Counts = c(obs_sfs_G, obs_sfs_C),
-    Metric = rep(c(paste0("Observed_", names_quantiles[idx], "-", 
-                          names_quantiles[idx + 1], "_C"), 
-                   paste0("Observed_", names_quantiles[idx], "-", 
-                          names_quantiles[idx + 1], "_G")), 
+    Metric = rep(c(paste0("Observed_", interval_names[idx], "_C"), 
+                   paste0("Observed_", interval_names[idx], "_G")), 
                  each = length(freq_bins))
   )
   
@@ -3146,19 +3144,18 @@ empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1),
   sfs_neutral <- data.frame(
     Num_seq = rep(freq_bins, 2),
     Counts = c(expected_sfs$C, expected_sfs$G),
-    Metric = rep(c(paste0("Expected_", names_quantiles[idx], "-", 
-                          names_quantiles[idx + 1], "_C"), 
-                   paste0("Expected_", names_quantiles[idx], "-", 
-                          names_quantiles[idx + 1], "_G")), 
+    Metric = rep(c(paste0("Expected_", interval_names[idx], "_C"), 
+                   paste0("Expected_", interval_names[idx], "_G")), 
                  each = length(freq_bins))
   )
   
   result <- list(Observed_df = sfs_observed_df,
                  Neutral_df = sfs_neutral)
-  names(result) <- paste0(names_quantiles[idx], "-", 
-                          names_quantiles[idx + 1])
+  
   return(result)
 })
+
+names(empirical_SFS) <- interval_names
 
 # --- 7. Estimate Gamma for G and C in all groups ---
 cat("\n=== Estimating Gamma (Selection Coefficient) ===\n")
@@ -3166,16 +3163,13 @@ cat("\n=== Estimating Gamma (Selection Coefficient) ===\n")
 gamma_estimates <- future_lapply(X = 1:length(empirical_SFS), 
                                  FUN = function(idx)
 {
-   # Extract sublist name for result naming
-   name_sublist <- names(empirical_SFS)[idx]
-                                   
    # Extract the sub-list (each sub-list is an interval)
    sublist <- empirical_SFS[[idx]]
    
    # Extract relevant counts
    sfs_C <- sublist$Observed_df[grepl(pattern = "_C", 
                                      x = sublist$Observed_df$Metric), "Counts"]
-   sfs_C <- sublist$Observed_df[grepl(pattern = "_C", 
+   sfs_G <- sublist$Observed_df[grepl(pattern = "_G", 
                                       x = sublist$Observed_df$Metric), "Counts"]
    
    # Estimate Gamma
@@ -3185,10 +3179,10 @@ gamma_estimates <- future_lapply(X = 1:length(empirical_SFS),
    result <- list(Gamma_C = Gamma_C,
                   Gamma_G = Gamma_G)
    
-   names(result) <- name_sublist
-   
    return(result)
 })
+
+names(gamma_estimates) <- names(empirical_SFS)
 
 cat("✓ Step 4 Complete: Data parsed and ready for plotting.\n")
 
