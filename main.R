@@ -3184,7 +3184,102 @@ gamma_estimates <- future_lapply(X = 1:length(empirical_SFS),
 
 names(gamma_estimates) <- names(empirical_SFS)
 
+# Extracting gamma estimates per category and nucleotide
+
+gamma_summary_df <- data.frame(Category = names(gamma_estimates))
+
+gamma_summary_df[['Gamma_C']] <- sapply(gamma_summary_df[['Category']],
+                                      function(c)
+{
+  gamma_estimates[[c]][['Gamma_C']][['gamma']]
+})
+
+gamma_summary_df[['Gamma_G']] <- sapply(gamma_summary_df[['Category']],
+                                        function(c)
+                                        {
+                                          gamma_estimates[[c]][['Gamma_G']][['gamma']]
+                                        })
+
+gamma_summary_df[['Gamma_avg']] <- (gamma_summary_df[['Gamma_C']] +
+                                        gamma_summary_df[['Gamma_G']]) / 2
+
+cutoffs_exp <- quantile(selection_coeff_intensity$Geom_Exp, seq(0, 1, by = 0.05),
+                        na.rm = TRUE)
+
+names_quantiles <- names(cutoffs_exp)
+interval_names <- paste0(names_quantiles[-length(names_quantiles)], "-", 
+                         names_quantiles[-1])
+
+selection_summary <- sapply(1:(length(cutoffs_exp) - 1), function(idx) # Added 'idx' here
+{
+  low_thr <- ifelse(idx == 1, cutoffs_exp[idx] - 0.001, 
+                    cutoffs_exp[idx]) # This ensure that the lowest value is included in subset
+  high_thr <- cutoffs_exp[idx + 1]
+  
+  # Subset the original data as a function of the established thresholds
+  sub_data_genes <- selection_coeff_intensity |>
+    dplyr::filter(Geom_Exp > low_thr & Geom_Exp <= high_thr)
+  
+  mean_S <- mean(sub_data_genes$S_coeff, na.rm = TRUE)
+  
+  return(mean_S)
+})
+
 cat("✓ Step 4 Complete: Data parsed and ready for plotting.\n")
+
+# STEP 5: Checking relationship and scaling factor between S_roc and gamma ----
+
+scaling_df <- gamma_summary_df
+scaling_df$S_ROC <- selection_summary
+
+# Scaling model
+lm_fit <- lm(Gamma_avg ~ S_ROC, data = scaling_df)
+model_summary <- summary(lm_fit)
+
+# Extract Parameters
+background_drive <- coef(lm_fit)[1]  # Intercept (gBGC + Splicing)
+scaling_factor   <- coef(lm_fit)[2]  # Slope (Gamma units per S_ROC unit)
+r_squared        <- model_summary$r.squared
+p_value          <- model_summary$coefficients[2, 4]
+
+# Print Results
+cat("\n=== Scaling Analysis Results ===\n")
+cat(sprintf("Background Drive (Intercept): %.4f (Base Gamma at 0 Expression)\n", background_drive))
+cat(sprintf("Scaling Factor (Slope):       %.4f (Gamma units per 1 unit of S_ROC)\n", scaling_factor))
+cat(sprintf("Correlation (R-squared):      %.4f\n", r_squared))
+cat(sprintf("Significance (p-value):       %.2e\n", p_value))
+
+# Visualization
+
+p_scaling <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_avg)) +
+  # Points colored by expression bin (lighter = higher expression)
+  geom_point(aes(color = 1:20), size = 4) +
+  scale_color_viridis_c(name = "Expression\nQuantile") +
+  
+  # Regression Line
+  geom_smooth(method = "lm", color = "black", linetype = "dashed", se = TRUE) +
+  
+  # Add the equation to the plot
+  annotate("text", x = min(scaling_df$S_ROC), y = max(scaling_df$Gamma_avg), 
+           label = sprintf("y = %.4f + %.3fx\nR² = %.2f", 
+                           background_drive, scaling_factor, r_squared),
+           hjust = 0, vjust = 1, size = 5) +
+  
+  # Visualizing the Interpretation
+  labs(
+    title = "Coupling of Translational Selection and Genomic Drive",
+    subtitle = "Intercept = Pervasive gBGC/Structure | Slope = Translational Selection",
+    x = "Translational Selection Intensity (AnaCoDa S)",
+    y = "Total Evolutionary Drive (SFS Gamma)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+
+# Save
+ggsave("./results/gamma_vs_Sroc_scaling.pdf", plot = p_scaling, width = 8, height = 6)
 
 # --- 8. Create 4-Panel Validation Plot ---
 cat("\n=== Creating 4-Panel Validation Plot ===\n")
