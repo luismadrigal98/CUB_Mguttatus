@@ -3265,45 +3265,6 @@ scaling_df$Exp_Quantile <- seq(2.5, 97.5, by = 5)
 write.csv(scaling_df, "./results/gamma_vs_Sroc_scaling_data.csv", row.names = FALSE)
 cat("✓ Scaling data saved: ./results/gamma_vs_Sroc_scaling_data.csv\n")
 
-# Calculating expected pi assumming equilibrium
-
-pi_estimator_eq <- function(alpha, beta, gamma) {
-  #' Function to estimate pi assuming the population is at equilibrium.
-  #' Uses the Sawyer-Hartl stationary distribution with 1F1 hypergeometric
-  #' Based on McVean & Charlesworth (1999) and Sawyer & Hartl (1992)
-  #' 
-  #' @param alpha 4N*u (mutation rate from unpreferred to preferred)
-  #' @param beta 4N*v (mutation rate from preferred to unpreferred)
-  #' @param gamma 4N*s (selection coefficient, positive = favoring preferred)
-  #' @return Expected nucleotide diversity (pi)
-  
-  require(gsl)
-  
-  # Handle gamma = 0 (neutral case) separately to avoid numerical issues
-  if (abs(gamma) < 1e-10) {
-    # Neutral expectation: pi = 2*alpha*beta / ((alpha+beta)^2 * (alpha+beta+1))
-    # Simplified for beta-binomial
-    return(2 * alpha * beta / ((alpha + beta)^2 + (alpha + beta)))
-  }
-  
-  # 1. Calculate the Denominator (Normalization constant of Wright distribution)
-  # Beta(alpha,beta) * 1F1(alpha, alpha+beta, gamma)
-  log_denom <- lbeta(alpha, beta) + log(hyperg_1F1(alpha, alpha + beta, gamma))
-  
-  # 2. Calculate the Numerator (Expected Heterozygosity = E[2p(1-p)])
-  # Integrating 2 * p * (1-p) * f(p) shifts alpha -> alpha+1 and beta -> beta+1
-  log_num_integral <- lbeta(alpha + 1, beta + 1) + 
-    log(hyperg_1F1(alpha + 1, alpha + beta + 2, gamma))
-  
-  # Factor of 2 from heterozygosity formula 2pq
-  log_numerator <- log(2) + log_num_integral
-  
-  # 3. Pi = Numerator / Denominator
-  pi_estimate <- exp(log_numerator - log_denom)
-  
-  return(pi_estimate)
-}
-
 # Calculate pi for each expression quantile using estimated gamma values
 cat("\n=== Calculating Expected Pi for C and G Ending Codons ===\n")
 
