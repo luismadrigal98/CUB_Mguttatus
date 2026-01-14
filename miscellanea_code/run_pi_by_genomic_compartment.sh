@@ -49,8 +49,12 @@ mkdir -p logs
 # Chromosomes
 CHROMOSOMES_ARRAY=(Chr_01 Chr_02 Chr_03 Chr_04 Chr_05 Chr_06 Chr_07 Chr_08 Chr_09 Chr_10 Chr_11 Chr_12 Chr_13 Chr_14)
 
-# Pre-filtered VCF directory (optional, for speed)
-PREFILTERED_VCF_DIR="vcf_by_chromosome"
+# Pre-filtered VCF directory (optional, for speed) - USE ABSOLUTE PATH
+# These should be named like: Chr_01.vcf, Chr_02.vcf, etc. OR Included_snp.sites.Chr_01.vcf
+PREFILTERED_VCF_DIR="/home/l338m483/scratch/IMLines_to_767/vcf_by_chromosome"
+
+# VCF base name (without path) for pattern matching
+VCF_BASENAME=$(basename "$VCF")
 
 # ============================================================================
 # Detect execution mode
@@ -160,6 +164,39 @@ if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
 fi
 
 # ============================================================================
+# Step 1b: Pre-filter VCF by chromosome (if not already done)
+# ============================================================================
+
+if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
+    echo "Step 1b: Checking for pre-filtered VCF files..."
+    
+    # Create directory if needed
+    mkdir -p "$PREFILTERED_VCF_DIR"
+    
+    for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
+        CHR_VCF="${PREFILTERED_VCF_DIR}/${CHR}.vcf"
+        
+        if [ -f "$CHR_VCF" ]; then
+            echo "  ✓ $CHR pre-filtered VCF exists"
+        else
+            echo "  Extracting $CHR from VCF (this may take a while first time)..."
+            # Use awk for speed - match chromosome in first column
+            awk -v chr="$CHR" '$1 == chr' "$VCF" > "$CHR_VCF"
+            
+            if [ -s "$CHR_VCF" ]; then
+                LINE_COUNT=$(wc -l < "$CHR_VCF")
+                echo "  ✓ Created $CHR_VCF ($LINE_COUNT lines)"
+            else
+                echo "  ⚠ WARNING: No lines extracted for $CHR"
+                rm -f "$CHR_VCF"
+            fi
+        fi
+    done
+    
+    echo ""
+fi
+
+# ============================================================================
 # Step 2: Calculate π by compartment (per chromosome)
 # ============================================================================
 
@@ -184,17 +221,41 @@ if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
         fi
         
         # Check for pre-filtered VCF (much faster!)
-        if [ -f "${PREFILTERED_VCF_DIR}/${VCF##*/}.${CHR}.vcf" ]; then
-            VCF_INPUT="${PREFILTERED_VCF_DIR}/${VCF##*/}.${CHR}.vcf"
-            echo "  Using pre-filtered VCF: $VCF_INPUT"
-            echo "  File size: $(du -h "$VCF_INPUT" | cut -f1)"
-        elif [ -f "${PREFILTERED_VCF_DIR}/${CHR}.vcf" ]; then
+        # Try multiple naming patterns
+        VCF_INPUT=""
+        
+        # Pattern 1: {VCF_BASENAME}.{CHR}.vcf (e.g., Included_snp.sites.txt.Chr_03.vcf)
+        if [ -z "$VCF_INPUT" ] && [ -f "${PREFILTERED_VCF_DIR}/${VCF_BASENAME}.${CHR}.vcf" ]; then
+            VCF_INPUT="${PREFILTERED_VCF_DIR}/${VCF_BASENAME}.${CHR}.vcf"
+        fi
+        
+        # Pattern 2: {CHR}.vcf (e.g., Chr_03.vcf)
+        if [ -z "$VCF_INPUT" ] && [ -f "${PREFILTERED_VCF_DIR}/${CHR}.vcf" ]; then
             VCF_INPUT="${PREFILTERED_VCF_DIR}/${CHR}.vcf"
-            echo "  Using pre-filtered VCF: $VCF_INPUT"
-        else
+        fi
+        
+        # Pattern 3: {VCF_BASENAME_NO_EXT}.{CHR}.vcf (e.g., Included_snp.sites.Chr_03.vcf)
+        VCF_NO_EXT="${VCF_BASENAME%.*}"
+        if [ -z "$VCF_INPUT" ] && [ -f "${PREFILTERED_VCF_DIR}/${VCF_NO_EXT}.${CHR}.vcf" ]; then
+            VCF_INPUT="${PREFILTERED_VCF_DIR}/${VCF_NO_EXT}.${CHR}.vcf"
+        fi
+        
+        # Pattern 4: Check .vcf.gz variants
+        if [ -z "$VCF_INPUT" ] && [ -f "${PREFILTERED_VCF_DIR}/${CHR}.vcf.gz" ]; then
+            VCF_INPUT="${PREFILTERED_VCF_DIR}/${CHR}.vcf.gz"
+        fi
+        
+        # Fallback to full VCF
+        if [ -z "$VCF_INPUT" ]; then
             VCF_INPUT="$VCF"
             echo "  Using full VCF: $VCF_INPUT"
-            echo "  ⚠ Consider pre-filtering VCF by chromosome for faster processing"
+            echo "  ⚠ Pre-filtered VCF not found in: $PREFILTERED_VCF_DIR"
+            echo "  ⚠ Tried patterns: ${VCF_BASENAME}.${CHR}.vcf, ${CHR}.vcf, ${VCF_NO_EXT}.${CHR}.vcf"
+            echo "  ⚠ Consider pre-filtering VCF by chromosome for faster processing:"
+            echo "      grep -E '^#|^${CHR}\\s' $VCF > ${PREFILTERED_VCF_DIR}/${CHR}.vcf"
+        else
+            echo "  Using pre-filtered VCF: $VCF_INPUT"
+            echo "  File size: $(du -h "$VCF_INPUT" | cut -f1)"
         fi
         
         # Run the compartment analysis
