@@ -1869,111 +1869,6 @@ p3_zoom_in <- ggplot(tail_data, aes(x = Log_S_coeff, y = GC3s)) +
 combined_plot <- (p1 | p2) / p3_main / p3_zoom_in + plot_annotation(tag_levels = 'A')
 ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 11, height = 14)
 
-# Exploring the relationship between pi and S
-
-# Kruskal-Wallis with Post-Hoc Dunns's Test (Mean + CI Visualization) ----
-
-# Prepare Data
-clean_data <- selection_coeff_intensity |>
-  dplyr::filter(
-    !is.na(S_coeff), !is.na(Geom_Exp), !is.na(Pi_mean_4fold),
-    is.finite(S_coeff), is.finite(Geom_Exp), is.finite(Pi_mean_4fold)
-  ) |>
-  dplyr::mutate(
-    # Create Deciles (1 = Low, 10 = High)
-    S_Bin = cut(S_coeff, breaks = quantile(S_coeff, probs = seq(0, 1, 0.1)),
-                include.lowest = TRUE, labels = 1:10),
-    Exp_Bin = cut(Geom_Exp, breaks = quantile(Geom_Exp, probs = seq(0, 1, 0.1)),
-                  include.lowest = TRUE, labels = 1:10)
-  )
-
-# Function to calculate Mean, CI, and Letters
-analyze_and_summarize <- function(data, group_col, response_col = "Pi_mean_4fold") {
-  
-  # A. Dunn's Test & Letters
-  f <- as.formula(paste(response_col, "~", group_col))
-  dunn_res <- FSA::dunnTest(f, data = data, method = "bh")
-  
-  # Generate Compact Letter Display (CLD)
-  # rcompanion::cldList parses "Group1 - Group2" strings
-  cld <- rcompanion::cldList(P.adj ~ Comparison, data = dunn_res$res, threshold = 0.05)
-  
-  # Clean CLD for joining
-  # cldList output Group is typically character. 
-  # We ensure it matches the factor levels of the input data
-  cld <- cld |>
-    dplyr::rename(!!group_col := Group, Letter = Letter) |>
-    dplyr::select(!!group_col, Letter) |>
-    # CRITICAL FIX: Convert back to factor to ensure successful join with summary data
-    dplyr::mutate(!!group_col := factor(!!sym(group_col), levels = levels(data[[group_col]])))
-
-  # B. Summary Statistics for Plotting
-  summary_stats <- data |>
-    dplyr::group_by(!!sym(group_col)) |>
-    dplyr::summarise(
-      Mean = mean(!!sym(response_col), na.rm = TRUE),
-      SD = sd(!!sym(response_col), na.rm = TRUE),
-      N = n(),
-      SE = SD / sqrt(N),
-      CI_95 = 1.96 * SE, # Approx 95% CI
-      Upper = Mean + CI_95,
-      Lower = Mean - CI_95,
-      .groups = "drop"
-    ) |>
-    # Join Letters
-    dplyr::left_join(cld, by = group_col)
-    
-  return(summary_stats)
-}
-
-# Run Analysis 
-stats_S <- analyze_and_summarize(clean_data, "S_Bin")
-stats_Exp <- analyze_and_summarize(clean_data, "Exp_Bin")
-
-# Plotting Function (Mean + CI)
-plot_mean_ci <- function(summary_data, x_var, title, subtitle) {
-  
-  # Determine Y position for letters (slightly above max CI)
-  y_max_data <- max(summary_data$Upper, na.rm = TRUE)
-  y_range <- y_max_data - min(summary_data$Lower, na.rm = TRUE)
-  text_y_offset <- y_range * 0.1
-  
-  ggplot(summary_data, aes(x = .data[[x_var]], y = Mean)) +
-    # Error Bars
-    geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.2, color = "black", linewidth = 0.7) +
-    
-    # Points (Mean)
-    geom_point(aes(fill = .data[[x_var]]), shape = 21, size = 4, color = "black", stroke = 0.8) +
-    
-    # Letters (placed above Upper CI)
-    geom_text(aes(y = Upper + text_y_offset, label = Letter), 
-              size = 5, fontface = "bold") +
-    
-    # Styling
-    scale_fill_viridis_d(option = "magma", begin = 0.1, end = 0.9) +
-    scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) + # Extra space at top
-    labs(
-      title = title,
-      subtitle = subtitle,
-      x = paste(x_var, "(Deciles)"),
-      y = "Nucleotide Diversity (Pi) ± 95% CI"
-    ) +
-    theme_custom() +
-    theme(legend.position = "none")
-}
-
-# Generate and Save
-p_select_clean <- plot_mean_ci(stats_S, "S_Bin", 
-                               "Diversity vs Selection Intensity",
-                               "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)")
-
-p_exp_clean <- plot_mean_ci(stats_Exp, "Exp_Bin", 
-                            "Diversity vs Expression Level",
-                            "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)")
-
-ggsave("results/Results_MeanCI_Pi_vs_Selection_Letters.pdf", p_select_clean, width = 8, height = 6)
-ggsave("results/Results_MeanCI_Pi_vs_Expression_Letters.pdf", p_exp_clean, width = 8, height = 6)
-
 # 8.4) GO-enrichment analysis of genes with a massive selection load ----
 
 thr_sel <- 1
@@ -3783,456 +3678,121 @@ mi_summary <- data.frame(
 write.csv(mi_summary, "./results/MI_analysis_summary.csv", row.names = FALSE)
 cat("✓ MI summary saved: ./results/MI_analysis_summary.csv\n\n")
 
-# STEP 7: Test for Pi "Hump" Pattern vs S_ROC (THEORETICAL PREDICTIONS) ----
-# This analysis uses THEORETICAL Pi values calculated from gamma estimates
-# via the Sawyer-Hartl stationary distribution formula.
-# For EMPIRICAL hump test using observed Pi_mean_4fold, see Section 14 below.
-#
-# Theory predicts that pi should initially increase with weak selection (due to 
-# slower fixation/loss) and then decrease with strong selection (faster sweeps)
-# This is the Sawyer-Hartl "hump" effect
-
-cat("\n=== STEP 7: Testing THEORETICAL Pi Hump Pattern vs S_ROC ===\n")
-cat("NOTE: This uses Pi PREDICTIONS from gamma estimates (Sawyer-Hartl formula)\n")
-cat("      See Section 14 for EMPIRICAL hump test with observed Pi_mean_4fold\n\n")
-cat("Theory: Pi should show inverted-U (hump) relationship with selection intensity\n")
-cat("  - Weak selection: slower allele dynamics → higher pi\n")
-cat("  - Strong selection: faster fixation/loss → lower pi\n\n")
-
-# Test 1: Quadratic model (captures hump)
-# Pi = a + b*S + c*S^2  (expect c < 0 for hump)
-quad_model_C <- lm(Pi_C ~ S_ROC + I(S_ROC^2), data = scaling_df)
-quad_model_G <- lm(Pi_G ~ S_ROC + I(S_ROC^2), data = scaling_df)
-quad_model_avg <- lm(Pi_avg ~ S_ROC + I(S_ROC^2), data = scaling_df)
-
-cat("=== Quadratic Model Results ===\n")
-cat("Testing: Pi = a + b*S + c*S^2 (c < 0 indicates hump)\n\n")
-
-cat("C-ending codons:\n")
-cat(sprintf("  Linear coeff (b):    %.6f (p = %.4f)\n", 
-            coef(quad_model_C)[2], summary(quad_model_C)$coefficients[2, 4]))
-cat(sprintf("  Quadratic coeff (c): %.6f (p = %.4f)\n", 
-            coef(quad_model_C)[3], summary(quad_model_C)$coefficients[3, 4]))
-cat(sprintf("  R²: %.4f\n\n", summary(quad_model_C)$r.squared))
-
-cat("G-ending codons:\n")
-cat(sprintf("  Linear coeff (b):    %.6f (p = %.4f)\n", 
-            coef(quad_model_G)[2], summary(quad_model_G)$coefficients[2, 4]))
-cat(sprintf("  Quadratic coeff (c): %.6f (p = %.4f)\n", 
-            coef(quad_model_G)[3], summary(quad_model_G)$coefficients[3, 4]))
-cat(sprintf("  R²: %.4f\n\n", summary(quad_model_G)$r.squared))
-
-cat("Average (C+G)/2:\n")
-cat(sprintf("  Linear coeff (b):    %.6f (p = %.4f)\n", 
-            coef(quad_model_avg)[2], summary(quad_model_avg)$coefficients[2, 4]))
-cat(sprintf("  Quadratic coeff (c): %.6f (p = %.4f)\n", 
-            coef(quad_model_avg)[3], summary(quad_model_avg)$coefficients[3, 4]))
-cat(sprintf("  R²: %.4f\n\n", summary(quad_model_avg)$r.squared))
-
-# Test 2: Compare linear vs quadratic model fit (F-test)
-linear_model_avg <- lm(Pi_avg ~ S_ROC, data = scaling_df)
-anova_result <- anova(linear_model_avg, quad_model_avg)
-f_pval <- anova_result$`Pr(>F)`[2]
-
-cat("=== Model Comparison: Linear vs Quadratic ===\n")
-cat(sprintf("F-test p-value: %.4f\n", f_pval))
-if (f_pval < 0.05) {
-  cat("  → Quadratic model fits significantly better (supports hump pattern)\n\n")
-} else {
-  cat("  → No significant improvement with quadratic term\n\n")
-}
-
-# Test 3: Find the peak of the hump (if quadratic coefficient is negative)
-if (coef(quad_model_avg)[3] < 0) {
-  # Peak at S = -b/(2c)
-  peak_S <- -coef(quad_model_avg)[2] / (2 * coef(quad_model_avg)[3])
-  peak_pi <- predict(quad_model_avg, newdata = data.frame(S_ROC = peak_S))
-  
-  cat("=== Hump Peak Location ===\n")
-  cat(sprintf("Peak S_ROC: %.4f\n", peak_S))
-  cat(sprintf("Peak Pi:    %.6f\n", peak_pi))
-  cat(sprintf("S_ROC range in data: [%.4f, %.4f]\n", min(scaling_df$S_ROC), max(scaling_df$S_ROC)))
-  
-  if (peak_S > min(scaling_df$S_ROC) && peak_S < max(scaling_df$S_ROC)) {
-    cat("  → Peak is WITHIN data range (hump is observable)\n\n")
-  } else if (peak_S < min(scaling_df$S_ROC)) {
-    cat("  → Peak is BELOW data range (only decreasing phase observed)\n\n")
-  } else {
-    cat("  → Peak is ABOVE data range (only increasing phase observed)\n\n")
-  }
-}
-
-# Create multi-panel visualization of Pi vs S_ROC
-# Panel 1: Pi_C vs S_ROC with quadratic fit
-p_pi_C <- ggplot(scaling_df, aes(x = S_ROC, y = Pi_C)) +
-  geom_point(aes(color = Exp_Quantile), size = 3) +
-  geom_smooth(method = "lm", formula = y ~ x + I(x^2), color = "blue", se = TRUE, alpha = 0.2) +
-  geom_hline(yintercept = pi_neutral_C, linetype = "dashed", color = "gray50") +
-  scale_color_viridis_c(name = "Exp %ile") +
-  labs(title = "C-ending Codons", 
-       x = "S_ROC (AnaCoDa)", 
-       y = expression(pi[C]),
-       subtitle = sprintf("R² = %.3f", summary(quad_model_C)$r.squared)) +
-  annotate("text", x = min(scaling_df$S_ROC), y = pi_neutral_C, 
-           label = "Neutral", hjust = 0, vjust = -0.5, color = "gray50") +
-  theme_minimal()
-
-# Panel 2: Pi_G vs S_ROC with quadratic fit
-p_pi_G <- ggplot(scaling_df, aes(x = S_ROC, y = Pi_G)) +
-  geom_point(aes(color = Exp_Quantile), size = 3) +
-  geom_smooth(method = "lm", formula = y ~ x + I(x^2), color = "red", se = TRUE, alpha = 0.2) +
-  geom_hline(yintercept = pi_neutral_G, linetype = "dashed", color = "gray50") +
-  scale_color_viridis_c(name = "Exp %ile") +
-  labs(title = "G-ending Codons", 
-       x = "S_ROC (AnaCoDa)", 
-       y = expression(pi[G]),
-       subtitle = sprintf("R² = %.3f", summary(quad_model_G)$r.squared)) +
-  annotate("text", x = min(scaling_df$S_ROC), y = pi_neutral_G, 
-           label = "Neutral", hjust = 0, vjust = -0.5, color = "gray50") +
-  theme_minimal()
-
-# Panel 3: Pi_avg vs S_ROC 
-p_pi_avg <- ggplot(scaling_df, aes(x = S_ROC, y = Pi_avg)) +
-  geom_point(aes(color = Exp_Quantile), size = 3) +
-  geom_smooth(method = "lm", formula = y ~ x + I(x^2), color = "purple", se = TRUE, alpha = 0.2) +
-  geom_hline(yintercept = (pi_neutral_C + pi_neutral_G)/2, linetype = "dashed", color = "gray50") +
-  scale_color_viridis_c(name = "Exp %ile") +
-  labs(title = "Average (C+G)", 
-       x = "S_ROC (AnaCoDa)", 
-       y = expression(bar(pi)),
-       subtitle = sprintf("R² = %.3f", summary(quad_model_avg)$r.squared)) +
-  theme_minimal()
-
-# Panel 4: Both Pi_C and Pi_G vs Expression Quantile
-pi_long <- scaling_df |>
-  dplyr::select(Exp_Quantile, Pi_C, Pi_G, S_ROC) |>
-  tidyr::pivot_longer(cols = c(Pi_C, Pi_G), 
-                      names_to = "Nucleotide", values_to = "Pi") |>
-  dplyr::mutate(Nucleotide = gsub("Pi_", "", Nucleotide))
-
-p_pi_exp <- ggplot(pi_long, aes(x = Exp_Quantile, y = Pi, color = Nucleotide)) +
-  geom_point(size = 2) +
-  geom_line(linewidth = 0.8) +
-  scale_color_manual(values = c("C" = "blue", "G" = "red")) +
-  geom_hline(yintercept = pi_neutral_C, linetype = "dashed", color = "blue", alpha = 0.5) +
-  geom_hline(yintercept = pi_neutral_G, linetype = "dashed", color = "red", alpha = 0.5) +
-  labs(title = "Pi vs Expression", 
-       x = "Expression Quantile (%)", 
-       y = expression(pi~"(expected at equilibrium)")) +
-  theme_minimal() +
-  theme(legend.position = "top")
-
-# Combine panels
-pi_hump_plot <- (p_pi_C | p_pi_G) / (p_pi_avg | p_pi_exp) +
-  plot_annotation(
-    title = "Testing the Selection-Diversity 'Hump' Pattern",
-    subtitle = "Theory predicts pi should increase with weak selection, then decrease with strong selection"
-  )
-
-ggsave("./results/Pi_vs_Sroc_hump_test.pdf", plot = pi_hump_plot, 
-       width = 12, height = 10)
-cat("✓ Pi hump test plot saved: ./results/Pi_vs_Sroc_hump_test.pdf\n")
-
-# Generate theoretical curve for comparison
-cat("\n=== Generating Theoretical Pi vs Selection Curve ===\n")
-s_theoretical <- seq(0, max(scaling_df$S_ROC) * 1.2, length.out = 100)
-
-# Use gamma values proportional to S_ROC (based on linear scaling)
-# We'll use the average scaling factor from the regression
-if (exists("scaling_factor") && !is.na(scaling_factor)) {
-  gamma_theoretical <- background_drive + scaling_factor * s_theoretical
-} else {
-  # Fallback: use direct relationship assuming gamma ~ S
-  gamma_theoretical <- s_theoretical
-}
-
-pi_theoretical_C <- sapply(gamma_theoretical, function(g) {
-  pi_estimator_eq(neutral_params$alpha_C, neutral_params$beta_C, g)
-})
-
-pi_theoretical_G <- sapply(gamma_theoretical, function(g) {
-  pi_estimator_eq(neutral_params$alpha_G, neutral_params$beta_G, g)
-})
-
-theory_df <- data.frame(
-  S_ROC = s_theoretical,
-  Gamma = gamma_theoretical,
-  Pi_C = pi_theoretical_C,
-  Pi_G = pi_theoretical_G,
-  Pi_avg = (pi_theoretical_C + pi_theoretical_G) / 2
-)
-
-# Plot theoretical curve with empirical data overlay
-p_theory_overlay <- ggplot() +
-  # Theoretical curves
-  geom_line(data = theory_df, aes(x = S_ROC, y = Pi_avg), 
-            color = "black", linewidth = 1.2, linetype = "solid") +
-  geom_ribbon(data = theory_df, 
-              aes(x = S_ROC, ymin = Pi_C, ymax = Pi_G), 
-              alpha = 0.2, fill = "gray50") +
-  # Empirical points
-  geom_point(data = scaling_df, aes(x = S_ROC, y = Pi_avg, color = Exp_Quantile), 
-             size = 4) +
-  geom_errorbar(data = scaling_df, 
-                aes(x = S_ROC, ymin = Pi_C, ymax = Pi_G), 
-                width = 0.05, alpha = 0.5) +
-  scale_color_viridis_c(name = "Expression\nQuantile (%)") +
-  geom_hline(yintercept = (pi_neutral_C + pi_neutral_G)/2, 
-             linetype = "dashed", color = "gray50") +
-  annotate("text", x = 0, y = (pi_neutral_C + pi_neutral_G)/2, 
-           label = "Neutral", hjust = 0, vjust = -0.5) +
-  labs(
-    title = "Sawyer-Hartl Prediction: Diversity vs Selection Intensity",
-    subtitle = "Black line: theoretical expectation | Points: empirical data by expression quantile",
-    x = "Translational Selection Intensity (AnaCoDa S)",
-    y = expression("Nucleotide Diversity ("*pi*")")
-  ) +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(face = "bold", size = 14),
-    legend.position = "right"
-  )
-
-ggsave("./results/Pi_theoretical_vs_empirical.pdf", plot = p_theory_overlay, 
-       width = 10, height = 7)
-cat("✓ Theoretical vs empirical Pi plot saved: ./results/Pi_theoretical_vs_empirical.pdf\n")
-
-# Save hump test statistics
-hump_stats <- data.frame(
-  Nucleotide = c("C", "G", "Average"),
-  Linear_coef = c(coef(quad_model_C)[2], coef(quad_model_G)[2], coef(quad_model_avg)[2]),
-  Quadratic_coef = c(coef(quad_model_C)[3], coef(quad_model_G)[3], coef(quad_model_avg)[3]),
-  Quad_pval = c(summary(quad_model_C)$coefficients[3, 4],
-                summary(quad_model_G)$coefficients[3, 4],
-                summary(quad_model_avg)$coefficients[3, 4]),
-  R_squared = c(summary(quad_model_C)$r.squared,
-                summary(quad_model_G)$r.squared,
-                summary(quad_model_avg)$r.squared),
-  Pi_neutral = c(pi_neutral_C, pi_neutral_G, (pi_neutral_C + pi_neutral_G)/2)
-)
-
-write.csv(hump_stats, "./results/Pi_hump_test_statistics.csv", row.names = FALSE)
-cat("✓ Hump test statistics saved: ./results/Pi_hump_test_statistics.csv\n\n")
-
-# --- 8. Create 4-Panel Validation Plot ---
-cat("\n=== Creating 4-Panel Validation Plot ===\n")
-
-combined_validation_plot <- plot_sfs_validation_4panel(
-  plot_data_top5 = plot_data_top5,
-  plot_data_bottom5 = plot_data_bottom5,
-  gamma_top5_G = gamma_top5_G,
-  gamma_top5_C = gamma_top5_C,
-  gamma_bottom5_G = gamma_bottom5_G,
-  gamma_bottom5_C = gamma_bottom5_C
-)
-
-ggsave("results/SFS_Validation_4Panel_with_Gamma.pdf", 
-       plot = combined_validation_plot, 
-       width = 12, height = 10)
-
-cat("✓ 4-panel validation plot saved: results/SFS_Validation_4Panel_with_Gamma.pdf\n\n")
-
-# --- 9. Statistical Validation ---
-cat("\n=== Statistical Validation (Goodness of Fit Tests) ===\n")
-
-validate_selection_signal(plot_data_top5, "_C")
-validate_selection_signal(plot_data_top5, "_G")
-
-cat("\n✓ Analysis Complete!\n")
-
 ## *****************************************************************************
 ## 14) Diversity Hump Validation (EMPIRICAL Pi vs. Selection Intensity) ----
 ## _____________________________________________________________________________
 ## This section tests the hump pattern using OBSERVED Pi_mean_4fold values
 ## binned by S_coeff from AnaCoDa. This is the primary empirical validation.
 
-# STEP 1: Define the Theoretical Pi Function (Sawyer-Hartl stationary distribution)
-calc_theoretical_pi_gsl <- function(S, alpha, beta) {
-  # Denominator: B(a,b) * 1F1(a, a+b, S)
-  denom_1F1 <- hyperg_1F1(alpha, alpha + beta, S)
-  
-  # Numerator: 2 * B(a+1, b+1) * 1F1(a+1, a+b+2, S)
-  num_1F1 <- 2 * (beta(alpha + 1, beta + 1) / beta(alpha, beta)) * hyperg_1F1(alpha + 1, alpha + beta + 2, S)
-  
-  return(num_1F1 * (1 / denom_1F1))
-}
+# Kruskal-Wallis with Post-Hoc Dunn's Test (Mean + CI Visualization)
 
-# STEP 2: Gene-Level Quadratic Regression on EMPIRICAL Pi
-# Use selection_coeff_intensity which has both S_coeff and Pi_mean_4fold
-cat("=== Gene-Level Quadratic Regression on Observed Pi_mean_4fold ===\n")
-cat(sprintf("N genes with both S_coeff and Pi_mean_4fold: %d\n\n", nrow(selection_coeff_intensity)))
-
-# Fit quadratic model: Pi = a + b*S + c*S^2
-# Expect c < 0 for hump pattern
-empirical_quad_model <- lm(Pi_mean_4fold ~ S_coeff + I(S_coeff^2), data = selection_coeff_intensity)
-empirical_linear_model <- lm(Pi_mean_4fold ~ S_coeff, data = selection_coeff_intensity)
-
-cat("Quadratic Model: Pi_mean_4fold ~ S_coeff + I(S_coeff^2)\n")
-cat(sprintf("  Intercept:         %.6f (p = %.4e)\n", 
-            coef(empirical_quad_model)[1], summary(empirical_quad_model)$coefficients[1, 4]))
-cat(sprintf("  Linear coeff (b):  %.6f (p = %.4e)\n", 
-            coef(empirical_quad_model)[2], summary(empirical_quad_model)$coefficients[2, 4]))
-cat(sprintf("  Quadratic (c):     %.6f (p = %.4e)\n", 
-            coef(empirical_quad_model)[3], summary(empirical_quad_model)$coefficients[3, 4]))
-cat(sprintf("  R²: %.4f\n\n", summary(empirical_quad_model)$r.squared))
-
-# F-test: Does quadratic term significantly improve fit?
-anova_empirical <- anova(empirical_linear_model, empirical_quad_model)
-f_pval_empirical <- anova_empirical$`Pr(>F)`[2]
-
-cat("=== Model Comparison: Linear vs Quadratic ===\n")
-cat(sprintf("Linear model R²:    %.4f\n", summary(empirical_linear_model)$r.squared))
-cat(sprintf("Quadratic model R²: %.4f\n", summary(empirical_quad_model)$r.squared))
-cat(sprintf("F-test p-value:     %.4e\n", f_pval_empirical))
-
-if (coef(empirical_quad_model)[3] < 0 && f_pval_empirical < 0.05) {
-  cat("  → SUPPORTS HUMP: Negative quadratic coefficient + significant improvement\n\n")
-} else if (coef(empirical_quad_model)[3] < 0) {
-  cat("  → Negative quadratic coefficient but not significant (weak hump)\n\n")
-} else {
-  cat("  → No hump pattern detected (quadratic coefficient >= 0)\n\n")
-}
-
-# Find peak of the hump (if quadratic coefficient is negative)
-if (coef(empirical_quad_model)[3] < 0) {
-  peak_S_empirical <- -coef(empirical_quad_model)[2] / (2 * coef(empirical_quad_model)[3])
-  peak_pi_empirical <- predict(empirical_quad_model, newdata = data.frame(S_coeff = peak_S_empirical))
-  
-  cat("=== Empirical Hump Peak Location ===\n")
-  cat(sprintf("Peak S_coeff:  %.4f\n", peak_S_empirical))
-  cat(sprintf("Peak Pi:       %.6f\n", peak_pi_empirical))
-  cat(sprintf("S_coeff range: [%.4f, %.4f]\n", 
-              min(selection_coeff_intensity$S_coeff), 
-              max(selection_coeff_intensity$S_coeff)))
-  
-  if (peak_S_empirical > min(selection_coeff_intensity$S_coeff) && 
-      peak_S_empirical < max(selection_coeff_intensity$S_coeff)) {
-    cat("  → Peak is WITHIN data range (full hump observable)\n\n")
-  } else if (peak_S_empirical < min(selection_coeff_intensity$S_coeff)) {
-    cat("  → Peak is BELOW data range (only decreasing phase observed)\n\n")
-  } else {
-    cat("  → Peak is ABOVE data range (only increasing phase observed)\n\n")
-  }
-}
-
-# STEP 3: Process Empirical Binned Data for Visualization
-# We bin by S to observe the trend across intensities
-binned_data_robust <- selection_coeff_intensity |>
-  #dplyr::filter(Pi_mean_4fold < 0.05) |>  # Remove artifacts/paralogy noise
+# Prepare Data
+# Prepare Data
+clean_data_4cat <- selection_coeff_intensity |>
+  dplyr::filter(
+    !is.na(S_coeff), !is.na(Geom_Exp), !is.na(Pi_mean_4fold),
+    is.finite(S_coeff), is.finite(Geom_Exp), is.finite(Pi_mean_4fold),
+    Pi_mean_4fold < 0.05
+  ) |>
   dplyr::mutate(
-    S_Bin = cut(S_coeff, breaks = seq(0, 18, by = 0.5))
-  ) |>
-  dplyr::group_by(S_Bin) |>
-  dplyr::summarise(
-    Mean_S = mean(S_coeff),
-    Mean_Pi = mean(Pi_mean_4fold),
-    SE_Pi = sd(Pi_mean_4fold) / sqrt(n()), 
-    N_Genes = n(),
-    .groups = "drop"
-  ) |>
-  # Filter for robustness (N > 5) to remove high-S stochastic noise
-  dplyr::filter(N_Genes > 5)
+    # Use safe internal codes (A-D) to prevent regex errors in cldList
+    S_Bin_Code = cut(S_coeff, 
+                     breaks = c(-Inf, 0.5, 1, 2, Inf), 
+                     labels = c("A", "B", "C", "D"), 
+                     include.lowest = TRUE),
+    
+    # Expression remains as Deciles
+    Exp_Bin = cut(Geom_Exp, 
+                  breaks = quantile(Geom_Exp, probs = seq(0, 1, 0.1)),
+                  include.lowest = TRUE, labels = 1:10)
+  )
 
-cat("=== Binned Summary Statistics ===\n")
-cat(sprintf("Number of bins with N > 5: %d\n", nrow(binned_data_robust)))
-cat(sprintf("Total genes in valid bins: %d\n\n", sum(binned_data_robust$N_Genes)))
+# Define pretty labels for mapping back later
+s_bin_labels <- c("A" = "0-0.5", "B" = "0.5-1", "C" = "1-2", "D" = ">2")
 
-# STEP 4: Generate and Scale the Theoretical Curve
-# A. Get mutation parameters
-avg_alpha <- (neutral_params$alpha_G + neutral_params$alpha_C) / 2
-avg_beta  <- (neutral_params$beta_G + neutral_params$beta_C) / 2
-
-# B. Generate unscaled curve (Deep Time Equilibrium)
-s_values <- seq(0, 18, length.out = 100)
-pi_unscaled <- sapply(s_values, calc_theoretical_pi_gsl, alpha = avg_alpha, beta = avg_beta)
-theory_curve <- data.frame(S_val = s_values, Pi_Theory_Unscaled = pi_unscaled)
-
-# C. Calculate robust scaling factor
-# We scale the theoretical curve to pass through the mean of our empirical points
-# This accounts for background selection lowering baseline coding diversity
-empirical_theory_vals <- sapply(binned_data_robust$Mean_S, calc_theoretical_pi_gsl, 
-                                alpha = avg_alpha, beta = avg_beta)
-
-robust_scaling <- mean(binned_data_robust$Mean_Pi / empirical_theory_vals)
-theory_curve$Pi_Theory <- theory_curve$Pi_Theory_Unscaled * robust_scaling
-
-# STEP 5: Generate Publication-Quality Plot
-validation_hump_plot <- ggplot() +
-  # A. Theoretical Curve (Dashed)
-  geom_line(data = theory_curve, aes(x = S_val, y = Pi_Theory),
-            color = "#e74c3c", linetype = "dashed", linewidth = 1.2) +
+# Analysis Function
+analyze_and_summarize <- function(data, group_col, response_col = "Pi_mean_4fold") {
   
-  # B. Empirical Binned Data
-  geom_point(data = binned_data_robust, aes(x = Mean_S, y = Mean_Pi), 
-             size = 4, color = "black") +
-  geom_errorbar(data = binned_data_robust, 
-                aes(x = Mean_S, ymin = Mean_Pi - 2*SE_Pi, ymax = Mean_Pi + 2*SE_Pi),
-                width = 0.15, color = "black") +
+  f <- as.formula(paste(response_col, "~", group_col))
+  dunn_res <- FSA::dunnTest(f, data = data, method = "bh")
   
-  # C. Quadratic fit line on binned data
-  geom_smooth(data = binned_data_robust, aes(x = Mean_S, y = Mean_Pi),
-              method = "lm", formula = y ~ x + I(x^2), 
-              color = "blue", fill = "lightblue", alpha = 0.3, se = TRUE) +
+  # Generate Letters
+  cld <- rcompanion::cldList(P.adj ~ Comparison, data = dunn_res$res, threshold = 0.05)
   
-  # D. Formatting
-  coord_cartesian(xlim = c(0, 6), ylim = c(0, 0.05)) + 
-  labs(title = "Validation of Selection: The Hump Effect in Mimulus",
-       subtitle = sprintf("Empirical Pi_mean_4fold vs S_coeff (N = %d genes)", 
-                          nrow(selection_coeff_intensity)),
-       x = "Selection Coefficient (S from AnaCoDa)",
-       y = expression("Observed Nucleotide Diversity ("*pi*")"[4-fold])) +
-  theme_custom() +
-  theme(plot.subtitle = element_text(size = 10, face = "italic"))
+  # Clean CLD
+  cld_clean <- cld |>
+    dplyr::rename(!!group_col := Group, Letter = Letter) |>
+    dplyr::mutate(!!group_col := trimws(as.character(!!sym(group_col)))) |>
+    dplyr::select(!!group_col, Letter)
+  
+  # Summary Stats
+  summary_stats <- data |>
+    dplyr::group_by(!!sym(group_col)) |>
+    dplyr::summarise(
+      Mean = mean(!!sym(response_col), na.rm = TRUE),
+      SD = sd(!!sym(response_col), na.rm = TRUE),
+      N = n(),
+      SE = SD / sqrt(N),
+      CI_95 = 1.96 * SE,
+      Upper = Mean + CI_95,
+      Lower = Mean - CI_95,
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(!!group_col := as.character(!!sym(group_col))) |>
+    dplyr::left_join(cld_clean, by = group_col) |>
+    dplyr::mutate(!!group_col := factor(!!sym(group_col), 
+                                        levels = levels(data[[group_col]])))
+  
+  return(summary_stats)
+}
 
-# STEP 6: Create scatter plot of raw data with quadratic fit
-scatter_hump_plot <- ggplot(selection_coeff_intensity, 
-                            aes(x = S_coeff, y = Pi_mean_4fold)) +
-  geom_point(alpha = 0.1, size = 0.5, color = "gray40") +
-  geom_smooth(method = "lm", formula = y ~ x + I(x^2), 
-              color = "blue", fill = "lightblue", linewidth = 1.2) +
-  coord_cartesian(xlim = c(0, 6), ylim = c(0, 0.1)) +
-  labs(title = "Gene-Level Pi vs Selection Intensity",
-       subtitle = sprintf("Quadratic R² = %.4f, Quad. coef p = %.2e", 
-                          summary(empirical_quad_model)$r.squared,
-                          summary(empirical_quad_model)$coefficients[3, 4]),
-       x = "Selection Coefficient (S from AnaCoDa)",
-       y = expression("Observed "*pi[4-fold])) +
-  theme_minimal()
+# Run Analysis
+stats_S <- analyze_and_summarize(clean_data_4cat, "S_Bin_Code")
+stats_Exp <- analyze_and_summarize(clean_data_4cat, "Exp_Bin")
 
-# Combined multi-panel plot
-empirical_hump_combined <- validation_hump_plot | scatter_hump_plot
+# Map codes back to pretty labels for S_ROC
+stats_S$Pretty_Label <- s_bin_labels[as.character(stats_S$S_Bin_Code)]
+stats_S$Pretty_Label <- factor(stats_S$Pretty_Label, levels = c("0-0.5", "0.5-1", "1-2", ">2"))
 
-# STEP 7: Save Outputs
-ggsave("./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_binned_final.pdf",
-       plot = validation_hump_plot, width = 6, height = 4)
+# For Expression, the labels are already correct
+stats_Exp$Pretty_Label <- stats_Exp$Exp_Bin
 
-ggsave("./results/diversity_modeling/Pi_vs_S_coeff_scatter_quadratic.pdf",
-       plot = scatter_hump_plot, width = 6, height = 5)
+# Plotting Function
+plot_mean_ci <- function(summary_data, title, subtitle, x_lab) {
+  
+  y_max <- max(summary_data$Upper, na.rm = TRUE)
+  y_min <- min(summary_data$Lower, na.rm = TRUE)
+  text_offset <- (y_max - y_min) * 0.15
+  
+  ggplot(summary_data, aes(x = Pretty_Label, y = Mean)) +
+    geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.2, linewidth = 0.8) +
+    geom_point(aes(fill = Pretty_Label), shape = 21, size = 5, color = "black", stroke = 1) +
+    geom_text(aes(y = Upper + text_offset, label = Letter), size = 6, fontface = "bold") +
+    scale_fill_viridis_d(option = "magma", begin = 0.2, end = 0.9) +
+    scale_y_continuous(expand = expansion(mult = c(0.1, 0.2))) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = x_lab,
+      y = "Nucleotide Diversity (Pi) ± 95% CI"
+    ) +
+    theme_custom() +
+    theme(legend.position = "none",
+          plot.title = element_text(face = "bold"))
+}
 
-ggsave("./results/diversity_modeling/Pi_vs_S_coeff_empirical_combined.pdf",
-       plot = empirical_hump_combined, width = 12, height = 5)
+# Generate and Save
+p_select <- plot_mean_ci(stats_S, 
+                         "Diversity vs Selection (4 Categories)", 
+                         "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)",
+                         "Selection Intensity (S_ROC)")
 
-cat("✓ Empirical hump plots saved:\n")
-cat("  - ./results/diversity_modeling/Pi_vs_S_coeff_AnaCoDa_binned_final.pdf\n")
-cat("  - ./results/diversity_modeling/Pi_vs_S_coeff_scatter_quadratic.pdf\n")
-cat("  - ./results/diversity_modeling/Pi_vs_S_coeff_empirical_combined.pdf\n\n")
+p_exp <- plot_mean_ci(stats_Exp, 
+                      "Diversity vs Expression (Deciles)", 
+                      "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)",
+                      "Expression Decile")
 
-# STEP 8: Save Statistics
-empirical_hump_stats <- data.frame(
-  Test = c("Linear_coef", "Quadratic_coef", "Quadratic_pval", 
-           "Linear_R2", "Quadratic_R2", "F_test_pval", 
-           "Peak_S", "Peak_Pi", "N_genes"),
-  Value = c(coef(empirical_quad_model)[2],
-            coef(empirical_quad_model)[3],
-            summary(empirical_quad_model)$coefficients[3, 4],
-            summary(empirical_linear_model)$r.squared,
-            summary(empirical_quad_model)$r.squared,
-            f_pval_empirical,
-            if(coef(empirical_quad_model)[3] < 0) peak_S_empirical else NA,
-            if(coef(empirical_quad_model)[3] < 0) peak_pi_empirical else NA,
-            nrow(selection_coeff_intensity))
-)
+ggsave("results/Results_Pi_vs_S_4Cat.pdf", p_select, width = 7, height = 6)
+ggsave("results/Results_Pi_vs_Exp_Deciles.pdf", p_exp, width = 8, height = 6)
 
-write.csv(empirical_hump_stats, "./results/diversity_modeling/empirical_hump_test_statistics.csv", 
-          row.names = FALSE)
-cat("✓ Empirical hump statistics saved: ./results/diversity_modeling/empirical_hump_test_statistics.csv\n\n")
+cat("\nPlots saved successfully using the 4-category S_ROC binning.\n")

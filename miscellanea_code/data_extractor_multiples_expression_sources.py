@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import re
+import random
 
 def build_gene_name_dictionary_IM62(GO_based_txt):
     """
@@ -59,6 +60,86 @@ def build_gene_name_dictionary_from_refs(crossref_file):
     print(f"Omitted mappings (complex/multi): {ommited_count}")
 
     return gene_name_62_to_767
+
+def validate_mapping(df_original, df_final_matrix, gene_map, num_checks=5):
+    """
+    Validates the mapping and aggregation process by tracking random random points 
+    back to the original data.
+    """
+    print("\n--- Performing Quality Control / Validation ---")
+    
+    # Invert gene map to find original genes for a remapped gen (IM767 -> [IM62, IM62...])
+    reverse_map = {}
+    for original, remapped in gene_map.items():
+        if remapped not in reverse_map:
+            reverse_map[remapped] = []
+        reverse_map[remapped].append(original)
+        
+    # Get list of remapped genes and samples
+    remapped_genes = df_final_matrix.index.tolist()
+    samples = df_final_matrix.columns.tolist()
+    
+    checks_passed = 0
+    
+    print(f"Checking {num_checks} random data points...")
+
+    for i in range(num_checks):
+        # 1. Select random sample
+        sample = random.choice(samples)
+        
+        # 2. Select random gene that has expression in this sample (prefer non-zero for meaningful check)
+        expressed_genes = df_final_matrix.index[df_final_matrix[sample] > 0].tolist()
+        
+        if not expressed_genes:
+            target_gene = random.choice(remapped_genes) # Fallback if sample is empty
+        else:
+            target_gene = random.choice(expressed_genes)
+            
+        observed_val = df_final_matrix.loc[target_gene, sample]
+        
+        # 3. Find contributing original genes (IM62 IDs)
+        if target_gene in reverse_map:
+            original_sources = reverse_map[target_gene]
+        else:
+            print(f"Check {i+1}: FAIL - Gene {target_gene} not found in reverse map.")
+            continue
+            
+        # 4. Retrieve values from original dataframe
+        # We assume df_original has columns ['Sample', 'Gene', 'CPM']
+        # Filter for Sample AND (Gene is in original_sources)
+        subset = df_original[
+            (df_original['Sample'] == sample) & 
+            (df_original['Gene'].isin(original_sources))
+        ]
+        
+        expected_val = subset['CPM'].sum()
+        
+        # 5. Check equality (with floating point tolerance)
+        match = abs(observed_val - expected_val) < 1e-6
+        
+        status = "PASS" if match else "FAIL"
+        if match: checks_passed += 1
+        
+        print(f"\n[Check {i+1}]: {status}")
+        print(f"  Sample: {sample}")
+        print(f"  Target Gene (IM767): {target_gene}")
+        print(f"  Final Value (Matrix): {observed_val:.6f}")
+        print(f"  Contributing Original Genes (IM62): {len(subset)} found out of {len(original_sources)} potential mapping sources")
+        if not subset.empty:
+            for _, row in subset.iterrows():
+                print(f"    - {row['Gene']}: {row['CPM']:.6f}")
+        else:
+            print("    (No expression found for contributing genes in source)")
+        print(f"  Expected Sum: {expected_val:.6f}")
+        print(f"  Difference: {abs(observed_val - expected_val):.2e}")
+
+    print("-" * 40)
+    print(f"Validation Summary: {checks_passed}/{num_checks} checks passed.")
+    if checks_passed != num_checks:
+        print("WARNING: Some validation checks failed! Please review.")
+    else:
+        print("SUCCESS: Data compiling looks consistent.")
+    print("-" * 40)
 
 def main():
     parser = argparse.ArgumentParser(description="Compile and remap expression data from multiple sources (IM62/IM767).")
@@ -154,7 +235,12 @@ def main():
     
     print(f"Final Matrix Shape: {df_matrix.shape}")
     
-    # --- 4. Save Output ---
+    # --- 4. Quality Control ---
+    # Pass the unfiltered df (but we need to manually filter sample inside validation to match context)
+    # The validation function handles filtering df by sample.
+    validate_mapping(df, df_matrix, final_gene_map, num_checks=5)
+
+    # --- 5. Save Output ---
     print(f"\n--- Saving to {args.output_file} ---")
     df_matrix.to_csv(args.output_file, sep='\t')
     print("Done successfully.")
