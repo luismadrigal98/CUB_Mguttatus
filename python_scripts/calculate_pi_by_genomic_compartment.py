@@ -99,12 +99,16 @@ def get_site_nucleotide_category(ref, alt, strand, is_invariant):
 
 # ====================== GFF PARSING ======================
 
-def parse_gff3(gff_file):
+def parse_gff3(gff_file, target_chrom=None):
     """
     Parse GFF3 to extract:
     - Gene boundaries (for defining intergenic)
     - Exon coordinates with exon number (for first vs non-first)
     - Calculate introns from exon gaps
+    
+    Args:
+        gff_file: Path to GFF3 file
+        target_chrom: If set, only parse this chromosome (for parallel processing)
     
     Returns:
         genes: {gene_id: {'chrom': str, 'start': int, 'end': int, 'strand': str}}
@@ -112,7 +116,8 @@ def parse_gff3(gff_file):
         introns: {chrom: [(start, end, gene_id, strand), ...]}  # After trimming
         gene_intervals: {chrom: [(start, end), ...]}  # For intergenic calculation
     """
-    print(f"Parsing GFF3: {gff_file}")
+    chrom_filter = f" (filtering for {target_chrom})" if target_chrom else ""
+    print(f"Parsing GFF3: {gff_file}{chrom_filter}")
     
     genes = {}
     mrna_exons = defaultdict(list)  # mrna_id -> [(start, end)]
@@ -132,6 +137,10 @@ def parse_gff3(gff_file):
             
             # Skip scaffolds
             if "Chr" not in chrom:
+                continue
+            
+            # Filter by target chromosome if specified
+            if target_chrom and chrom != target_chrom:
                 continue
             
             start, end = int(start) - 1, int(end)  # Convert to 0-based
@@ -469,9 +478,15 @@ def init_compartment_stats():
     return stats
 
 
-def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False):
+def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False, target_chrom=None):
     """
     Process VCF and calculate π for each compartment, with C/G polarization.
+    
+    Args:
+        vcf_path: Path to VCF file
+        exons, introns, intergenic, degeneracy: Annotation data structures
+        stream: If True, read from stdin
+        target_chrom: If set, only process this chromosome (for parallel processing)
     
     Returns:
         compartment_stats: {compartment: {nuc_category: {'sites': int, 'poly': int, 'pi_sum': float}}}
@@ -483,7 +498,8 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False):
     # Open input
     if stream:
         input_handle = sys.stdin
-        print("Reading VCF from stdin...")
+        chrom_filter = f" (filtering for {target_chrom})" if target_chrom else ""
+        print(f"Reading VCF from stdin...{chrom_filter}")
     elif vcf_path.endswith('.gz'):
         input_handle = gzip.open(vcf_path, 'rt')
         print(f"Reading VCF: {vcf_path}")
@@ -508,6 +524,10 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False):
             continue
         
         chrom, pos, ref, alt, genotypes = parsed
+        
+        # Filter by target chromosome if specified
+        if target_chrom and chrom != target_chrom:
+            continue
         
         # Skip multi-allelic or indels
         is_invariant = (alt == '.' or alt == '<NON_REF>' or alt == '*')
@@ -577,16 +597,17 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False):
 
 # ====================== OUTPUT ======================
 
-def write_summary(stats, output_file):
+def write_summary(stats, output_file, chromosome=None):
     """Write summary statistics per compartment with C/G polarization."""
     
+    chrom_str = chromosome if chromosome else "all"
     print(f"\nWriting summary to: {output_file}")
     
     compartments = ['intergenic', 'intron', 'first_exon_4fold', 'nonfirst_exon_4fold']
     
     with open(output_file, 'w') as out:
-        # Header with all nucleotide categories
-        out.write("Compartment\tNuc_Category\tSites\tPolymorphic\tPi_sum\tPi_mean\tPoly_fraction\n")
+        # Header with chromosome column for merging across parallel jobs
+        out.write("Chromosome\tCompartment\tNuc_Category\tSites\tPolymorphic\tPi_sum\tPi_mean\tPoly_fraction\n")
         
         for compartment in compartments:
             for nuc_cat in NUC_CATEGORIES:
@@ -597,11 +618,11 @@ def write_summary(stats, output_file):
                 pi_mean = pi_sum / n_sites if n_sites > 0 else 0.0
                 poly_frac = n_poly / n_sites if n_sites > 0 else 0.0
                 
-                out.write(f"{compartment}\t{nuc_cat}\t{n_sites}\t{n_poly}\t{pi_sum:.6f}\t{pi_mean:.8f}\t{poly_frac:.6f}\n")
+                out.write(f"{chrom_str}\t{compartment}\t{nuc_cat}\t{n_sites}\t{n_poly}\t{pi_sum:.6f}\t{pi_mean:.8f}\t{poly_frac:.6f}\n")
     
     # Also print to console - formatted nicely
     print("\n" + "=" * 90)
-    print("SUMMARY: Nucleotide Diversity (π) by Genomic Compartment")
+    print(f"SUMMARY: Nucleotide Diversity (π) by Genomic Compartment - {chrom_str}")
     print("With C/G/AT Polarization (strand-corrected)")
     print("=" * 90)
     
@@ -644,6 +665,8 @@ def main():
     parser.add_argument('--gff', type=str, required=True, help='GFF3 annotation file')
     parser.add_argument('--degeneracy', type=str, nargs='+', required=True,
                         help='Degeneracy annotation file(s) from describe_gene_positions_by_degeneracy.py')
+    parser.add_argument('--chromosome', type=str, default=None,
+                        help='Process only this chromosome (for parallel processing)')
     parser.add_argument('--output', type=str, default='pi_by_compartment.txt',
                         help='Output file (default: pi_by_compartment.txt)')
     
@@ -653,8 +676,12 @@ def main():
         print("Error: Must provide --vcf or --stream")
         sys.exit(1)
     
-    # 1. Parse GFF3
-    genes, exons, introns, gene_intervals = parse_gff3(args.gff)
+    target_chrom = args.chromosome
+    if target_chrom:
+        print(f"Filtering for chromosome: {target_chrom}")
+    
+    # 1. Parse GFF3 (filter by chromosome if specified)
+    genes, exons, introns, gene_intervals = parse_gff3(args.gff, target_chrom=target_chrom)
     
     # 2. Calculate intergenic windows
     intergenic = calculate_intergenic_windows(gene_intervals)
@@ -666,11 +693,12 @@ def main():
     stats = process_vcf(
         args.vcf if args.vcf else None,
         exons, introns, intergenic, degeneracy,
-        stream=args.stream
+        stream=args.stream,
+        target_chrom=target_chrom
     )
     
     # 5. Write output
-    write_summary(stats, args.output)
+    write_summary(stats, args.output, chromosome=target_chrom)
     
     print("\nDone!")
 

@@ -3757,3 +3757,7 @@ ggsave("results/Results_Pi_vs_S_4Cat.pdf", p_select, width = 7, height = 6)
 ggsave("results/Results_Pi_vs_Exp_Deciles.pdf", p_exp, width = 8, height = 6)
 
 cat("\nPlots saved successfully using the 4-category S_ROC binning.\n")
+
+## *****************************************************************************
+## 15) Diversity across different genomic compartment ----
+## _____________________________________________________________________________

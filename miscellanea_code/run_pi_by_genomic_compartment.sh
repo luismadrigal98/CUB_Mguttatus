@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=pi_compartments
-#SBATCH --output=logs/pi_compartments_%j.out
-#SBATCH --error=logs/pi_compartments_%j.err
+#SBATCH --output=logs/pi_compartments_%A_%a.out
+#SBATCH --error=logs/pi_compartments_%A_%a.err
+#SBATCH --array=1-14
 #SBATCH --time=10-00:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=4
@@ -16,21 +17,15 @@
 #   4. Non-first exons - 4-fold degenerate sites only
 #
 # Usage:
-#   sbatch run_pi_by_genomic_compartment.sh
-#   OR
-#   bash run_pi_by_genomic_compartment.sh
+#   sbatch run_pi_by_genomic_compartment.sh        # Parallel (HPC)
+#   bash run_pi_by_genomic_compartment.sh          # Sequential (local)
+#   bash run_pi_by_genomic_compartment.sh concat   # Concatenate after parallel jobs
 #
 # Author: Luis Javier Madrigal-Roca & GitHub Copilot
 # Date: 2026-01-14
 
 set -e
 set -u
-
-echo "========================================="
-echo "π by Genomic Compartment Analysis"
-echo "========================================="
-echo "Started: $(date)"
-echo ""
 
 # ============================================================================
 # Configuration
@@ -52,94 +47,249 @@ mkdir -p "$OUTPUT_DIR"
 mkdir -p logs
 
 # Chromosomes
-CHROMOSOMES=(Chr_01 Chr_02 Chr_03 Chr_04 Chr_05 Chr_06 Chr_07 Chr_08 Chr_09 Chr_10 Chr_11 Chr_12 Chr_13 Chr_14)
+CHROMOSOMES_ARRAY=(Chr_01 Chr_02 Chr_03 Chr_04 Chr_05 Chr_06 Chr_07 Chr_08 Chr_09 Chr_10 Chr_11 Chr_12 Chr_13 Chr_14)
+
+# Pre-filtered VCF directory (optional, for speed)
+PREFILTERED_VCF_DIR="vcf_by_chromosome"
+
+# ============================================================================
+# Detect execution mode
+# ============================================================================
+
+# Check for concatenation-only mode
+if [ "${1:-}" = "concat" ]; then
+    CONCAT_ONLY=1
+else
+    CONCAT_ONLY=0
+fi
+
+# Detect if running in SLURM environment (parallel) or standalone (sequential)
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    PARALLEL_MODE=1
+    echo "Running in PARALLEL mode (SLURM array job)"
+else
+    PARALLEL_MODE=0
+    if [ $CONCAT_ONLY -eq 1 ]; then
+        echo "Running in CONCATENATION-ONLY mode"
+    else
+        echo "Running in SEQUENTIAL mode"
+    fi
+fi
+
+echo "========================================="
+echo "π by Genomic Compartment Analysis"
+echo "========================================="
+echo "Started: $(date)"
+echo ""
+
+# ============================================================================
+# Determine chromosomes to process
+# ============================================================================
+
+if [ $PARALLEL_MODE -eq 1 ]; then
+    # Parallel mode: process single chromosome based on array task ID
+    CHR=${CHROMOSOMES_ARRAY[$SLURM_ARRAY_TASK_ID-1]}
+    CHROMOSOMES_TO_PROCESS=($CHR)
+    
+    echo "PARALLEL MODE - Processing: $CHR"
+    echo "Job ID: $SLURM_JOB_ID"
+    echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
+    echo "Node: ${SLURM_NODELIST:-localhost}"
+    echo ""
+elif [ $CONCAT_ONLY -eq 1 ]; then
+    CHROMOSOMES_TO_PROCESS=()
+    echo "Skipping processing, will concatenate only."
+    echo ""
+else
+    # Sequential mode: process all chromosomes
+    CHROMOSOMES_TO_PROCESS=("${CHROMOSOMES_ARRAY[@]}")
+    echo "SEQUENTIAL MODE - Processing all chromosomes"
+    echo ""
+fi
 
 # ============================================================================
 # Step 1: Generate degeneracy annotations (if not already done)
 # ============================================================================
 
-echo "Step 1: Checking degeneracy annotation files..."
-
-DEGENERACY_FILES=""
-MISSING_ANNOT=0
-
-for CHR in "${CHROMOSOMES[@]}"; do
-    ANNOT_FILE="$OUTPUT_DIR/${CHR}.genic_bases.annotated.txt"
+if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
+    echo "Step 1: Checking degeneracy annotation files..."
     
-    if [ ! -f "$ANNOT_FILE" ]; then
-        echo "  Generating annotation for $CHR..."
+    DEGENERACY_FILES=""
+    MISSING_ANNOT=0
+    
+    for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
+        ANNOT_FILE="$OUTPUT_DIR/${CHR}.genic_bases.annotated.txt"
         
-        python3 "${MISCELLANEA_DIR}/describe_gene_positions_by_degeneracy.py" \
-            "$CHR" \
-            "$GFF3" \
-            "$GENOME_FA" \
-            "$CDS_FA"
-        
-        # Move to output directory
-        if [ -f "${CHR}.genic_bases.annotated.txt" ]; then
-            mv "${CHR}.genic_bases.annotated.txt" "$ANNOT_FILE"
+        if [ -f "$ANNOT_FILE" ]; then
+            echo "  ✓ $CHR annotation exists"
+        else
+            echo "  Generating annotation for $CHR..."
+            
+            python3 "${MISCELLANEA_DIR}/describe_gene_positions_by_degeneracy.py" \
+                "$CHR" \
+                "$GFF3" \
+                "$GENOME_FA" \
+                "$CDS_FA" \
+                > "${OUTPUT_DIR}/${CHR}.step1.log" 2>&1
+            
+            # Move to output directory
+            if [ -f "${CHR}.genic_bases.annotated.txt" ]; then
+                mv "${CHR}.genic_bases.annotated.txt" "$ANNOT_FILE"
+                echo "  ✓ Created $ANNOT_FILE"
+            fi
         fi
-    else
-        echo "  ✓ $CHR annotation exists"
+        
+        if [ -f "$ANNOT_FILE" ]; then
+            DEGENERACY_FILES="$DEGENERACY_FILES $ANNOT_FILE"
+        else
+            echo "  ✗ WARNING: Missing annotation for $CHR"
+            MISSING_ANNOT=1
+        fi
+    done
+    
+    if [ $MISSING_ANNOT -eq 1 ]; then
+        echo ""
+        echo "ERROR: Some degeneracy annotation files are missing."
+        echo "Please run describe_gene_positions_by_degeneracy.py for all chromosomes first."
+        exit 1
     fi
     
-    if [ -f "$ANNOT_FILE" ]; then
-        DEGENERACY_FILES="$DEGENERACY_FILES $ANNOT_FILE"
-    else
-        echo "  ✗ WARNING: Missing annotation for $CHR"
-        MISSING_ANNOT=1
+    echo ""
+    echo "All degeneracy annotations ready."
+    echo ""
+fi
+
+# ============================================================================
+# Step 2: Calculate π by compartment (per chromosome)
+# ============================================================================
+
+if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
+    echo "Step 2: Calculating π by genomic compartment..."
+    echo ""
+    
+    for CHR in "${CHROMOSOMES_TO_PROCESS[@]}"; do
+        echo "-----------------------------------------"
+        echo "Processing $CHR"
+        echo "-----------------------------------------"
+        
+        CHR_START=$(date +%s)
+        
+        OUTPUT_FILE="$OUTPUT_DIR/${CHR}.pi_by_compartment.txt"
+        ANNOT_FILE="$OUTPUT_DIR/${CHR}.genic_bases.annotated.txt"
+        
+        # Check if output already exists
+        if [ -f "$OUTPUT_FILE" ]; then
+            echo "  ⚠ Output file already exists, skipping: $OUTPUT_FILE"
+            continue
+        fi
+        
+        # Check for pre-filtered VCF (much faster!)
+        if [ -f "${PREFILTERED_VCF_DIR}/${VCF##*/}.${CHR}.vcf" ]; then
+            VCF_INPUT="${PREFILTERED_VCF_DIR}/${VCF##*/}.${CHR}.vcf"
+            echo "  Using pre-filtered VCF: $VCF_INPUT"
+            echo "  File size: $(du -h "$VCF_INPUT" | cut -f1)"
+        elif [ -f "${PREFILTERED_VCF_DIR}/${CHR}.vcf" ]; then
+            VCF_INPUT="${PREFILTERED_VCF_DIR}/${CHR}.vcf"
+            echo "  Using pre-filtered VCF: $VCF_INPUT"
+        else
+            VCF_INPUT="$VCF"
+            echo "  Using full VCF: $VCF_INPUT"
+            echo "  ⚠ Consider pre-filtering VCF by chromosome for faster processing"
+        fi
+        
+        # Run the compartment analysis
+        if [[ "$VCF_INPUT" == *.gz ]]; then
+            zcat "$VCF_INPUT" | python3 "${SCRIPT_DIR}/calculate_pi_by_genomic_compartment.py" \
+                --stream \
+                --gff "$GFF3" \
+                --degeneracy "$ANNOT_FILE" \
+                --chromosome "$CHR" \
+                --output "$OUTPUT_FILE" \
+                > "${OUTPUT_DIR}/${CHR}.step2.log" 2>&1
+        else
+            python3 "${SCRIPT_DIR}/calculate_pi_by_genomic_compartment.py" \
+                --vcf "$VCF_INPUT" \
+                --gff "$GFF3" \
+                --degeneracy "$ANNOT_FILE" \
+                --chromosome "$CHR" \
+                --output "$OUTPUT_FILE" \
+                > "${OUTPUT_DIR}/${CHR}.step2.log" 2>&1
+        fi
+        
+        CHR_END=$(date +%s)
+        CHR_ELAPSED=$((CHR_END - CHR_START))
+        
+        if [ -f "$OUTPUT_FILE" ]; then
+            echo "  ✓ Created $OUTPUT_FILE ($(($CHR_ELAPSED / 60)) min $(($CHR_ELAPSED % 60)) sec)"
+        else
+            echo "  ✗ ERROR: Failed to create output for $CHR"
+        fi
+        echo ""
+    done
+fi
+
+# ============================================================================
+# Exit early if parallel mode (concatenation done separately)
+# ============================================================================
+
+if [ $PARALLEL_MODE -eq 1 ]; then
+    echo ""
+    echo "========================================="
+    echo "Completed: $CHR"
+    echo "Finished: $(date)"
+    echo "========================================="
+    echo ""
+    echo "After all array jobs complete, run concatenation step:"
+    echo "  bash ${0} concat"
+    exit 0
+fi
+
+# ============================================================================
+# Step 3: Concatenate results across chromosomes
+# ============================================================================
+
+echo "========================================="
+echo "Step 3: Concatenating results across chromosomes"
+echo "========================================="
+
+COMBINED_FILE="$OUTPUT_DIR/all_chromosomes.pi_by_compartment.txt"
+
+FIRST=1
+for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
+    CHR_FILE="$OUTPUT_DIR/${CHR}.pi_by_compartment.txt"
+    
+    if [ ! -f "$CHR_FILE" ]; then
+        echo "  ⚠ Warning: $CHR_FILE not found, skipping..."
+        continue
     fi
+    
+    if [ $FIRST -eq 1 ]; then
+        # Include header from first file
+        cat "$CHR_FILE" > "$COMBINED_FILE"
+        FIRST=0
+    else
+        # Skip header for subsequent files
+        tail -n +2 "$CHR_FILE" >> "$COMBINED_FILE"
+    fi
+    
+    echo "  ✓ Added $CHR"
 done
 
-if [ $MISSING_ANNOT -eq 1 ]; then
+if [ -f "$COMBINED_FILE" ]; then
     echo ""
-    echo "ERROR: Some degeneracy annotation files are missing."
-    echo "Please run describe_gene_positions_by_degeneracy.py for all chromosomes first."
-    exit 1
-fi
-
-echo ""
-echo "All degeneracy annotations ready."
-echo ""
-
-# ============================================================================
-# Step 2: Calculate π by compartment
-# ============================================================================
-
-echo "Step 2: Calculating π by genomic compartment..."
-echo ""
-
-OUTPUT_FILE="$OUTPUT_DIR/pi_by_compartment.txt"
-
-# Check VCF format
-if [ -f "$VCF" ]; then
-    echo "Reading VCF from file: $VCF"
-    
-    if [[ "$VCF" == *.gz ]]; then
-        zcat "$VCF" | python3 "${SCRIPT_DIR}/calculate_pi_by_genomic_compartment.py" \
-            --stream \
-            --gff "$GFF3" \
-            --degeneracy $DEGENERACY_FILES \
-            --output "$OUTPUT_FILE"
-    else
-        python3 "${SCRIPT_DIR}/calculate_pi_by_genomic_compartment.py" \
-            --vcf "$VCF" \
-            --gff "$GFF3" \
-            --degeneracy $DEGENERACY_FILES \
-            --output "$OUTPUT_FILE"
-    fi
+    echo "Created: $COMBINED_FILE"
 else
-    echo "ERROR: VCF file not found: $VCF"
+    echo ""
+    echo "ERROR: No chromosome files found to concatenate."
     exit 1
 fi
 
+# ============================================================================
+# Step 4: Generate summary report
+# ============================================================================
+
 echo ""
-
-# ============================================================================
-# Step 3: Generate summary report
-# ============================================================================
-
-echo "Step 3: Generating summary report..."
+echo "Step 4: Generating summary report..."
 
 REPORT_FILE="$OUTPUT_DIR/pi_compartment_report.txt"
 
@@ -162,9 +312,10 @@ CONFIGURATION:
 RESULTS:
 EOF
 
-# Append the results
-if [ -f "$OUTPUT_FILE" ]; then
-    cat "$OUTPUT_FILE" >> "$REPORT_FILE"
+# Append the combined results
+if [ -f "$COMBINED_FILE" ]; then
+    echo "" >> "$REPORT_FILE"
+    cat "$COMBINED_FILE" >> "$REPORT_FILE"
 fi
 
 cat >> "$REPORT_FILE" << EOF
@@ -209,6 +360,6 @@ echo "========================================="
 echo "Finished: $(date)"
 echo ""
 echo "Output files:"
-echo "  - $OUTPUT_FILE"
+echo "  - $COMBINED_FILE"
 echo "  - $REPORT_FILE"
 echo ""
