@@ -29,7 +29,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'abind', 'scales', 'mclust', 'coda',
                         'admisc', 'corrr', 'patchwork', 'gprofiler2',
                         'ggnewscale', 'broom', 'reshape2',
-                        'furrr', 'tidyr', 'gsl')
+                        'furrr', 'tidyr', 'gsl', 'rcompanion',
+                        'FSA')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -1870,7 +1871,108 @@ ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 11, heigh
 
 # Exploring the relationship between pi and S
 
+# Kruskal-Wallis with Post-Hoc Dunns's Test (Mean + CI Visualization) ----
 
+# Prepare Data
+clean_data <- selection_coeff_intensity |>
+  dplyr::filter(
+    !is.na(S_coeff), !is.na(Geom_Exp), !is.na(Pi_mean_4fold),
+    is.finite(S_coeff), is.finite(Geom_Exp), is.finite(Pi_mean_4fold)
+  ) |>
+  dplyr::mutate(
+    # Create Deciles (1 = Low, 10 = High)
+    S_Bin = cut(S_coeff, breaks = quantile(S_coeff, probs = seq(0, 1, 0.1)),
+                include.lowest = TRUE, labels = 1:10),
+    Exp_Bin = cut(Geom_Exp, breaks = quantile(Geom_Exp, probs = seq(0, 1, 0.1)),
+                  include.lowest = TRUE, labels = 1:10)
+  )
+
+# Function to calculate Mean, CI, and Letters
+analyze_and_summarize <- function(data, group_col, response_col = "Pi_mean_4fold") {
+  
+  # A. Dunn's Test & Letters
+  f <- as.formula(paste(response_col, "~", group_col))
+  dunn_res <- FSA::dunnTest(f, data = data, method = "bh")
+  
+  # Generate Compact Letter Display (CLD)
+  # rcompanion::cldList parses "Group1 - Group2" strings
+  cld <- rcompanion::cldList(P.adj ~ Comparison, data = dunn_res$res, threshold = 0.05)
+  
+  # Clean CLD for joining
+  # cldList output Group is typically character. 
+  # We ensure it matches the factor levels of the input data
+  cld <- cld |>
+    dplyr::rename(!!group_col := Group, Letter = Letter) |>
+    dplyr::select(!!group_col, Letter) |>
+    # CRITICAL FIX: Convert back to factor to ensure successful join with summary data
+    dplyr::mutate(!!group_col := factor(!!sym(group_col), levels = levels(data[[group_col]])))
+
+  # B. Summary Statistics for Plotting
+  summary_stats <- data |>
+    dplyr::group_by(!!sym(group_col)) |>
+    dplyr::summarise(
+      Mean = mean(!!sym(response_col), na.rm = TRUE),
+      SD = sd(!!sym(response_col), na.rm = TRUE),
+      N = n(),
+      SE = SD / sqrt(N),
+      CI_95 = 1.96 * SE, # Approx 95% CI
+      Upper = Mean + CI_95,
+      Lower = Mean - CI_95,
+      .groups = "drop"
+    ) |>
+    # Join Letters
+    dplyr::left_join(cld, by = group_col)
+    
+  return(summary_stats)
+}
+
+# Run Analysis 
+stats_S <- analyze_and_summarize(clean_data, "S_Bin")
+stats_Exp <- analyze_and_summarize(clean_data, "Exp_Bin")
+
+# Plotting Function (Mean + CI)
+plot_mean_ci <- function(summary_data, x_var, title, subtitle) {
+  
+  # Determine Y position for letters (slightly above max CI)
+  y_max_data <- max(summary_data$Upper, na.rm = TRUE)
+  y_range <- y_max_data - min(summary_data$Lower, na.rm = TRUE)
+  text_y_offset <- y_range * 0.1
+  
+  ggplot(summary_data, aes(x = .data[[x_var]], y = Mean)) +
+    # Error Bars
+    geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.2, color = "black", linewidth = 0.7) +
+    
+    # Points (Mean)
+    geom_point(aes(fill = .data[[x_var]]), shape = 21, size = 4, color = "black", stroke = 0.8) +
+    
+    # Letters (placed above Upper CI)
+    geom_text(aes(y = Upper + text_y_offset, label = Letter), 
+              size = 5, fontface = "bold") +
+    
+    # Styling
+    scale_fill_viridis_d(option = "magma", begin = 0.1, end = 0.9) +
+    scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) + # Extra space at top
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = paste(x_var, "(Deciles)"),
+      y = "Nucleotide Diversity (Pi) ± 95% CI"
+    ) +
+    theme_custom() +
+    theme(legend.position = "none")
+}
+
+# Generate and Save
+p_select_clean <- plot_mean_ci(stats_S, "S_Bin", 
+                               "Diversity vs Selection Intensity",
+                               "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)")
+
+p_exp_clean <- plot_mean_ci(stats_Exp, "Exp_Bin", 
+                            "Diversity vs Expression Level",
+                            "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)")
+
+ggsave("results/Results_MeanCI_Pi_vs_Selection_Letters.pdf", p_select_clean, width = 8, height = 6)
+ggsave("results/Results_MeanCI_Pi_vs_Expression_Letters.pdf", p_exp_clean, width = 8, height = 6)
 
 # 8.4) GO-enrichment analysis of genes with a massive selection load ----
 

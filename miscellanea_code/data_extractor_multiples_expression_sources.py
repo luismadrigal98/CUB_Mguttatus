@@ -98,42 +98,36 @@ def main():
     # --- 2. Read and Filter Expression Data ---
     print(f"\n--- Reading Expression Data: {args.input_file} ---")
     
-    # Read CSV (assuming tab separated based on context, header=0, index_col=0 for Genes)
     try:
-        # Check if file is tab or comma separated
-        with open(args.input_file, 'r') as f:
-            first_line = f.readline()
-            sep = '\t' if '\t' in first_line else ','
-            
-        print(f"Detected separator: '{'tab' if sep=='\t' else 'comma'}'")
-        df = pd.read_csv(args.input_file, sep=sep, header=0, index_col=0)
+        # Detected as Long Format based on user input (Sample, Gene, CPM)
+        # No header
+        df = pd.read_csv(args.input_file, sep='\t', header=None, names=['Sample', 'Gene', 'CPM'])
         print(f"Full dataset shape: {df.shape}")
         
     except Exception as e:
         print(f"Error reading file: {e}")
         sys.exit(1)
 
-    # Filter Columns
-    print(f"Filtering columns with pattern: '{args.column_pattern}'")
-    im_cols = [c for c in df.columns if re.search(args.column_pattern, c)]
+    # Filter Rows based on Sample Column
+    print(f"Filtering rows where Sample matches pattern: '{args.column_pattern}'")
     
-    if not im_cols:
-        print("ERROR: No columns matched the pattern. Check your input file header or pattern.")
-        print("First 10 columns in file:", df.columns[:10].tolist())
+    # Filter rows
+    df_filtered = df[df['Sample'].str.contains(args.column_pattern, regex=True, na=False)].copy()
+    
+    if df_filtered.empty:
+        print("ERROR: No rows matched the pattern.")
+        print("First 5 samples in file:", df['Sample'].head().tolist())
         sys.exit(1)
         
-    print(f"Found {len(im_cols)} matching columns.")
-    # Example columns
-    print("Examples:", im_cols[:5])
-    
-    df_filtered = df[im_cols]
+    unique_samples = df_filtered['Sample'].unique()
+    print(f"Found {len(unique_samples)} matching samples.")
+    print("Examples:", unique_samples[:5])
 
     # --- 3. Remap Gene Rows and Aggregate ---
     print("\n--- Remapping Gene Rows ---")
     
-    # Create new column for mapped ID
-    df_filtered = df_filtered.copy()
-    df_filtered['Remapped_Gene'] = df_filtered.index.map(final_gene_map)
+    # Map Genes
+    df_filtered['Remapped_Gene'] = df_filtered['Gene'].map(final_gene_map)
     
     # Report mapping stats
     total_rows = len(df_filtered)
@@ -143,19 +137,23 @@ def main():
     # Drop unmapped
     df_filtered = df_filtered.dropna(subset=['Remapped_Gene'])
     
-    # Check for duplicates before summing
-    n_unique_targets = df_filtered['Remapped_Gene'].nunique()
-    print(f"Unique target genes: {n_unique_targets}")
-    if mapped_rows > n_unique_targets:
-        print(f"Collapsing {mapped_rows - n_unique_targets} rows by summing (multiple input genes -> same target).")
+    # Aggregate (Sum CPM for duplicate mappings within the same sample)
+    # Group by [Sample, Remapped_Gene] -> Sum CPM
+    print("Aggregating duplicates (summing CPM)...")
+    df_grouped = df_filtered.groupby(['Remapped_Gene', 'Sample'])['CPM'].sum().reset_index()
     
-    # Group by new ID and SUM
-    # "This is correct for CPM because we're combining reads that map to the same locus"
-    df_final = df_filtered.groupby('Remapped_Gene').sum()
+    # Pivot to Wide Format (Genes x Samples)
+    print("Pivoting to wide format (Matrix)...")
+    df_matrix = df_grouped.pivot(index='Remapped_Gene', columns='Sample', values='CPM')
+    
+    # Fill NaN with 0 (missing gene in a sample = 0 expression)
+    df_matrix = df_matrix.fillna(0)
+    
+    print(f"Final Matrix Shape: {df_matrix.shape}")
     
     # --- 4. Save Output ---
     print(f"\n--- Saving to {args.output_file} ---")
-    df_final.to_csv(args.output_file, sep='\t')
+    df_matrix.to_csv(args.output_file, sep='\t')
     print("Done successfully.")
 
 if __name__ == "__main__":
