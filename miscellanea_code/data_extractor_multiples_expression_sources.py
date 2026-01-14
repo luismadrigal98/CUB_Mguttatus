@@ -147,7 +147,8 @@ def main():
     parser.add_argument("--output_file", required=True, help="Path for the output compiled data.")
     parser.add_argument("--crossref_file", required=True, help="Cross-reference CSV file for gene mapping.")
     parser.add_argument("--go_based_txt", required=True, help="GO based annotation TXT file for gene mapping.")
-    parser.add_argument("--column_pattern", default="^IM(62|767)", help="Regex pattern to select sample columns (default: starts with IM62 or IM767).")
+    parser.add_argument("--column_pattern", default="^IM(?:62|767)", help="Regex pattern to select sample columns (default: starts with IM62 or IM767).")
+    parser.add_argument("--num_checks", type=int, default=5, help="Number of random validation checks to perform (default: 5).")
 
     args = parser.parse_args()
 
@@ -236,9 +237,10 @@ def main():
     print(f"Final Matrix Shape: {df_matrix.shape}")
     
     # --- 4. Quality Control ---
-    # Pass the unfiltered df (but we need to manually filter sample inside validation to match context)
-    # The validation function handles filtering df by sample.
-    validate_mapping(df, df_matrix, final_gene_map, num_checks=5)
+    # Pass the filtered df (before remapping) so we can trace back correctly
+    # Create a copy of filtered data before we dropped unmapped genes
+    df_for_validation = df[df['Sample'].str.contains(args.column_pattern, regex=True, na=False)].copy()
+    validate_mapping(df_for_validation, df_matrix, final_gene_map, num_checks=args.num_checks if hasattr(args, 'num_checks') else 5)
 
     # --- 5. Save Output ---
     print(f"\n--- Saving to {args.output_file} ---")
