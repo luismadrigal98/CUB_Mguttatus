@@ -97,47 +97,52 @@ codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long),
 
 ## 3.3) Load the expression data ----
 
-exp_data_bud <- read.table(file = "./data/bud_gene_expression_cpm_remapped.txt",
-                           header = T) |>
-  dplyr::rename(Exp_bud = Expression)
-
-exp_data_leaf <- read.table(file = "./data/leaf_gene_expression_mean_cpm_renamed.txt",
-                            header = T) |>
-  dplyr::rename(Exp_leaf = Expression)
+# ORIGINAL (2 sources only)
+# exp_data_bud <- read.table(file = "./data/bud_gene_expression_cpm_remapped.txt",
+#                            header = T) |>
+#   dplyr::rename(Exp_bud = Expression)
+# 
+# exp_data_leaf <- read.table(file = "./data/leaf_gene_expression_mean_cpm_renamed.txt",
+#                             header = T) |>
+#   dplyr::rename(Exp_leaf = Expression)
 
 # Combining CUB metric with expression profiles for buds and leafs
 
-exp_complete <- dplyr::full_join(exp_data_leaf, exp_data_bud, by = "Gene")
+# exp_complete <- dplyr::full_join(exp_data_leaf, exp_data_bud, by = "Gene")
 
-exp_complete <- exp_complete |> 
-  dplyr::rowwise() |>
-  dplyr::mutate(
-    High_exp = max(Exp_leaf, Exp_bud, na.rm = TRUE),
-    
-    Source_High_exp = case_when(
-      # If both are NA, source is NA
-      is.na(Exp_leaf) & is.na(Exp_bud) ~ NA_character_,
-      
-      # If bud is NA, leaf must be the max
-      is.na(Exp_bud) ~ "Leaf",
-      
-      # If leaf is NA, bud must be the max
-      is.na(Exp_leaf) ~ "Bud",
-      
-      # If leaf is greater or equal (handles ties)
-      Exp_leaf >= Exp_bud ~ "Leaf",
-      
-      # Otherwise, bud must be greater
-      Exp_bud > Exp_leaf ~ "Bud"
-    )
-  ) |>
-  # Fix the -Inf from max(NA, NA, na.rm=T)
-  dplyr::mutate(
-    High_exp = if_else(is.infinite(High_exp), NA_real_, High_exp)
-  ) |>
-  dplyr::ungroup() |>
-  dplyr::mutate(Source_High_exp = as.factor(Source_High_exp)) |>
-  na.exclude()
+# exp_complete <- exp_complete |> 
+#   dplyr::rowwise() |>
+#   dplyr::mutate(
+#     High_exp = max(Exp_leaf, Exp_bud, na.rm = TRUE),
+#     
+#     Source_High_exp = case_when(
+#       # If both are NA, source is NA
+#       is.na(Exp_leaf) & is.na(Exp_bud) ~ NA_character_,
+#       
+#       # If bud is NA, leaf must be the max
+#       is.na(Exp_bud) ~ "Leaf",
+#       
+#       # If leaf is NA, bud must be the max
+#       is.na(Exp_leaf) ~ "Bud",
+#       
+#       # If leaf is greater or equal (handles ties)
+#       Exp_leaf >= Exp_bud ~ "Leaf",
+#       
+#       # Otherwise, bud must be greater
+#       Exp_bud > Exp_leaf ~ "Bud"
+#     )
+#   ) |>
+#   # Fix the -Inf from max(NA, NA, na.rm=T)
+#   dplyr::mutate(
+#     High_exp = if_else(is.infinite(High_exp), NA_real_, High_exp)
+#   ) |>
+#   dplyr::ungroup() |>
+#   dplyr::mutate(Source_High_exp = as.factor(Source_High_exp)) |>
+#   na.exclude()
+
+# ALTERNATIVE (multi-source)
+
+
 
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
@@ -475,7 +480,7 @@ integrated_data$Expression_Group <- case_when(
 
 cat("\n=== Kruskal-Wallis Test: Detrended ENC Residuals across Groups ===\n")
 
-kw_detrended <- kruskal.test(CDC_detrended ~ Expression_Group, 
+kw_detrended <- kruskal.test(CDC ~ Expression_Group, 
                              data = integrated_data)
 
 # Plotting and assessing significance using Dunn
@@ -504,7 +509,7 @@ if (kw_detrended$p.value < 0.05) {
 
 # Ploting box plot
 
-p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = CDC_detrended, fill = Expression_Group)) +
+p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = CDC, fill = Expression_Group)) +
   geom_violin(alpha = 0.3) +
   geom_boxplot(outlier.alpha = 0.3) +
   # geom_boxplot(outlier.alpha = 0.3) +
@@ -515,7 +520,7 @@ p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = CDC
                                 "Middle 90%" = "#999999")) +
   labs(title = "Detrended CDC Residuals by Expression Level",
        subtitle = "Diamond = mean, box = median ± IQR",
-       y = "CDC Residuals (detrended)",
+       y = "CDC",
        x = "Expression Group") +
   theme_custom() +
   theme(legend.position = "none")
@@ -3005,6 +3010,29 @@ p_boxplot_preferred <- ggplot(integrated_data, aes(x = Expression_Group,
 ggsave("./results/Frequency_preferred_by_expression_group.pdf", 
        p_boxplot_preferred, width = 8, height = 6)
 
+# 12.2) Relationship between CDC-detrended and freq_preferred ----
+
+summary(lm(CDC ~ Mean_preferred_freq, 
+           data = integrated_data))
+
+CDC_f_Mean_preferred_freq <- ggplot(integrated_data, aes(x = Mean_preferred_freq, 
+                                                         y = CDC)) +
+  # Use ggpointdensity for a clear view of the cluster
+  geom_pointdensity(alpha = 0.5) + 
+  
+  # Add the linear regression line, which now shows the true effect
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  
+  labs(
+    title = "CDC vs. Mean_preferred_freq",
+    y = "CDC",
+    x = "Mean_preferred_freq"
+  ) +
+  theme_custom()
+
+ggsave("./results/CDC_vs_Mean_preferred_freq.pdf", 
+       CDC_f_Mean_preferred_freq, width = 8, height = 6)
+
 ## *****************************************************************************
 ## 13) Intronic Polymorphism-Based Selection Validation ----
 ## _____________________________________________________________________________
@@ -3299,155 +3327,235 @@ cat(sprintf("Pi range across quantiles: C = [%.6f, %.6f], G = [%.6f, %.6f]\n",
 write.csv(scaling_df, "./results/gamma_vs_Sroc_scaling_data.csv", row.names = FALSE)
 cat("✓ Updated scaling data saved with Pi estimates\n")
 
-# STEP 5: Checking relationship and scaling factor between S_roc and gamma ----
+# STEP 5: Plot observed vs expected SFS for extreme expression groups ----
+cat("\n=== STEP 5: Observed vs Expected SFS (Bottom 5% vs Top 5% Expression) ===\n")
 
-# Scaling model
-lm_fit <- lm(Gamma_avg ~ S_ROC, data = scaling_df)
-model_summary <- summary(lm_fit)
+# Extract SFS data for bottom 5% (first interval) and top 5% (last interval)
+bottom5_interval <- "0%-5%"
+top5_interval <- "95%-100%"
 
-# Extract Parameters
-background_drive <- coef(lm_fit)[1]  # Intercept (gBGC + Splicing)
-scaling_factor   <- coef(lm_fit)[2]  # Slope (Gamma units per S_ROC unit)
-r_squared        <- model_summary$r.squared
-p_value          <- model_summary$coefficients[2, 4]
+# Get the gamma values from scaling_df
+gamma_bottom5_C <- scaling_df$Gamma_C[1]
+gamma_bottom5_G <- scaling_df$Gamma_G[1]
+gamma_top5_C <- scaling_df$Gamma_C[nrow(scaling_df)]
+gamma_top5_G <- scaling_df$Gamma_G[nrow(scaling_df)]
 
-# Print Results
-cat("\n=== Scaling Analysis Results ===\n")
-cat(sprintf("Background Drive (Intercept): %.4f (Base Gamma at 0 Expression)\n", background_drive))
-cat(sprintf("Scaling Factor (Slope):       %.4f (Gamma units per 1 unit of S_ROC)\n", scaling_factor))
-cat(sprintf("Correlation (R-squared):      %.4f\n", r_squared))
-cat(sprintf("Significance (p-value):       %.2e\n", p_value))
-
-# Visualization
-
-p_scaling <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_avg)) +
-  # Points colored by expression bin (lighter = higher expression)
-  geom_point(aes(color = 1:20), size = 4) +
-  scale_color_viridis_c(name = "Expression\nQuantile") +
+# Build combined data frame for plotting
+build_sfs_plot_data <- function(empirical_SFS, interval_name, expression_label, 
+                                 gamma_C, gamma_G, neutral_params, target_n) {
   
-  # Regression Line
-  geom_smooth(method = "lm", color = "black", linetype = "dashed", se = TRUE) +
+  sfs_data <- empirical_SFS[[interval_name]]
   
-  # Add the equation to the plot
-  annotate("text", x = min(scaling_df$S_ROC), y = max(scaling_df$Gamma_avg), 
-           label = sprintf("y = %.4f + %.3fx\nR² = %.2f", 
-                           background_drive, scaling_factor, r_squared),
-           hjust = 0, vjust = 1, size = 5) +
+  # Extract observed and neutral counts
+  obs_df <- sfs_data$Observed_df
+  neutral_df <- sfs_data$Neutral_df
   
-  # Visualizing the Interpretation
-  labs(
-    title = "Coupling of Translational Selection and Genomic Drive",
-    subtitle = "Intercept = Pervasive gBGC/Structure | Slope = Translational Selection",
-    x = "Translational Selection Intensity (AnaCoDa S)",
-    y = "Total Evolutionary Drive (SFS Gamma)"
-  ) +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(face = "bold", size = 14),
-    legend.position = "right"
+  # The Metric column format is "Observed_{interval}_C" or "Observed_{interval}_G"
+  # Use pattern matching to find C and G
+  obs_C <- obs_df$Counts[grepl("_C$", obs_df$Metric)]
+  obs_G <- obs_df$Counts[grepl("_G$", obs_df$Metric)]
+  neutral_C <- neutral_df$Counts[grepl("_C$", neutral_df$Metric)]
+  neutral_G <- neutral_df$Counts[grepl("_G$", neutral_df$Metric)]
+  
+  # Combine into plot-ready format
+  freq_bins <- 0:target_n
+  
+  # For C sites
+  plot_df_C <- data.frame(
+    Frequency = freq_bins,
+    Observed = obs_C,
+    Neutral = neutral_C,
+    Nucleotide = "C",
+    Expression_Group = expression_label,
+    Gamma = gamma_C
   )
-
-# Save
-ggsave("./results/gamma_vs_Sroc_scaling.pdf", plot = p_scaling, width = 8, height = 6)
-
-# Create comprehensive multi-panel comparison
-cat("\n=== Creating Multi-Panel S_ROC vs Gamma Comparison ===\n")
-
-# Panel 1: Gamma_C vs S_ROC
-p1_C <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_C)) +
-  geom_point(aes(color = Exp_Quantile, shape = Sig_C), size = 3) +
-  geom_smooth(method = "lm", color = "blue", se = TRUE, alpha = 0.2) +
-  scale_color_viridis_c(name = "Exp %ile") +
-  scale_shape_manual(values = c("TRUE" = 16, "FALSE" = 1), 
-                     name = "p < 0.05", guide = "none") +
-  labs(title = "C-ending Codons", x = "S_ROC", y = expression(gamma[C])) +
-  theme_minimal()
-
-# Panel 2: Gamma_G vs S_ROC
-p2_G <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_G)) +
-  geom_point(aes(color = Exp_Quantile, shape = Sig_G), size = 3) +
-  geom_smooth(method = "lm", color = "red", se = TRUE, alpha = 0.2) +
-  scale_color_viridis_c(name = "Exp %ile") +
-  scale_shape_manual(values = c("TRUE" = 16, "FALSE" = 1), 
-                     name = "p < 0.05", guide = "none") +
-  labs(title = "G-ending Codons", x = "S_ROC", y = expression(gamma[G])) +
-  theme_minimal()
-
-# Panel 3: Both Gamma_C and Gamma_G vs Expression Quantile
-gamma_long <- scaling_df |>
-  dplyr::select(Exp_Quantile, Gamma_C, Gamma_G, S_ROC) |>
-  tidyr::pivot_longer(cols = c(Gamma_C, Gamma_G), 
-                      names_to = "Nucleotide", values_to = "Gamma") |>
-  dplyr::mutate(Nucleotide = gsub("Gamma_", "", Nucleotide))
-
-p3_exp <- ggplot(gamma_long, aes(x = Exp_Quantile, y = Gamma, color = Nucleotide)) +
-  geom_point(size = 2) +
-  geom_line(linewidth = 0.8) +
-  scale_color_manual(values = c("C" = "blue", "G" = "red")) +
-  labs(title = "Gamma vs Expression", 
-       x = "Expression Quantile (%)", 
-       y = expression(gamma~(4*N[e]*s))) +
-  theme_minimal() +
-  theme(legend.position = "top")
-
-# Panel 4: S_ROC vs Expression Quantile
-p4_sroc <- ggplot(scaling_df, aes(x = Exp_Quantile, y = S_ROC)) +
-  geom_point(size = 2, color = "darkgreen") +
-  geom_line(linewidth = 0.8, color = "darkgreen") +
-  geom_ribbon(aes(ymin = S_ROC - 1.96*S_ROC_SE, ymax = S_ROC + 1.96*S_ROC_SE), 
-              alpha = 0.2, fill = "darkgreen") +
-  labs(title = "AnaCoDa S vs Expression", 
-       x = "Expression Quantile (%)", 
-       y = "S_ROC (AnaCoDa)") +
-  theme_minimal()
-
-# Combine panels
-combined_comparison <- (p1_C | p2_G) / (p3_exp | p4_sroc) +
-  plot_annotation(
-    title = "Comprehensive Comparison: Polymorphism Gamma vs AnaCoDa S_ROC",
-    subtitle = "Filled points = significant departure from neutrality (p < 0.05)"
+  
+  # For G sites
+  plot_df_G <- data.frame(
+    Frequency = freq_bins,
+    Observed = obs_G,
+    Neutral = neutral_G,
+    Nucleotide = "G",
+    Expression_Group = expression_label,
+    Gamma = gamma_G
   )
-
-ggsave("./results/gamma_vs_Sroc_multipanel.pdf", plot = combined_comparison, 
-       width = 12, height = 10)
-cat("✓ Multi-panel comparison saved: ./results/gamma_vs_Sroc_multipanel.pdf\n")
-
-# Separate regressions for C and G
-lm_C <- lm(Gamma_C ~ S_ROC, data = scaling_df)
-lm_G <- lm(Gamma_G ~ S_ROC, data = scaling_df)
-
-cat("\n=== Separate Regressions by Nucleotide ===\n")
-cat(sprintf("C-ending: Gamma_C = %.4f + %.4f * S_ROC (R² = %.3f, p = %.2e)\n",
-            coef(lm_C)[1], coef(lm_C)[2], summary(lm_C)$r.squared, 
-            summary(lm_C)$coefficients[2, 4]))
-cat(sprintf("G-ending: Gamma_G = %.4f + %.4f * S_ROC (R² = %.3f, p = %.2e)\n",
-            coef(lm_G)[1], coef(lm_G)[2], summary(lm_G)$r.squared, 
-            summary(lm_G)$coefficients[2, 4]))
-
-# Test if C and G have different slopes (interaction test)
-scaling_long <- scaling_df |>
-  dplyr::select(S_ROC, Gamma_C, Gamma_G) |>
-  tidyr::pivot_longer(cols = c(Gamma_C, Gamma_G), 
-                      names_to = "Type", values_to = "Gamma")
-
-interaction_model <- lm(Gamma ~ S_ROC * Type, data = scaling_long)
-interaction_pval <- summary(interaction_model)$coefficients["S_ROC:TypeGamma_G", 4]
-
-cat(sprintf("\nInteraction test (different slopes for C vs G): p = %.4f\n", interaction_pval))
-if (interaction_pval < 0.05) {
-  cat("  → C and G show significantly different relationships with S_ROC\n")
-} else {
-  cat("  → C and G have similar slopes (parallel relationships)\n")
+  
+  rbind(plot_df_C, plot_df_G)
 }
 
-# Given the non-linearity evident from the plot, we can use the Mutual Information
-# Score to quantify the non-linear association
+# Build data for both expression groups
+sfs_plot_bottom5 <- build_sfs_plot_data(
+  empirical_SFS, bottom5_interval, "Bottom 5%",
+  gamma_bottom5_C, gamma_bottom5_G, neutral_params, target_n
+)
+
+sfs_plot_top5 <- build_sfs_plot_data(
+  empirical_SFS, top5_interval, "Top 5%",
+  gamma_top5_C, gamma_top5_G, neutral_params, target_n
+)
+
+sfs_plot_combined <- rbind(sfs_plot_bottom5, sfs_plot_top5)
+
+# Factor ordering
+sfs_plot_combined$Expression_Group <- factor(
+  sfs_plot_combined$Expression_Group,
+  levels = c("Bottom 5%", "Top 5%")
+)
+
+# Create gamma annotation labels (using "gamma" instead of Unicode for PDF compatibility)
+gamma_labels <- sfs_plot_combined |>
+  dplyr::group_by(Nucleotide, Expression_Group) |>
+  dplyr::summarize(
+    Gamma = unique(Gamma),
+    label = sprintf("gamma = %.2f", Gamma),
+    .groups = "drop"
+  )
+
+# Verify that observed and neutral totals match (they should be scaled to same total)
+cat("\n=== Verifying Observed vs Neutral Scaling ===\n")
+
+# Full totals (including endpoints - should match)
+verify_full <- sfs_plot_combined |>
+  dplyr::group_by(Nucleotide, Expression_Group) |>
+  dplyr::summarize(
+    Total_Observed = sum(Observed),
+    Total_Neutral = sum(Neutral),
+    Ratio_Full = sum(Observed) / sum(Neutral),
+    .groups = "drop"
+  )
+cat("\nFull SFS (including fixed sites at 0 and n) - should have Ratio ~ 1.0:\n")
+print(verify_full)
+
+# Polymorphic only (excluding endpoints - will differ due to SFS shape)
+verify_poly <- sfs_plot_combined |>
+  dplyr::filter(Frequency > 0, Frequency < target_n) |>
+  dplyr::group_by(Nucleotide, Expression_Group) |>
+  dplyr::summarize(
+    Poly_Observed = sum(Observed),
+    Poly_Neutral = sum(Neutral),
+    Ratio_Poly = sum(Observed) / sum(Neutral),
+    .groups = "drop"
+  )
+cat("\nPolymorphic sites only (0 < freq < n) - ratio > 1 indicates selection signature:\n")
+print(verify_poly)
+
+# Pivot for easier plotting (observed as bars, neutral as line)
+sfs_long <- sfs_plot_combined |>
+  tidyr::pivot_longer(
+    cols = c(Observed, Neutral),
+    names_to = "Type",
+    values_to = "Count"
+  )
+
+# Keep ALL frequency bins including monomorphic sites (0 and n)
+# This ensures observed and neutral totals match
+sfs_all <- sfs_long
+
+# Also create polymorphic-only subset for ratio analysis
+sfs_poly <- sfs_long |>
+  dplyr::filter(Frequency > 0, Frequency < target_n)
+
+# Create the main SFS comparison plot (INCLUDING monomorphic sites)
+p_sfs_comparison <- ggplot(sfs_all |> dplyr::filter(Type == "Observed"),
+                           aes(x = Frequency, y = Count + 1)) +  # +1 to handle zeros on log scale
+  # Observed as bars
+  geom_col(aes(fill = Expression_Group), alpha = 0.7, position = "identity") +
+  # Neutral expectation as blue line
+  geom_line(data = sfs_all |> dplyr::filter(Type == "Neutral"),
+            aes(x = Frequency, y = Count + 1),
+            color = "blue", linewidth = 1.2, linetype = "solid") +
+  geom_point(data = sfs_all |> dplyr::filter(Type == "Neutral"),
+             aes(x = Frequency, y = Count + 1),
+             color = "blue", size = 1.5) +
+  # Add gamma annotations
+  geom_text(data = gamma_labels,
+            aes(x = target_n * 0.5, y = Inf, label = label),
+            vjust = 2, hjust = 0.5, size = 4, fontface = "bold") +
+  # Facet by nucleotide and expression group
+  facet_grid(Nucleotide ~ Expression_Group, scales = "free_y") +
+  # Styling
+  scale_fill_manual(values = c("Bottom 5%" = "#377EB8", "Top 5%" = "#E41A1C")) +
+  scale_y_log10(labels = scales::comma) +
+  labs(
+    title = "Site Frequency Spectrum: Observed vs Neutral Expectation (Full SFS)",
+    subtitle = "Blue line = Neutral (gamma=0); Bars = Observed; Includes monomorphic sites (freq 0 and n)",
+    x = "Derived Allele Count",
+    y = "Number of Sites (log scale, +1)",
+    fill = "Expression\nGroup"
+  ) +
+  theme_custom() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    strip.text = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "gray95", color = NA),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+ggsave("./results/diversity_modeling/SFS_observed_vs_neutral_by_expression_FULL.pdf",
+       plot = p_sfs_comparison, width = 10, height = 8)
+
+cat("✓ Full SFS plot saved: ./results/diversity_modeling/SFS_observed_vs_neutral_by_expression_FULL.pdf\n")
+
+# Also create polymorphic-only plot for comparison
+p_sfs_poly <- ggplot(sfs_poly |> dplyr::filter(Type == "Observed"),
+                     aes(x = Frequency, y = Count)) +
+  geom_col(aes(fill = Expression_Group), alpha = 0.7, position = "identity") +
+  geom_line(data = sfs_poly |> dplyr::filter(Type == "Neutral"),
+            aes(x = Frequency, y = Count),
+            color = "blue", linewidth = 1.2, linetype = "solid") +
+  geom_point(data = sfs_poly |> dplyr::filter(Type == "Neutral"),
+             aes(x = Frequency, y = Count),
+             color = "blue", size = 1.5) +
+  geom_text(data = gamma_labels,
+            aes(x = target_n * 0.5, y = Inf, label = label),
+            vjust = 2, hjust = 0.5, size = 4, fontface = "bold") +
+  facet_grid(Nucleotide ~ Expression_Group, scales = "free_y") +
+  scale_fill_manual(values = c("Bottom 5%" = "#377EB8", "Top 5%" = "#E41A1C")) +
+  scale_y_log10(labels = scales::comma) +
+  labs(
+    title = "Site Frequency Spectrum: Polymorphic Sites Only (0 < freq < n)",
+    subtitle = "Blue line = Neutral; Bars = Observed; Ratio > 1 indicates selection signature",
+    x = "Derived Allele Count",
+    y = "Number of Sites (log scale)",
+    fill = "Expression\nGroup"
+  ) +
+  theme_custom() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10, color = "gray40"),
+    strip.text = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "gray95", color = NA),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+ggsave("./results/diversity_modeling/SFS_observed_vs_neutral_by_expression_POLY.pdf",
+       plot = p_sfs_poly, width = 10, height = 8)
+
+cat("✓ SFS comparison plot saved: ./results/diversity_modeling/SFS_observed_vs_neutral_by_expression.pdf\n")
+
+# Create a summary table of the differences
+sfs_summary <- sfs_plot_combined |>
+  dplyr::filter(Frequency > 0, Frequency < target_n) |>
+  dplyr::group_by(Nucleotide, Expression_Group) |>
+  dplyr::summarize(
+    Total_Observed = sum(Observed),
+    Total_Neutral = sum(Neutral),
+    Obs_Neutral_Ratio = sum(Observed) / sum(Neutral),
+    Mean_Freq_Observed = weighted.mean(Frequency, Observed),
+    Mean_Freq_Neutral = weighted.mean(Frequency, Neutral),
+    Gamma = unique(Gamma),
+    .groups = "drop"
+  )
+
+cat("\n=== SFS Summary Statistics ===\n")
+print(sfs_summary)
 
 # STEP 6: Mutual Information Analysis (S_ROC vs Gamma) ----
 cat("\n=== STEP 6: Mutual Information Analysis ===\n")
 cat("Quantifying non-linear association between S_ROC and Gamma\n\n")
-
-# Function to compute mutual information with different binning strategies
 compute_mi_analysis <- function(x, y, n_bins = 10) {
   #' Compute mutual information between two continuous variables
   #' Uses discretization with equal-frequency binning
