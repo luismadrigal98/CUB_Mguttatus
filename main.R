@@ -29,7 +29,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'abind', 'scales', 'mclust', 'coda',
                         'admisc', 'corrr', 'patchwork', 'gprofiler2',
                         'ggnewscale', 'broom', 'reshape2',
-                        'furrr', 'tidyr')
+                        'furrr', 'tidyr', 'gsl')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -3125,11 +3125,12 @@ empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1),
   obs_sfs_C <- SFS_sub$obs_sfs_C
   
   # Build a data frame with all the information required for plotting 
+  # NOTE: Order must match - G data with G label, C data with C label
   sfs_observed_df <- data.frame(
     Num_seq = rep(freq_bins, 2),
     Counts = c(obs_sfs_G, obs_sfs_C),
-    Metric = rep(c(paste0("Observed_", interval_names[idx], "_C"), 
-                   paste0("Observed_", interval_names[idx], "_G")), 
+    Metric = rep(c(paste0("Observed_", interval_names[idx], "_G"), 
+                   paste0("Observed_", interval_names[idx], "_C")), 
                  each = length(freq_bins))
   )
   
@@ -3142,9 +3143,9 @@ empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1),
   
   sfs_neutral <- data.frame(
     Num_seq = rep(freq_bins, 2),
-    Counts = c(expected_sfs$C, expected_sfs$G),
-    Metric = rep(c(paste0("Expected_", interval_names[idx], "_C"), 
-                   paste0("Expected_", interval_names[idx], "_G")), 
+    Counts = c(expected_sfs$G, expected_sfs$C),
+    Metric = rep(c(paste0("Expected_", interval_names[idx], "_G"), 
+                   paste0("Expected_", interval_names[idx], "_C")), 
                  each = length(freq_bins))
   )
   
@@ -3183,7 +3184,7 @@ gamma_estimates <- future_lapply(X = 1:length(empirical_SFS),
 
 names(gamma_estimates) <- names(empirical_SFS)
 
-# Extracting gamma estimates per category and nucleotide
+# Extracting gamma estimates per category and nucleotide (with p-values)
 
 gamma_summary_df <- data.frame(Category = names(gamma_estimates))
 
@@ -3193,14 +3194,33 @@ gamma_summary_df[['Gamma_C']] <- sapply(gamma_summary_df[['Category']],
   gamma_estimates[[c]][['Gamma_C']][['gamma']]
 })
 
+gamma_summary_df[['Gamma_C_pval']] <- sapply(gamma_summary_df[['Category']],
+                                             function(c)
+{
+  gamma_estimates[[c]][['Gamma_C']][['p_value']]
+})
+
 gamma_summary_df[['Gamma_G']] <- sapply(gamma_summary_df[['Category']],
                                         function(c)
                                         {
                                           gamma_estimates[[c]][['Gamma_G']][['gamma']]
                                         })
 
+gamma_summary_df[['Gamma_G_pval']] <- sapply(gamma_summary_df[['Category']],
+                                             function(c)
+                                             {
+                                               gamma_estimates[[c]][['Gamma_G']][['p_value']]
+                                             })
+
 gamma_summary_df[['Gamma_avg']] <- (gamma_summary_df[['Gamma_C']] +
                                         gamma_summary_df[['Gamma_G']]) / 2
+
+# Flag significant departures from neutrality
+gamma_summary_df[['Sig_C']] <- gamma_summary_df$Gamma_C_pval < 0.05
+gamma_summary_df[['Sig_G']] <- gamma_summary_df$Gamma_G_pval < 0.05
+
+cat("\n=== Gamma Estimates by Expression Quantile ===\n")
+print(gamma_summary_df[, c("Category", "Gamma_C", "Gamma_C_pval", "Gamma_G", "Gamma_G_pval", "Gamma_avg")])
 
 cutoffs_exp <- quantile(selection_coeff_intensity$Geom_Exp, seq(0, 1, by = 0.05),
                         na.rm = TRUE)
@@ -3209,27 +3229,50 @@ names_quantiles <- names(cutoffs_exp)
 interval_names <- paste0(names_quantiles[-length(names_quantiles)], "-", 
                          names_quantiles[-1])
 
-selection_summary <- sapply(1:(length(cutoffs_exp) - 1), function(idx) # Added 'idx' here
+# Compute both mean and SE for S_ROC
+selection_summary_full <- lapply(1:(length(cutoffs_exp) - 1), function(idx)
 {
   low_thr <- ifelse(idx == 1, cutoffs_exp[idx] - 0.001, 
-                    cutoffs_exp[idx]) # This ensure that the lowest value is included in subset
+                    cutoffs_exp[idx])
   high_thr <- cutoffs_exp[idx + 1]
   
-  # Subset the original data as a function of the established thresholds
   sub_data_genes <- selection_coeff_intensity |>
     dplyr::filter(Geom_Exp > low_thr & Geom_Exp <= high_thr)
   
-  mean_S <- mean(sub_data_genes$S_coeff, na.rm = TRUE)
-  
-  return(mean_S)
+  list(
+    mean_S = mean(sub_data_genes$S_coeff, na.rm = TRUE),
+    se_S = sd(sub_data_genes$S_coeff, na.rm = TRUE) / sqrt(sum(!is.na(sub_data_genes$S_coeff))),
+    n_genes = nrow(sub_data_genes),
+    mean_exp = mean(sub_data_genes$Geom_Exp, na.rm = TRUE)
+  )
 })
+
+selection_summary <- sapply(selection_summary_full, `[[`, "mean_S")
 
 cat("✓ Step 4 Complete: Data parsed and ready for plotting.\n")
 
-# STEP 5: Checking relationship and scaling factor between S_roc and gamma ----
-
 scaling_df <- gamma_summary_df
 scaling_df$S_ROC <- selection_summary
+scaling_df$S_ROC_SE <- sapply(selection_summary_full, `[[`, "se_S")
+scaling_df$N_genes <- sapply(selection_summary_full, `[[`, "n_genes")
+scaling_df$Mean_Exp <- sapply(selection_summary_full, `[[`, "mean_exp")
+
+# Add expression quantile midpoint for plotting
+scaling_df$Exp_Quantile <- seq(2.5, 97.5, by = 5)
+
+# Save the full scaling dataframe
+write.csv(scaling_df, "./results/gamma_vs_Sroc_scaling_data.csv", row.names = FALSE)
+cat("✓ Scaling data saved: ./results/gamma_vs_Sroc_scaling_data.csv\n")
+
+# Calculating expected pi assumming equilibrium
+
+pi_estimator_eq <- function(a, b, g)
+{
+  #' Function to estimate pi assuming the population is at equilibrium.
+  #' Based on McVean & Charlesworth (1999)
+}
+
+# STEP 5: Checking relationship and scaling factor between S_roc and gamma ----
 
 # Scaling model
 lm_fit <- lm(Gamma_avg ~ S_ROC, data = scaling_df)
@@ -3280,6 +3323,295 @@ p_scaling <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_avg)) +
 # Save
 ggsave("./results/gamma_vs_Sroc_scaling.pdf", plot = p_scaling, width = 8, height = 6)
 
+# Create comprehensive multi-panel comparison
+cat("\n=== Creating Multi-Panel S_ROC vs Gamma Comparison ===\n")
+
+# Panel 1: Gamma_C vs S_ROC
+p1_C <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_C)) +
+  geom_point(aes(color = Exp_Quantile, shape = Sig_C), size = 3) +
+  geom_smooth(method = "lm", color = "blue", se = TRUE, alpha = 0.2) +
+  scale_color_viridis_c(name = "Exp %ile") +
+  scale_shape_manual(values = c("TRUE" = 16, "FALSE" = 1), 
+                     name = "p < 0.05", guide = "none") +
+  labs(title = "C-ending Codons", x = "S_ROC", y = expression(gamma[C])) +
+  theme_minimal()
+
+# Panel 2: Gamma_G vs S_ROC
+p2_G <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_G)) +
+  geom_point(aes(color = Exp_Quantile, shape = Sig_G), size = 3) +
+  geom_smooth(method = "lm", color = "red", se = TRUE, alpha = 0.2) +
+  scale_color_viridis_c(name = "Exp %ile") +
+  scale_shape_manual(values = c("TRUE" = 16, "FALSE" = 1), 
+                     name = "p < 0.05", guide = "none") +
+  labs(title = "G-ending Codons", x = "S_ROC", y = expression(gamma[G])) +
+  theme_minimal()
+
+# Panel 3: Both Gamma_C and Gamma_G vs Expression Quantile
+gamma_long <- scaling_df |>
+  dplyr::select(Exp_Quantile, Gamma_C, Gamma_G, S_ROC) |>
+  tidyr::pivot_longer(cols = c(Gamma_C, Gamma_G), 
+                      names_to = "Nucleotide", values_to = "Gamma") |>
+  dplyr::mutate(Nucleotide = gsub("Gamma_", "", Nucleotide))
+
+p3_exp <- ggplot(gamma_long, aes(x = Exp_Quantile, y = Gamma, color = Nucleotide)) +
+  geom_point(size = 2) +
+  geom_line(linewidth = 0.8) +
+  scale_color_manual(values = c("C" = "blue", "G" = "red")) +
+  labs(title = "Gamma vs Expression", 
+       x = "Expression Quantile (%)", 
+       y = expression(gamma~(4*N[e]*s))) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+# Panel 4: S_ROC vs Expression Quantile
+p4_sroc <- ggplot(scaling_df, aes(x = Exp_Quantile, y = S_ROC)) +
+  geom_point(size = 2, color = "darkgreen") +
+  geom_line(linewidth = 0.8, color = "darkgreen") +
+  geom_ribbon(aes(ymin = S_ROC - 1.96*S_ROC_SE, ymax = S_ROC + 1.96*S_ROC_SE), 
+              alpha = 0.2, fill = "darkgreen") +
+  labs(title = "AnaCoDa S vs Expression", 
+       x = "Expression Quantile (%)", 
+       y = "S_ROC (AnaCoDa)") +
+  theme_minimal()
+
+# Combine panels
+combined_comparison <- (p1_C | p2_G) / (p3_exp | p4_sroc) +
+  plot_annotation(
+    title = "Comprehensive Comparison: Polymorphism Gamma vs AnaCoDa S_ROC",
+    subtitle = "Filled points = significant departure from neutrality (p < 0.05)"
+  )
+
+ggsave("./results/gamma_vs_Sroc_multipanel.pdf", plot = combined_comparison, 
+       width = 12, height = 10)
+cat("✓ Multi-panel comparison saved: ./results/gamma_vs_Sroc_multipanel.pdf\n")
+
+# Separate regressions for C and G
+lm_C <- lm(Gamma_C ~ S_ROC, data = scaling_df)
+lm_G <- lm(Gamma_G ~ S_ROC, data = scaling_df)
+
+cat("\n=== Separate Regressions by Nucleotide ===\n")
+cat(sprintf("C-ending: Gamma_C = %.4f + %.4f * S_ROC (R² = %.3f, p = %.2e)\n",
+            coef(lm_C)[1], coef(lm_C)[2], summary(lm_C)$r.squared, 
+            summary(lm_C)$coefficients[2, 4]))
+cat(sprintf("G-ending: Gamma_G = %.4f + %.4f * S_ROC (R² = %.3f, p = %.2e)\n",
+            coef(lm_G)[1], coef(lm_G)[2], summary(lm_G)$r.squared, 
+            summary(lm_G)$coefficients[2, 4]))
+
+# Test if C and G have different slopes (interaction test)
+scaling_long <- scaling_df |>
+  dplyr::select(S_ROC, Gamma_C, Gamma_G) |>
+  tidyr::pivot_longer(cols = c(Gamma_C, Gamma_G), 
+                      names_to = "Type", values_to = "Gamma")
+
+interaction_model <- lm(Gamma ~ S_ROC * Type, data = scaling_long)
+interaction_pval <- summary(interaction_model)$coefficients["S_ROC:TypeGamma_G", 4]
+
+cat(sprintf("\nInteraction test (different slopes for C vs G): p = %.4f\n", interaction_pval))
+if (interaction_pval < 0.05) {
+  cat("  → C and G show significantly different relationships with S_ROC\n")
+} else {
+  cat("  → C and G have similar slopes (parallel relationships)\n")
+}
+
+# Given the non-linearity evident from the plot, we can use the Mutual Information
+# Score to quantify the non-linear association
+
+# STEP 6: Mutual Information Analysis (S_ROC vs Gamma) ----
+cat("\n=== STEP 6: Mutual Information Analysis ===\n")
+cat("Quantifying non-linear association between S_ROC and Gamma\n\n")
+
+# Function to compute mutual information with different binning strategies
+compute_mi_analysis <- function(x, y, n_bins = 10) {
+  #' Compute mutual information between two continuous variables
+  #' Uses discretization with equal-frequency binning
+  #' 
+  #' @param x First variable (e.g., S_ROC)
+  #' @param y Second variable (e.g., Gamma)
+  #' @param n_bins Number of bins for discretization
+  #' @return List with MI, normalized MI, and diagnostics
+  
+  # Remove NA values
+  valid_idx <- complete.cases(x, y)
+  x <- x[valid_idx]
+  y <- y[valid_idx]
+  
+  n <- length(x)
+  
+  # Equal-frequency binning (quantile-based)
+  x_bins <- cut(x, breaks = quantile(x, probs = seq(0, 1, length.out = n_bins + 1)), 
+                include.lowest = TRUE, labels = FALSE)
+  y_bins <- cut(y, breaks = quantile(y, probs = seq(0, 1, length.out = n_bins + 1)), 
+                include.lowest = TRUE, labels = FALSE)
+  
+  # Compute joint and marginal probabilities
+  joint_table <- table(x_bins, y_bins)
+  p_xy <- joint_table / sum(joint_table)
+  p_x <- rowSums(p_xy)
+  p_y <- colSums(p_xy)
+  
+  # Compute mutual information: I(X;Y) = sum p(x,y) * log(p(x,y) / (p(x)*p(y)))
+  mi <- 0
+  for (i in seq_along(p_x)) {
+    for (j in seq_along(p_y)) {
+      if (p_xy[i, j] > 0 && p_x[i] > 0 && p_y[j] > 0) {
+        mi <- mi + p_xy[i, j] * log2(p_xy[i, j] / (p_x[i] * p_y[j]))
+      }
+    }
+  }
+  
+  # Compute entropy for normalization
+  H_x <- -sum(p_x[p_x > 0] * log2(p_x[p_x > 0]))
+  H_y <- -sum(p_y[p_y > 0] * log2(p_y[p_y > 0]))
+  
+  # Normalized MI (ranges 0-1)
+  nmi <- mi / sqrt(H_x * H_y)
+  
+  # Uncertainty coefficient (asymmetric): fraction of Y explained by X
+  u_y_given_x <- mi / H_y
+  u_x_given_y <- mi / H_x
+  
+  return(list(
+    MI = mi,
+    NMI = nmi,
+    H_X = H_x,
+    H_Y = H_y,
+    U_Y_given_X = u_y_given_x,
+    U_X_given_Y = u_x_given_y,
+    n_samples = n,
+    n_bins = n_bins
+  ))
+}
+
+# Compute MI for different numbers of bins (sensitivity analysis)
+mi_results <- lapply(c(5, 10, 15, 20), function(nb) {
+  res <- compute_mi_analysis(scaling_df$S_ROC, scaling_df$Gamma_avg, n_bins = nb)
+  res$n_bins <- nb
+  res
+})
+
+cat("=== Mutual Information Results (varying bin sizes) ===\n")
+for (res in mi_results) {
+  cat(sprintf("  Bins=%2d: MI=%.4f bits, NMI=%.4f, U(Gamma|S)=%.3f\n", 
+              res$n_bins, res$MI, res$NMI, res$U_Y_given_X))
+}
+
+# Use optimal binning (Sturges' rule approximation)
+optimal_bins <- max(5, min(15, ceiling(1 + log2(nrow(scaling_df)))))
+mi_optimal <- compute_mi_analysis(scaling_df$S_ROC, scaling_df$Gamma_avg, n_bins = optimal_bins)
+
+cat(sprintf("\nOptimal Binning (%d bins):\n", optimal_bins))
+cat(sprintf("  Mutual Information: %.4f bits\n", mi_optimal$MI))
+cat(sprintf("  Normalized MI:      %.4f (0=independent, 1=perfect dependence)\n", mi_optimal$NMI))
+cat(sprintf("  U(Gamma|S_ROC):     %.3f (fraction of Gamma entropy explained by S_ROC)\n", mi_optimal$U_Y_given_X))
+cat(sprintf("  U(S_ROC|Gamma):     %.3f (fraction of S_ROC entropy explained by Gamma)\n\n", mi_optimal$U_X_given_Y))
+
+# Permutation test for significance
+cat("=== Permutation Test for MI Significance ===\n")
+n_permutations <- 1000
+observed_mi <- mi_optimal$MI
+
+permuted_mi <- replicate(n_permutations, {
+  y_shuffled <- sample(scaling_df$Gamma_avg)
+  compute_mi_analysis(scaling_df$S_ROC, y_shuffled, n_bins = optimal_bins)$MI
+})
+
+mi_p_value <- mean(permuted_mi >= observed_mi)
+mi_zscore <- (observed_mi - mean(permuted_mi)) / sd(permuted_mi)
+
+cat(sprintf("Observed MI: %.4f bits\n", observed_mi))
+cat(sprintf("Permuted MI: %.4f ± %.4f bits (mean ± SD)\n", mean(permuted_mi), sd(permuted_mi)))
+cat(sprintf("Z-score:     %.2f\n", mi_zscore))
+cat(sprintf("P-value:     %.4f (from %d permutations)\n", mi_p_value, n_permutations))
+
+if (mi_p_value < 0.05) {
+  cat("RESULT: Significant non-random association between S_ROC and Gamma\n\n")
+} else {
+  cat("RESULT: Association not significantly different from random\n\n")
+}
+
+# Compare linear vs non-linear information
+cat("=== Linear vs Non-Linear Information ===\n")
+spearman_cor <- cor(scaling_df$S_ROC, scaling_df$Gamma_avg, method = "spearman")
+pearson_cor <- cor(scaling_df$S_ROC, scaling_df$Gamma_avg, method = "pearson")
+
+# Spearman captures monotonic (possibly non-linear) relationships
+# If NMI >> R², there's substantial non-linear information
+cat(sprintf("Pearson R:   %.4f (linear correlation)\n", pearson_cor))
+cat(sprintf("Pearson R²:  %.4f (linear variance explained)\n", pearson_cor^2))
+cat(sprintf("Spearman ρ:  %.4f (monotonic correlation)\n", spearman_cor))
+cat(sprintf("Spearman ρ²: %.4f (monotonic variance explained)\n", spearman_cor^2))
+cat(sprintf("NMI:         %.4f (total dependence including non-linear)\n", mi_optimal$NMI))
+cat(sprintf("\nNon-linearity indicator (NMI - R²): %.4f\n", mi_optimal$NMI - pearson_cor^2))
+
+if (mi_optimal$NMI - pearson_cor^2 > 0.1) {
+  cat("  → Substantial non-linear component in the relationship\n")
+} else if (mi_optimal$NMI - pearson_cor^2 > 0.05) {
+  cat("  → Moderate non-linear component\n")
+} else {
+  cat("  → Relationship is predominantly linear\n")
+}
+
+# Create visualization of the MI analysis
+p_mi_heatmap <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_avg)) +
+  stat_bin2d(bins = optimal_bins, aes(fill = after_stat(density))) +
+  scale_fill_viridis_c(name = "Density", option = "plasma") +
+  geom_smooth(method = "lm", color = "white", linetype = "dashed", se = FALSE) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs(
+    title = "Joint Distribution: S_ROC vs Gamma",
+    subtitle = sprintf("MI=%.3f bits, NMI=%.3f, Pearson R²=%.3f", 
+                       mi_optimal$MI, mi_optimal$NMI, pearson_cor^2),
+    x = "Translational Selection (AnaCoDa S_ROC)",
+    y = "Polymorphism-Based Gamma (4Nes)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"))
+
+ggsave("./results/MI_heatmap_Sroc_vs_Gamma.pdf", plot = p_mi_heatmap, width = 8, height = 6)
+cat("\n✓ MI heatmap saved: ./results/MI_heatmap_Sroc_vs_Gamma.pdf\n")
+
+# Permutation distribution plot
+permutation_df <- data.frame(MI = permuted_mi)
+
+p_permutation <- ggplot(permutation_df, aes(x = MI)) +
+  geom_histogram(bins = 30, fill = "gray70", color = "gray40", alpha = 0.7) +
+  geom_vline(xintercept = observed_mi, color = "red", linewidth = 1.5, linetype = "solid") +
+  annotate("text", x = observed_mi, y = Inf, label = sprintf("Observed\n(p=%.3f)", mi_p_value),
+           color = "red", hjust = -0.1, vjust = 1.5, fontface = "bold") +
+  labs(
+    title = "Permutation Test: Mutual Information Significance",
+    x = "Mutual Information (bits)",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+
+ggsave("./results/MI_permutation_test.pdf", plot = p_permutation, width = 8, height = 5)
+cat("✓ Permutation test plot saved: ./results/MI_permutation_test.pdf\n")
+
+# Save summary statistics
+mi_summary <- data.frame(
+  Metric = c("Mutual_Information_bits", "Normalized_MI", "Entropy_S_ROC", "Entropy_Gamma",
+             "U_Gamma_given_S", "U_S_given_Gamma", "Pearson_R", "Spearman_rho",
+             "MI_pvalue", "MI_zscore", "Nonlinearity_index"),
+  Value = c(mi_optimal$MI, mi_optimal$NMI, mi_optimal$H_X, mi_optimal$H_Y,
+            mi_optimal$U_Y_given_X, mi_optimal$U_X_given_Y, pearson_cor, spearman_cor,
+            mi_p_value, mi_zscore, mi_optimal$NMI - pearson_cor^2),
+  Description = c("Information shared between S_ROC and Gamma",
+                  "MI normalized by geometric mean of entropies (0-1 scale)",
+                  "Entropy of S_ROC distribution",
+                  "Entropy of Gamma distribution",
+                  "Fraction of Gamma uncertainty reduced by knowing S_ROC",
+                  "Fraction of S_ROC uncertainty reduced by knowing Gamma",
+                  "Linear correlation coefficient",
+                  "Monotonic correlation coefficient",
+                  "P-value from permutation test",
+                  "Z-score relative to null distribution",
+                  "NMI - R² (indicates non-linear component)")
+)
+
+write.csv(mi_summary, "./results/MI_analysis_summary.csv", row.names = FALSE)
+cat("✓ MI summary saved: ./results/MI_analysis_summary.csv\n\n")
+
 # --- 8. Create 4-Panel Validation Plot ---
 cat("\n=== Creating 4-Panel Validation Plot ===\n")
 
@@ -3324,7 +3656,7 @@ calc_theoretical_pi_gsl <- function(S, alpha, beta) {
 # STEP 2: Process Empirical Binned Data
 # We bin by S to observe the trend across intensities
 binned_data_robust <- selection_coeff_intensity |>
-  dplyr::filter(Pi_mean_4fold < 0.05) |>  # Remove artifacts/paralogy noise
+  #dplyr::filter(Pi_mean_4fold < 0.05) |>  # Remove artifacts/paralogy noise
   dplyr::mutate(
     S_Bin = cut(S_coeff, breaks = seq(0, 18, by = 0.5))
   ) |>

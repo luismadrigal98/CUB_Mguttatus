@@ -1,3 +1,10 @@
+#' Functions for projecting SFS and estimating selection coefficients
+#' Uses the Sawyer-Hartl/Wright stationary distribution with 1F1 hypergeometric
+#' 
+#' @author Luis Javier Madrigal-Roca and John K. Kelly
+#' @requires gsl (for hyperg_1F1 confluent hypergeometric function)
+#' _____________________________________________________________________________
+
 project_sfs <- function(counts_df, target_n) {
   #' Projects SFS summary table down to a common sample size
   #' Input:
@@ -32,13 +39,17 @@ project_sfs <- function(counts_df, target_n) {
 # --- 2. Corrected Expectation Function ---
 generate_expected_counts <- function(neutral_param,
                                      observed_sfs_list, # New argument
-                                     target_n = 90) {
-  #' Generates expected neutral counts scaled to match the Observed SFS size
+                                     target_n = 90,
+                                     gamma = 0) {
+  #' Generates expected counts under the Sawyer-Hartl model (neutral or with selection)
+  #' Scaled to match the Observed SFS total site count
   #' 
+
   #' @param neutral_param List with alpha/beta parameters
   #' @param observed_sfs_list A list containing the projected OBSERVED SFS 
   #'        (e.g., list(G = vec_G, C = vec_C)). Used to get the total site count.
   #' @param target_n The projection size used
+  #' @param gamma Selection coefficient (4Nes). Default 0 = neutral expectation.
   
   expectations <- list()
   targets <- c("G", "C")
@@ -48,21 +59,34 @@ generate_expected_counts <- function(neutral_param,
     alpha <- neutral_param[[paste0("alpha_", t)]]
     beta <- neutral_param[[paste0("beta_", t)]]
     
-    # 2. Generate Probabilities (The Shape)
+    # 2. Generate Probabilities using Sawyer-Hartl model
     k_values <- 0:(target_n)
     
-    # Log-space calculation for stability
-    log_probs <- lchoose(target_n, k_values) + 
+    # Base beta-binomial (log scale)
+    log_base <- lchoose(target_n, k_values) + 
       lbeta(k_values + alpha, target_n - k_values + beta) - 
       lbeta(alpha, beta)
     
+    if (gamma == 0) {
+      # Pure beta-binomial for neutral case (faster, no 1F1 needed)
+      log_probs <- log_base
+    } else {
+      # Full Sawyer-Hartl model with selection using 1F1 hypergeometric
+      log_hyperg_denom <- log(gsl::hyperg_1F1(alpha, alpha + beta, gamma))
+      
+      log_probs <- sapply(k_values, function(k) {
+        log_hyperg_num <- log(gsl::hyperg_1F1(k + alpha, target_n + alpha + beta, gamma))
+        log_base[k + 1] + log_hyperg_num - log_hyperg_denom
+      })
+    }
+    
     probs <- exp(log_probs)
     
-    # Normalize probabilities to sum to 1 (conditional on segregating)
-    probs_norm <- probs / sum(probs)
+    # Normalize probabilities to sum to 1
+    probs_norm <- probs / sum(probs, na.rm = TRUE)
     
-    # 3. SCALE BY OBSERVED TOTAL (Crucial Fix)
-    # We multiply the neutral probability by the total number of variants 
+    # 3. SCALE BY OBSERVED TOTAL
+    # We multiply the probability by the total number of sites 
     # in the observed data so the bars are comparable in the plot.
     total_observed_sites <- sum(observed_sfs_list[[t]])
     
@@ -154,6 +178,7 @@ validate_selection_signal <- function(plot_data, target_type) {
 
 estimate_gamma <- function(observed_sfs, neutral_param, target_type, target_n = 90) {
   #' Estimate gamma (4Nes) from observed SFS using maximum likelihood
+  #' Uses the Sawyer-Hartl/Wright stationary distribution with selection
   #' 
   #' @param observed_sfs Numeric vector of observed SFS (length = target_n + 1)
   #' @param neutral_param List with alpha/beta parameters
@@ -165,27 +190,35 @@ estimate_gamma <- function(observed_sfs, neutral_param, target_type, target_n = 
   alpha <- neutral_param[[paste0("alpha_", target_type)]]
   beta <- neutral_param[[paste0("beta_", target_type)]]
   
-  # Define log-likelihood function (all calculations in log-space for numerical stability)
+  # Define log-likelihood function using proper Wright distribution
+  # The probability uses the 1F1 confluent hypergeometric function
   log_likelihood <- function(gamma) {
     k_values <- 0:target_n  # All frequency bins including fixed sites
     
-    # Log selection weight: gamma * k (in log space)
-    log_selection_weight <- gamma * k_values
+    # Use the analytical formula with 1F1 hypergeometric
+    # P(k|n,alpha,beta,S) = C(n,k) * B(k+alpha, n-k+beta)/B(alpha,beta) * 
+    #                       1F1(k+alpha, n+alpha+beta, S) / 1F1(alpha, alpha+beta, S)
     
-    # Neutral log-probability (beta-binomial)
-    log_neutral_prob <- lchoose(target_n, k_values) + 
+    # Base beta-binomial (log scale)
+    log_base <- lchoose(target_n, k_values) + 
       lbeta(k_values + alpha, target_n - k_values + beta) - 
       lbeta(alpha, beta)
     
-    # Combine in log space: log(P(k)) = gamma*k + log(BetaBin(k))
-    log_prob_k_unnorm <- log_selection_weight + log_neutral_prob
+    # Hypergeometric ratio for selection (using gsl::hyperg_1F1)
+    # This is the proper Sawyer-Hartl model
+    log_hyperg_denom <- log(gsl::hyperg_1F1(alpha, alpha + beta, gamma))
     
-    # Normalize using log-sum-exp trick for numerical stability
-    max_log_prob <- max(log_prob_k_unnorm)
-    log_prob_k <- log_prob_k_unnorm - max_log_prob - log(sum(exp(log_prob_k_unnorm - max_log_prob)))
+    log_probs <- sapply(k_values, function(k) {
+      log_hyperg_num <- log(gsl::hyperg_1F1(k + alpha, target_n + alpha + beta, gamma))
+      log_base[k + 1] + log_hyperg_num - log_hyperg_denom
+    })
+    
+    # Normalize probabilities (they should sum to 1, but ensure numerical stability)
+    max_log_prob <- max(log_probs[is.finite(log_probs)])
+    log_probs_norm <- log_probs - max_log_prob - log(sum(exp(log_probs - max_log_prob), na.rm = TRUE))
     
     # Log-likelihood (observed counts are weights)
-    ll <- sum(observed_sfs * log_prob_k)
+    ll <- sum(observed_sfs * log_probs_norm, na.rm = TRUE)
     
     # Return -Inf if numerical issues
     if (!is.finite(ll)) {
