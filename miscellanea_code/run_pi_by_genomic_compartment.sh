@@ -38,7 +38,7 @@ CDS_FA="/home/l338m483/scratch/IMLines_to_767/data/Mguttatusvar_IM767_887_v2.1.c
 VCF="/home/l338m483/scratch/IMLines_to_767/Included_snp.sites.txt"  # Your all-sites VCF
 
 # Python scripts
-SCRIPT_DIR="/home/l338m483/scratch/IMLines_to_767/miscellanea_code"
+SCRIPT_DIR="/home/l338m483/scratch/IMLines_to_767/python_scripts"
 MISCELLANEA_DIR="/home/l338m483/scratch/IMLines_to_767/miscellanea_code"
 
 # Output
