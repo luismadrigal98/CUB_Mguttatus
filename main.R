@@ -3092,7 +3092,6 @@ ggsave("./results/diversity_modeling/Expected_SFS_C_G.pdf",
 # --- 1. Define Gene Sets ---
 target_n <- 90  # Define the projection size (must match your intron analysis)
 
-
 # Split the by quantiles in 20 intervals (to match with average S_roc per quantile and
 # determine scaling factor)
 

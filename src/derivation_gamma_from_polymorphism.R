@@ -537,7 +537,8 @@ calculate_pi_analytical <- function(alpha, beta, S) {
   # 2. Calculate the Numerator (Expected Heterozygosity)
   # We are integrating 2 * x * (1-x) * Density
   # This shifts the powers to alpha+1 and beta+1
-  log_num_integral <- lbeta(alpha + 1, beta + 1) + log(hyperg_1F1(alpha + 1, alpha + beta + 2, S))
+  log_num_integral <- lbeta(alpha + 1, beta + 1) + 
+    log(hyperg_1F1(alpha + 1, alpha + beta + 2, S))
   
   # Add log(2) because of the "2pq" in heterozygosity
   log_numerator <- log(2) + log_num_integral
