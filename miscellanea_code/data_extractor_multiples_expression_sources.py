@@ -136,10 +136,13 @@ def main():
     
     # Drop unmapped
     df_filtered = df_filtered.dropna(subset=['Remapped_Gene'])
+
+    # Explicitly filter out any Empty Strings in Remapped_Gene (which can cause the "empty" row issue)
+    df_filtered = df_filtered[df_filtered['Remapped_Gene'] != ""]
     
     # Aggregate (Sum CPM for duplicate mappings within the same sample)
     # Group by [Sample, Remapped_Gene] -> Sum CPM
-    print("Aggregating duplicates (summing CPM)...")
+    print("Aggregating duplicates (summing CPM)...")  
     df_grouped = df_filtered.groupby(['Remapped_Gene', 'Sample'])['CPM'].sum().reset_index()
     
     # Pivot to Wide Format (Genes x Samples)
