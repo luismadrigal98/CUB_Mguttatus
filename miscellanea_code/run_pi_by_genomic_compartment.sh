@@ -2,7 +2,7 @@
 #SBATCH --job-name=pi_compartments
 #SBATCH --output=logs/pi_compartments_%j.out
 #SBATCH --error=logs/pi_compartments_%j.err
-#SBATCH --time=48:00:00
+#SBATCH --time=10-00:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=kucg,eeb,kelly
@@ -37,14 +37,14 @@ echo ""
 # ============================================================================
 
 # Input files
-GFF3="data/Mguttatusvar_IM767_887_v2.1.gene.gff3"
-GENOME_FA="data/Mguttatusvar_IM767_887_v2.0.fa"
-CDS_FA="data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa"
-VCF="Included_snp.sites.txt"  # Your all-sites VCF
+GFF3="/home/l338m483/scratch/IMLines_to_767/data/Mguttatusvar_IM767_887_v2.1.gene.gff3"
+GENOME_FA="/home/l338m483/scratch/IMLines_to_767/data/Mguttatusvar_IM767_887_v2.0.fa"
+CDS_FA="/home/l338m483/scratch/IMLines_to_767/data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnly.fa"
+VCF="/home/l338m483/scratch/IMLines_to_767/Included_snp.sites.txt"  # Your all-sites VCF
 
 # Python scripts
-SCRIPT_DIR="python_scripts"
-MISCELLANEA_DIR="miscellanea_code"
+SCRIPT_DIR="/home/l338m483/scratch/IMLines_to_767/miscellanea_code"
+MISCELLANEA_DIR="/home/l338m483/scratch/IMLines_to_767/miscellanea_code"
 
 # Output
 OUTPUT_DIR="results/pi_compartment_analysis"
