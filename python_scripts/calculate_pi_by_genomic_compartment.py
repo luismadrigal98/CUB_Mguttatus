@@ -403,7 +403,7 @@ def parse_vcf_line(line):
         return None
     
     chrom = parts[0]
-    pos = int(parts[1]) - 1  # Convert to 0-based
+    pos = int(parts[1])  # Keep 1-based to match degeneracy annotations
     ref = parts[3]
     alt = parts[4]
     
@@ -562,29 +562,30 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False, 
         nuc_categories = get_site_nucleotide_category(ref, alt, strand, is_invariant)
         
         # Update stats
+        # Note: 'all' category counts EVERY site once.
+        # Nucleotide categories (C, G, AT) count sites based on alleles present.
+        # For polymorphic C<->G sites, BOTH C and G categories get updated.
+        # This means sum(C + G + AT) may exceed 'all' for polymorphic sites.
         if is_invariant:
-            # Update 'all' category
+            # Invariant site: count once in 'all' and once in its nucleotide category
             stats[compartment]['all']['sites'] += 1
-            # Update specific nucleotide categories
             for nuc_cat in nuc_categories:
                 stats[compartment][nuc_cat]['sites'] += 1
         else:
             is_poly, pi_val, n_samples = calculate_pi_site(genotypes)
+            # Always count the site (even if not polymorphic by our depth criteria)
+            stats[compartment]['all']['sites'] += 1
+            for nuc_cat in nuc_categories:
+                stats[compartment][nuc_cat]['sites'] += 1
+            
             if is_poly:
-                # Update 'all' category
-                stats[compartment]['all']['sites'] += 1
+                # Add pi to 'all' category
                 stats[compartment]['all']['poly'] += 1
                 stats[compartment]['all']['pi_sum'] += pi_val
-                # Update specific nucleotide categories
+                # Add pi to each nucleotide category the site belongs to
                 for nuc_cat in nuc_categories:
-                    stats[compartment][nuc_cat]['sites'] += 1
                     stats[compartment][nuc_cat]['poly'] += 1
                     stats[compartment][nuc_cat]['pi_sum'] += pi_val
-            else:
-                # Not polymorphic by our criteria
-                stats[compartment]['all']['sites'] += 1
-                for nuc_cat in nuc_categories:
-                    stats[compartment][nuc_cat]['sites'] += 1
     
     if not stream and input_handle != sys.stdin:
         input_handle.close()
