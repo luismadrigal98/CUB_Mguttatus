@@ -38,14 +38,24 @@ import math
 
 # ====================== CONSTANTS ======================
 
+# Coordinate system notes:
+# - VCF: 1-based positions
+# - GFF3: 1-based, fully-closed intervals [start, end]
+# - Internal storage: 0-based, half-open [start, end) for efficient binary search
+# - Degeneracy annotations: 1-based (from describe_gene_positions_by_degeneracy.py)
+#
+# The binary_search_region function expects 0-based half-open intervals,
+# while degeneracy lookups use 1-based positions directly.
+
 INTRON_TRIM_BP = 50       # bp to trim from intron boundaries (splice site removal)
 INTERGENIC_WINDOW = 50000 # 50kb windows for intergenic regions
 UPSTREAM_2KB = 2000       # 2kb upstream of gene transcription start
 UPSTREAM_10KB = 10000     # 10kb upstream of gene transcription start
 MIN_SAMPLES = 10          # Minimum sample size for π calculation
-MIN_DEPTH_RATIO = 5       # Depth ratio filter for homozygous calls
+MIN_DEPTH_RATIO = 5       # Depth ratio filter for homozygous calls (matches proc2.py)
 
 # Nucleotide categories for polarized analysis
+# Based on mutation bias literature (Monroe et al. 2022 Nature; Bird 1980)
 NUC_CATEGORIES = ['all', 'C', 'G', 'AT']  # AT = A or T (weak nucleotides)
 
 
@@ -81,6 +91,14 @@ def get_site_nucleotide_category(ref, strand):
     2. Monomorphic sites are correctly counted in their category
     3. sum(C + G + AT sites) = all sites
     4. π calculations are consistent across categories
+    
+    Biological rationale for C/G/AT categorization:
+    - C sites: Subject to CpG methylation → deamination (C→T), leading to elevated
+      mutation rates at methylated cytosines (Bird 1980; Monroe et al. 2022 Nature)
+    - G sites: Complementary to C; also shows elevated diversity due to C→T on
+      opposite strand appearing as G→A
+    - AT sites: Lower mutation rate baseline; used as neutral reference for
+      comparing C/G diversity (Boman et al. 2021 GBE)
     
     For coding regions on minus strand, we apply strand correction so that
     categories reflect the sense strand nucleotide.
@@ -587,7 +605,26 @@ def parse_vcf_line(line):
 def calculate_pi_site(genotypes):
     """
     Calculate π for a single site using homozygous calls only.
-    Matches the logic in calculate_pi.py
+    
+    This implements the standard Nei (1987) estimator for nucleotide diversity:
+        π = 2 * n * p * (1-p) / (n-1)
+    
+    where:
+        n = sample size (number of clear homozygous calls)
+        p = frequency of reference allele
+    
+    This is mathematically equivalent to pixy's approach (Korunes & Samuk 2021):
+        π = count_diffs / count_comps
+    
+    For inbred lines, we only use homozygous calls with clear depth support
+    (depth ratio > 5:1) to avoid heterozygous contamination artifacts.
+    
+    References:
+        - Nei, M. (1987). Molecular Evolutionary Genetics. Columbia University Press.
+        - Korunes & Samuk (2021). Mol Ecol Res. https://doi.org/10.1111/1755-0998.13326
+    
+    Returns:
+        (is_polymorphic, pi_value, n_samples)
     """
     ref_hom = 0
     alt_hom = 0
