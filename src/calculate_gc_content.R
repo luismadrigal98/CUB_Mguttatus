@@ -31,7 +31,7 @@ calculate_gc_content <- function(codon_counts)
   setkey(codon_bases, Codon)
   
   # Melt the data to long format (Gene x Codon x Count)
-  dt_long <- melt(dt, id.vars = "Gene_name", 
+  dt_long <- data.table::melt(dt, id.vars = "Gene_name", 
                   variable.name = "Codon", 
                   value.name = "Count",
                   variable.factor = FALSE)

@@ -170,7 +170,8 @@ calculate_enc <- function(codon_counts, genetic_code, have_F6 = FALSE, method = 
   
   # --- 6. Dcast to Wide Format ---
   # Create a table with one row per gene and columns: Gene_name, F2, F3, F4, F6
-  f_bar_wide <- dcast(f_bar_k, Gene_name ~ paste0("F", Degeneracy), value.var = "F_bar")
+  f_bar_wide <- data.table::dcast(f_bar_k, Gene_name ~ paste0("F", Degeneracy), 
+                                  value.var = "F_bar")
   
   # --- 7. Join with All Genes ---
   # This ensures genes with no valid F values are included

@@ -76,10 +76,10 @@ model_plants_PC <- read.table(file = "data/plant_preferred_codons.txt",
                               header = T, sep = ',')
 
 ## *****************************************************************************
-## 3) Load the data ----
+# 3) Load the data ----
 ## _____________________________________________________________________________
 
-## 3.1) Analysis from transcript (if available is a shortcut) ----
+# 3.1) Analysis from transcript (if available is a shortcut) ----
 
 trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnlyClean.fa", 
                                       format = 'fasta')
@@ -142,7 +142,23 @@ codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long),
 
 # ALTERNATIVE (multi-source)
 
+exp_complete <- read.table(file = "./data/compiled_expression_IM767.txt", 
+                           header = T, sep = '\t') |>
+  dplyr::rename(Gene_name = Remapped_Gene) |>
+  dplyr::distinct(Gene_name, .keep_all = TRUE)
 
+# Isolate the numeric data (Everything except Gene_name)
+numeric_data <- exp_complete[, -1] 
+
+# Calculate the "Mean Log Expression"
+# Logic: Add 1 (pseudocount) -> Log10 -> Average across tissues
+exp_complete$Mean_Log10_Exp <- rowMeans(log10(numeric_data + 1))
+
+# Geometric Mean
+exp_complete$Geom_Mean_CPM <- 10^(exp_complete$Mean_Log10_Exp) - 1
+
+# Check the result
+head(exp_complete[, c("Gene_name", "Mean_Log10_Exp", "Geom_Mean_CPM")])
 
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
@@ -157,7 +173,10 @@ cub_results <- cub_summary(codon_usage, genetic_code_dna_long,
 
 # Creation of integrated data ----
 
-integrated_data <- dplyr::left_join(exp_complete, cub_results$enc_results, 
+integrated_data <- dplyr::left_join(exp_complete |> dplyr::select(Gene_name, 
+                                                                  Mean_Log10_Exp, 
+                                                                  Geom_Mean_CPM), 
+                                    cub_results$enc_results, 
                                     by = dplyr::join_by(Gene == Gene_name)) |>
   dplyr::rename(Gene_name = Gene) |>
   na.omit() |>
