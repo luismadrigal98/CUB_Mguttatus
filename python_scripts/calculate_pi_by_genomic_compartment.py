@@ -835,19 +835,25 @@ def write_summary(stats, output_file, chromosome=None):
         print(f"{compartment:<30} {n_sites:>12,} {n_poly:>10,} {pi_mean:>12.8f}")
     
     # Print C vs G vs AT comparison
-    print("\n--- BY NUCLEOTIDE CATEGORY ---")
-    print(f"{'Compartment':<30} {'π_C':>12} {'π_G':>12} {'π_AT':>12} {'C/AT ratio':>12}")
-    print("-" * 80)
+    print("\n--- BY NUCLEOTIDE CATEGORY (Sites / Poly / π) ---")
+    print(f"{'Compartment':<22} {'Sites_C':>10} {'Poly_C':>8} {'π_C':>10} {'Sites_G':>10} {'Poly_G':>8} {'π_G':>10} {'Sites_AT':>10} {'Poly_AT':>8} {'π_AT':>10} {'C/AT':>6}")
+    print("-" * 130)
     for compartment in compartments:
         if compartment not in stats:
             continue
         if stats[compartment]['all']['sites'] == 0:
             continue
-        pi_C = stats[compartment]['C']['pi_sum'] / stats[compartment]['C']['sites'] if stats[compartment]['C']['sites'] > 0 else 0.0
-        pi_G = stats[compartment]['G']['pi_sum'] / stats[compartment]['G']['sites'] if stats[compartment]['G']['sites'] > 0 else 0.0
-        pi_AT = stats[compartment]['AT']['pi_sum'] / stats[compartment]['AT']['sites'] if stats[compartment]['AT']['sites'] > 0 else 0.0
+        n_C = stats[compartment]['C']['sites']
+        n_G = stats[compartment]['G']['sites']
+        n_AT = stats[compartment]['AT']['sites']
+        p_C = stats[compartment]['C']['poly']
+        p_G = stats[compartment]['G']['poly']
+        p_AT = stats[compartment]['AT']['poly']
+        pi_C = stats[compartment]['C']['pi_sum'] / n_C if n_C > 0 else 0.0
+        pi_G = stats[compartment]['G']['pi_sum'] / n_G if n_G > 0 else 0.0
+        pi_AT = stats[compartment]['AT']['pi_sum'] / n_AT if n_AT > 0 else 0.0
         ratio_C_AT = pi_C / pi_AT if pi_AT > 0 else float('nan')
-        print(f"{compartment:<30} {pi_C:>12.8f} {pi_G:>12.8f} {pi_AT:>12.8f} {ratio_C_AT:>12.4f}")
+        print(f"{compartment:<22} {n_C:>10,} {p_C:>8,} {pi_C:>10.6f} {n_G:>10,} {p_G:>8,} {pi_G:>10.6f} {n_AT:>10,} {p_AT:>8,} {pi_AT:>10.6f} {ratio_C_AT:>6.2f}")
     
     # Print site count verification
     print("\n--- SITE COUNT VERIFICATION (sum of C+G+AT should equal 'all') ---")
@@ -863,11 +869,43 @@ def write_summary(stats, output_file, chromosome=None):
         match = "✓" if n_all == n_sum else "✗"
         print(f"{compartment:<30} {n_all:>12,} {n_sum:>12,} {match:>8}")
     
+    # Print weighted average verification: π_all = Σ(N_i/N_all × π_i)
+    # This demonstrates that the math is correct even when π_C > π_all
+    print("\n--- WEIGHTED AVERAGE VERIFICATION ---")
+    print("π_all should equal: (N_C/N_all)×π_C + (N_G/N_all)×π_G + (N_AT/N_all)×π_AT")
+    print(f"{'Compartment':<22} {'π_all':>10} {'weighted':>10} {'%C':>6} {'%G':>6} {'%AT':>6} {'Match':>6}")
+    print("-" * 70)
+    for compartment in compartments:
+        if compartment not in stats or stats[compartment]['all']['sites'] == 0:
+            continue
+        n_all = stats[compartment]['all']['sites']
+        n_C = stats[compartment]['C']['sites']
+        n_G = stats[compartment]['G']['sites']
+        n_AT = stats[compartment]['AT']['sites']
+        
+        pi_all = stats[compartment]['all']['pi_sum'] / n_all if n_all > 0 else 0.0
+        pi_C = stats[compartment]['C']['pi_sum'] / n_C if n_C > 0 else 0.0
+        pi_G = stats[compartment]['G']['pi_sum'] / n_G if n_G > 0 else 0.0
+        pi_AT = stats[compartment]['AT']['pi_sum'] / n_AT if n_AT > 0 else 0.0
+        
+        # Calculate weighted average
+        weighted = (n_C/n_all * pi_C) + (n_G/n_all * pi_G) + (n_AT/n_all * pi_AT)
+        
+        pct_C = 100.0 * n_C / n_all
+        pct_G = 100.0 * n_G / n_all
+        pct_AT = 100.0 * n_AT / n_all
+        
+        match = "✓" if abs(pi_all - weighted) < 1e-10 else "✗"
+        print(f"{compartment:<22} {pi_all:>10.6f} {weighted:>10.6f} {pct_C:>5.1f}% {pct_G:>5.1f}% {pct_AT:>5.1f}% {match:>6}")
+    
     print("=" * 95)
     print("\nNotes:")
     print("  - Nucleotide categories use REFERENCE allele only (each site in exactly one category)")
     print("  - C and G are strand-corrected for coding regions")
     print("  - AT = sites with A or T reference (weak nucleotides)")
+    print("  - π_C can exceed π_all because C sites have elevated mutation rates (CpG effect)")
+    print("    This is like how average income in a city can exceed the national average")
+    print("  - The weighted average π_all = Σ(fraction_i × π_i) must hold exactly")
     print("  - exon_all includes ALL exonic sites (selection on amino acids visible)")
     print("  - first/nonfirst_exon_4fold are subsets of exon_all (synonymous sites only)")
     print("  - C/AT ratio > 1 indicates elevated π at C sites (CpG hypermutation)")

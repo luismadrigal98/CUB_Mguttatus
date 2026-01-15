@@ -177,8 +177,7 @@ integrated_data <- dplyr::left_join(exp_complete |> dplyr::select(Gene_name,
                                                                   Mean_Log10_Exp, 
                                                                   Geom_Mean_CPM), 
                                     cub_results$enc_results, 
-                                    by = dplyr::join_by(Gene == Gene_name)) |>
-  dplyr::rename(Gene_name = Gene) |>
+                                    by = dplyr::join_by(Gene_name)) |>
   na.omit() |>
   distinct(Gene_name, .keep_all = TRUE)
 
@@ -310,8 +309,8 @@ enc_cdc_data <- enc_cdc_data |>
 
 # Compare CDC-significant vs non-significant genes
 cdc_position_summary <- enc_cdc_data |>
-  filter(!is.na(CDC_significant)) |>
-  group_by(CDC_significant) |>
+  dplyr::filter(!is.na(CDC_significant)) |>
+  dplyr::group_by(CDC_significant) |>
   summarize(
     n = n(),
     mean_ENC = mean(ENC, na.rm = TRUE),
@@ -382,16 +381,16 @@ ggsave("./results/ENC_deviation_by_CDC.pdf", p_enc_deviation, width = 9, height 
 #   dplyr::mutate(High_exp_BC = predict(box_cox_transformer, 
 #                                       as.data.frame(integrated_data[, "High_exp"]))[[1]])
 
-integrated_data <- integrated_data |>
-  dplyr::mutate(High_exp_log2 = log2(High_exp + 1), # Adding 1 to avoid log2(0)
-                High_exp_log10 = log10(High_exp + 1))  
+# integrated_data <- integrated_data |>
+#   dplyr::mutate(High_exp_log2 = log2(High_exp + 1), # Adding 1 to avoid log2(0)
+#                 High_exp_log10 = log10(High_exp + 1))  
 
 # Generalized Linear Models ----
 
 integrated_data <- integrated_data |> 
   left_join(enc_cdc_data |> dplyr::select(Gene_name, CDC), by = "Gene_name")
   
-CDC_vs_exp <- glm(CDC ~ High_exp_log2 + CDS_length_nt, 
+CDC_vs_exp <- glm(CDC ~ Mean_Log10_Exp + CDS_length_nt, 
                  data = integrated_data, 
                  family = quasibinomial(link = "logit"))
 
@@ -416,7 +415,7 @@ ggsave("./results/CDC_observed_vs_predicted.pdf",
 
 # CDC ~ Exp
 ggplot(data = integrated_data, 
-       mapping = aes(x = High_exp_log2, y = CDC)) +
+       mapping = aes(x = Mean_Log10_Exp, y = CDC)) +
   geom_pointdensity() +
   geom_smooth(method = lm, color = 'red') +
   theme_custom()
@@ -450,7 +449,7 @@ ggsave("./results/CDC_raw_vs_gene_length_density.pdf",
 # we are going to fit a GAM model to account for this and assess effectively the
 # effect of expression
 
-cdc_model_quasibinom <- gam(CDC ~ High_exp_log2 + s(CDS_length_nt), 
+cdc_model_quasibinom <- gam(CDC ~ Mean_Log10_Exp + s(CDS_length_nt), 
                       data = integrated_data, family = quasibinomial(link = "logit"))
 
 summary(cdc_model_quasibinom)
@@ -463,9 +462,9 @@ confounder_model_gam <- gam(CDC ~ s(CDS_length_nt),
 
 integrated_data$CDC_detrended <- residuals(confounder_model_gam)
 
-summary(lm(CDC_detrended ~ High_exp_log2, data = integrated_data))
+summary(lm(CDC_detrended ~ Mean_Log10_Exp, data = integrated_data))
 
-p_detrended <- ggplot(integrated_data, aes(x = High_exp_log2, y = CDC_detrended)) +
+p_detrended <- ggplot(integrated_data, aes(x = Mean_Log10_Exp, y = CDC_detrended)) +
   # Use ggpointdensity for a clear view of the cluster
   geom_pointdensity(alpha = 0.5) + 
   
@@ -476,20 +475,21 @@ p_detrended <- ggplot(integrated_data, aes(x = High_exp_log2, y = CDC_detrended)
     title = "Detrended CDC vs. Gene Expression",
     subtitle = "Showing CDC after accounting for non-linear effects of gene length",
     y = "CDC Residuals (Detrended)",
-    x = "log2(Expression + 1)"
+    x = "log10(Mean Expression + 1)"
   ) +
   theme_custom()
 
-ggsave("./results/ENC_detrended_vs_expression.pdf", p_detrended, width = 8, height = 6)
+ggsave("./results/CDC_detrended_vs_expression.pdf", p_detrended, 
+       width = 8, height = 6)
 
 # Define expression groups: Top 5% vs Bottom 5% (extreme comparison) ----
 
-top_5_cutoff <- quantile(integrated_data$High_exp_log2, probs = 0.95)
-bottom_5_cutoff <- quantile(integrated_data$High_exp_log2, probs = 0.05)
+top_5_cutoff <- quantile(integrated_data$Mean_Log10_Exp, probs = 0.95)
+bottom_5_cutoff <- quantile(integrated_data$Mean_Log10_Exp, probs = 0.05)
 
 integrated_data$Expression_Group <- case_when(
-  integrated_data$High_exp_log2 >= top_5_cutoff ~ "Top 5%",
-  integrated_data$High_exp_log2 <= bottom_5_cutoff ~ "Bottom 5%",
+  integrated_data$Mean_Log10_Exp >= top_5_cutoff ~ "Top 5%",
+  integrated_data$Mean_Log10_Exp <= bottom_5_cutoff ~ "Bottom 5%",
   TRUE ~ "Middle 90%"
 )
 
@@ -499,7 +499,7 @@ integrated_data$Expression_Group <- case_when(
 
 cat("\n=== Kruskal-Wallis Test: Detrended ENC Residuals across Groups ===\n")
 
-kw_detrended <- kruskal.test(CDC ~ Expression_Group, 
+kw_detrended <- kruskal.test(CDC_detrended ~ Expression_Group, 
                              data = integrated_data)
 
 # Plotting and assessing significance using Dunn
@@ -528,7 +528,9 @@ if (kw_detrended$p.value < 0.05) {
 
 # Ploting box plot
 
-p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = CDC, fill = Expression_Group)) +
+p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, 
+                                                   y = CDC_detrended, 
+                                                   fill = Expression_Group)) +
   geom_violin(alpha = 0.3) +
   geom_boxplot(outlier.alpha = 0.3) +
   # geom_boxplot(outlier.alpha = 0.3) +
@@ -544,7 +546,7 @@ p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group, y = CDC
   theme_custom() +
   theme(legend.position = "none")
 
-ggsave("./results/Detrended_ENC_by_expression_group.pdf", 
+ggsave("./results/Detrended_CDC_by_expression_group.pdf", 
        p_boxplot_detrended, width = 8, height = 6)
 
 # Get CDC values for each group
@@ -743,14 +745,14 @@ p_cdc_enc <- ggplot(integrated_data, aes(x = CDC_detrended, y = CAI, color = Exp
   scale_color_manual(values = c("Top 5%" = "#E41A1C", 
                                  "Bottom 5%" = "#377EB8",
                                  "Middle 90%" = "#999999")) +
-  labs(title = "CAI vs CDC by Expression Level",
-       subtitle = "Higher CDC and Higher CAI indicate stronger codon bias",
-       x = "CDC",
+  labs(title = "CAI vs CDC detrended by Expression Level",
+       subtitle = "Higher CDC_detrended and Higher CAI indicate stronger codon bias",
+       x = "CDC_detrended",
        y = "CAI (Codon Adaptation Index)",
        color = "Expression Group") +
   theme_custom()
 
-ggsave("./results/CAI_vs_ENC_scatter.pdf", p_cdc_enc, width = 10, height = 6)
+ggsave("./results/CAI_vs_CDC_scatter.pdf", p_cdc_enc, width = 10, height = 6)
 
 # 7.2) Compare absolute codon frequencies: Top 5% vs Rest ----
 # This shows that raw frequencies differ, but not all differences are due to selection
@@ -857,7 +859,7 @@ cat("Enrichment analysis (via w-table) corrects for this by normalizing within a
 
 # 7.2.1) Enriched codons usage ----
 
-# Get preferred codons (w = 1.0 from CAI)
+# Get enriched codons (w = 1.0 from CAI)
 enriched_codons_vec <- w_table |>
   dplyr::filter(relative_adaptiveness == 1.0) |>
   dplyr::pull(codon)

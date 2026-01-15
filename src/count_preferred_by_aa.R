@@ -1,4 +1,4 @@
-count_eriched_by_aa <- function(codon_data, preferred_codons, genetic_code) {
+count_preferred_by_aa <- function(codon_data, preferred_codons, genetic_code) {
   
   # Convert to data.frame if it's a data.table (avoid data.table indexing issues)
   if ("data.table" %in% class(codon_data)) {
