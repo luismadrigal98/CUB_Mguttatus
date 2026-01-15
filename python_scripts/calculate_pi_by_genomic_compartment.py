@@ -3,10 +3,17 @@
 Calculate nucleotide diversity (π) across different genomic compartments.
 
 Compartments:
-    1. Intergenic windows (50kb) - neutral baseline
-    2. Introns (50bp trimmed from splice sites) - neutral within genes
-    3. First exons - 4-fold degenerate sites only
-    4. Non-first exons - 4-fold degenerate sites only
+    1. intergenic - windows (50kb) far from genes - neutral baseline
+    2. intergenic_upstream_2kb - 2kb upstream of genes (promoter region)
+    3. intergenic_upstream_10kb - 10kb upstream of genes
+    4. intron - introns (50bp trimmed from splice sites) - neutral within genes
+    5. exon_all - ALL exonic sites (any degeneracy) - amino acid selection visible
+    6. first_exon_4fold - first exons, 4-fold degenerate sites only
+    7. nonfirst_exon_4fold - non-first exons, 4-fold degenerate sites only
+
+Nucleotide categories (C, G, AT) are based on the REFERENCE allele only.
+This ensures consistent site counting where each site belongs to exactly one
+nucleotide category, and monomorphic sites are properly included.
 
 Input:
     - VCF file with variant AND invariant sites
@@ -33,6 +40,8 @@ import math
 
 INTRON_TRIM_BP = 50       # bp to trim from intron boundaries (splice site removal)
 INTERGENIC_WINDOW = 50000 # 50kb windows for intergenic regions
+UPSTREAM_2KB = 2000       # 2kb upstream of gene transcription start
+UPSTREAM_10KB = 10000     # 10kb upstream of gene transcription start
 MIN_SAMPLES = 10          # Minimum sample size for π calculation
 MIN_DEPTH_RATIO = 5       # Depth ratio filter for homozygous calls
 
@@ -63,38 +72,32 @@ def classify_nucleotide(nuc):
     return None
 
 
-def get_site_nucleotide_category(ref, alt, strand, is_invariant):
+def get_site_nucleotide_category(ref, strand):
     """
-    Determine which nucleotide category a site belongs to.
-    For polarized π, we want to know if the site has C, G, or AT alleles.
+    Determine which nucleotide category a site belongs to based on REFERENCE allele only.
     
-    For invariant sites: category based on ref allele
-    For polymorphic sites: we track BOTH alleles (site contributes to both categories)
+    Using only the reference allele ensures:
+    1. Each site belongs to exactly ONE nucleotide category
+    2. Monomorphic sites are correctly counted in their category
+    3. sum(C + G + AT sites) = all sites
+    4. π calculations are consistent across categories
     
-    Returns: list of categories this site belongs to ['C'], ['G'], ['AT'], ['C', 'AT'], etc.
+    For coding regions on minus strand, we apply strand correction so that
+    categories reflect the sense strand nucleotide.
+    
+    Args:
+        ref: Reference allele from VCF
+        strand: '+' or '-' for strand correction (use '+' for intergenic)
+    
+    Returns: Single category string: 'C', 'G', or 'AT'
     """
-    # Apply strand correction
+    # Apply strand correction for coding regions
     if strand == '-':
         ref_corrected = get_complement(ref)
-        alt_corrected = get_complement(alt) if alt and alt not in ['.', '*', '<NON_REF>'] else None
     else:
         ref_corrected = ref.upper()
-        alt_corrected = alt.upper() if alt and alt not in ['.', '*', '<NON_REF>'] else None
     
-    categories = set()
-    
-    # Add ref category
-    ref_cat = classify_nucleotide(ref_corrected)
-    if ref_cat:
-        categories.add(ref_cat)
-    
-    # Add alt category (if polymorphic)
-    if not is_invariant and alt_corrected:
-        alt_cat = classify_nucleotide(alt_corrected)
-        if alt_cat:
-            categories.add(alt_cat)
-    
-    return list(categories)
+    return classify_nucleotide(ref_corrected)
 
 
 # ====================== GFF PARSING ======================
@@ -281,6 +284,109 @@ def calculate_intergenic_windows(gene_intervals, chrom_sizes=None):
     return intergenic_windows
 
 
+def calculate_upstream_regions(genes, gene_intervals):
+    """
+    Calculate upstream regions for each gene.
+    
+    Upstream is defined as 5' of the transcription start site (TSS):
+    - For + strand genes: upstream is BEFORE (lower coordinates) the gene start
+    - For - strand genes: upstream is AFTER (higher coordinates) the gene end
+    
+    We avoid overlapping with other genes by clipping upstream regions.
+    
+    Returns:
+        upstream_2kb: {chrom: [(start, end, gene_id), ...]} for 2kb upstream
+        upstream_10kb: {chrom: [(start, end, gene_id), ...]} for 10kb upstream
+    """
+    upstream_2kb = defaultdict(list)
+    upstream_10kb = defaultdict(list)
+    
+    # Build merged gene intervals to check for overlaps
+    merged_genes = {}
+    for chrom, intervals in gene_intervals.items():
+        # Merge overlapping gene intervals
+        sorted_intervals = sorted(intervals)
+        merged = []
+        for start, end in sorted_intervals:
+            if merged and start <= merged[-1][1]:
+                # Overlapping - extend
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append([start, end])
+        merged_genes[chrom] = [(s, e) for s, e in merged]
+    
+    def find_upstream_boundary(chrom, pos, direction):
+        """Find nearest gene boundary in the given direction."""
+        if chrom not in merged_genes:
+            return None
+        for start, end in merged_genes[chrom]:
+            if direction == 'left':  # Looking for boundary to the left of pos
+                if end <= pos:
+                    continue  # Keep looking
+                if start >= pos:
+                    return None  # No boundary found before hitting another gene
+            elif direction == 'right':  # Looking for boundary to the right of pos
+                if start >= pos:
+                    return start  # Found next gene start
+        return None
+    
+    for gene_id, info in genes.items():
+        chrom = info['chrom']
+        strand = info['strand']
+        gene_start = info['start']
+        gene_end = info['end']
+        
+        if strand == '+':
+            # Upstream is before gene start (lower coordinates)
+            up_end = gene_start
+            up_start_2kb = max(0, gene_start - UPSTREAM_2KB)
+            up_start_10kb = max(0, gene_start - UPSTREAM_10KB)
+            
+            # Check for overlapping genes - find the nearest gene end before this gene
+            for g_start, g_end in merged_genes.get(chrom, []):
+                if g_end <= gene_start and g_end > up_start_10kb:
+                    # There's a gene ending in our upstream region
+                    up_start_10kb = max(up_start_10kb, g_end)
+                if g_end <= gene_start and g_end > up_start_2kb:
+                    up_start_2kb = max(up_start_2kb, g_end)
+            
+            if up_start_2kb < up_end:
+                upstream_2kb[chrom].append((up_start_2kb, up_end, gene_id))
+            if up_start_10kb < up_end:
+                upstream_10kb[chrom].append((up_start_10kb, up_end, gene_id))
+                
+        else:  # strand == '-'
+            # Upstream is after gene end (higher coordinates)
+            up_start = gene_end
+            up_end_2kb = gene_end + UPSTREAM_2KB
+            up_end_10kb = gene_end + UPSTREAM_10KB
+            
+            # Check for overlapping genes - find the nearest gene start after this gene
+            for g_start, g_end in merged_genes.get(chrom, []):
+                if g_start >= gene_end and g_start < up_end_10kb:
+                    # There's a gene starting in our upstream region
+                    up_end_10kb = min(up_end_10kb, g_start)
+                if g_start >= gene_end and g_start < up_end_2kb:
+                    up_end_2kb = min(up_end_2kb, g_start)
+            
+            if up_start < up_end_2kb:
+                upstream_2kb[chrom].append((up_start, up_end_2kb, gene_id))
+            if up_start < up_end_10kb:
+                upstream_10kb[chrom].append((up_start, up_end_10kb, gene_id))
+    
+    # Sort for binary search
+    for chrom in upstream_2kb:
+        upstream_2kb[chrom].sort()
+    for chrom in upstream_10kb:
+        upstream_10kb[chrom].sort()
+    
+    total_2kb = sum(len(v) for v in upstream_2kb.values())
+    total_10kb = sum(len(v) for v in upstream_10kb.values())
+    print(f"  Upstream regions: {total_2kb} (2kb), {total_10kb} (10kb)")
+    
+    return upstream_2kb, upstream_10kb
+
+
 # ====================== DEGENERACY ANNOTATION ======================
 
 def load_degeneracy_annotations(annotation_files):
@@ -352,43 +458,80 @@ def binary_search_region(chrom, pos, regions):
     return None
 
 
-def classify_position(chrom, pos, exons, introns, intergenic, degeneracy):
+def classify_position(chrom, pos, exons, introns, intergenic, degeneracy, 
+                       upstream_2kb=None, upstream_10kb=None):
     """
     Classify a position into one of the compartments.
     
+    Priority order (higher priority compartments checked first):
+    1. Exons (returns exon_all, plus first_exon_4fold or nonfirst_exon_4fold if 4-fold)
+    2. Introns
+    3. Upstream (2kb, then 10kb - these overlap, so a site can be in both)
+    4. Intergenic (far from genes)
+    
     Returns:
-        (compartment, details)
-        compartment: 'intergenic' | 'intron' | 'first_exon_4fold' | 'nonfirst_exon_4fold' | None
-        details: dict with additional info
+        (compartments, details)
+        compartments: list of matching compartments (a site can match multiple)
+        details: dict with additional info including strand
     """
-    # Check exons first (need 4-fold)
+    compartments = []
+    details = {'strand': '+'}  # Default strand for intergenic
+    
+    # Check exons first
     exon_match = binary_search_region(chrom, pos, exons)
     if exon_match:
         ex_start, ex_end, gene_id, exon_num, strand = exon_match
+        details = {'gene': gene_id, 'exon': exon_num, 'strand': strand}
+        
+        # Always add to exon_all
+        compartments.append('exon_all')
         
         # Check if 4-fold degenerate
         if chrom in degeneracy and pos in degeneracy[chrom]:
             deg_info = degeneracy[chrom][pos]
             if deg_info['degeneracy'] == '4-fold':
                 if exon_num == 1:
-                    return 'first_exon_4fold', {'gene': gene_id, 'exon': exon_num}
+                    compartments.append('first_exon_4fold')
                 else:
-                    return 'nonfirst_exon_4fold', {'gene': gene_id, 'exon': exon_num}
-        return None, {}  # Exon but not 4-fold
+                    compartments.append('nonfirst_exon_4fold')
+        
+        return compartments, details
     
     # Check introns
     intron_match = binary_search_region(chrom, pos, introns)
     if intron_match:
         in_start, in_end, gene_id, strand = intron_match
-        return 'intron', {'gene': gene_id}
+        details = {'gene': gene_id, 'strand': strand}
+        return ['intron'], details
     
-    # Check intergenic
+    # Check upstream regions (can be in both 2kb and 10kb)
+    # 2kb is a subset of 10kb, but we track them separately
+    if upstream_2kb:
+        up2_match = binary_search_region(chrom, pos, upstream_2kb)
+        if up2_match:
+            up_start, up_end, gene_id = up2_match
+            details = {'gene': gene_id, 'strand': '+'}  # Upstream uses + for consistent C/G
+            compartments.append('intergenic_upstream_2kb')
+    
+    if upstream_10kb:
+        up10_match = binary_search_region(chrom, pos, upstream_10kb)
+        if up10_match:
+            up_start, up_end, gene_id = up10_match
+            details = {'gene': gene_id, 'strand': '+'}
+            if 'intergenic_upstream_10kb' not in compartments:
+                compartments.append('intergenic_upstream_10kb')
+    
+    if compartments:
+        return compartments, details
+    
+    # Check intergenic (far from genes)
     ig_match = binary_search_region(chrom, pos, intergenic)
     if ig_match:
         ig_start, ig_end = ig_match[:2]
-        return 'intergenic', {'window': f"{chrom}:{ig_start}-{ig_end}"}
+        details = {'window': f"{chrom}:{ig_start}-{ig_end}", 'strand': '+'}
+        return ['intergenic'], details
     
-    return None, {}
+    return [], {}
 
 
 # ====================== VCF PROCESSING ======================
@@ -469,7 +612,15 @@ def init_compartment_stats():
     Initialize stats dictionary with all compartments and nucleotide categories.
     Structure: {compartment: {nuc_category: {'sites': int, 'poly': int, 'pi_sum': float}}}
     """
-    compartments = ['intergenic', 'intron', 'first_exon_4fold', 'nonfirst_exon_4fold']
+    compartments = [
+        'intergenic',           # Far from genes (50kb windows)
+        'intergenic_upstream_2kb',   # 2kb upstream of TSS
+        'intergenic_upstream_10kb',  # 10kb upstream of TSS
+        'intron',               # Introns (trimmed)
+        'exon_all',             # All exonic sites (any degeneracy)
+        'first_exon_4fold',     # First exon, 4-fold sites
+        'nonfirst_exon_4fold'   # Non-first exons, 4-fold sites
+    ]
     stats = {}
     for comp in compartments:
         stats[comp] = {}
@@ -478,13 +629,16 @@ def init_compartment_stats():
     return stats
 
 
-def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False, target_chrom=None):
+def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, 
+                 upstream_2kb=None, upstream_10kb=None,
+                 stream=False, target_chrom=None):
     """
     Process VCF and calculate π for each compartment, with C/G polarization.
     
     Args:
         vcf_path: Path to VCF file
         exons, introns, intergenic, degeneracy: Annotation data structures
+        upstream_2kb, upstream_10kb: Upstream region data structures
         stream: If True, read from stdin
         target_chrom: If set, only process this chromosome (for parallel processing)
     
@@ -492,6 +646,10 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False, 
         compartment_stats: {compartment: {nuc_category: {'sites': int, 'poly': int, 'pi_sum': float}}}
         
     Where nuc_category is 'all', 'C', 'G', or 'AT'
+    
+    Note: Nucleotide categories are based on REFERENCE allele only.
+    This ensures each site belongs to exactly one nucleotide category,
+    and sum(C + G + AT sites) = all sites.
     """
     stats = init_compartment_stats()
     
@@ -534,58 +692,44 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, stream=False, 
         if not is_invariant and (len(ref) > 1 or len(alt) > 1 or ',' in alt):
             continue
         
-        # Classify position
-        compartment, details = classify_position(
-            chrom, pos, exons, introns, intergenic, degeneracy
+        # Classify position - now returns list of compartments
+        compartments, details = classify_position(
+            chrom, pos, exons, introns, intergenic, degeneracy,
+            upstream_2kb, upstream_10kb
         )
         
-        if compartment is None:
+        if not compartments:
             continue
         
         classified_count += 1
         
-        # Determine strand for polarization
-        # For exons/introns, get strand from details or region match
-        strand = '+'
-        if compartment in ['first_exon_4fold', 'nonfirst_exon_4fold']:
-            # Re-check exon to get strand
-            exon_match = binary_search_region(chrom, pos, exons)
-            if exon_match:
-                strand = exon_match[4]  # (start, end, gene_id, exon_num, strand)
-        elif compartment == 'intron':
-            intron_match = binary_search_region(chrom, pos, introns)
-            if intron_match:
-                strand = intron_match[3]  # (start, end, gene_id, strand)
-        # Intergenic: use '+' (no strand correction needed)
+        # Get strand from details (for exon strand correction)
+        strand = details.get('strand', '+')
         
-        # Get nucleotide categories for this site
-        nuc_categories = get_site_nucleotide_category(ref, alt, strand, is_invariant)
+        # Get nucleotide category based on REFERENCE allele only
+        # This ensures each site belongs to exactly ONE category
+        nuc_category = get_site_nucleotide_category(ref, strand)
         
-        # Update stats
-        # Note: 'all' category counts EVERY site once.
-        # Nucleotide categories (C, G, AT) count sites based on alleles present.
-        # For polymorphic C<->G sites, BOTH C and G categories get updated.
-        # This means sum(C + G + AT) may exceed 'all' for polymorphic sites.
-        if is_invariant:
-            # Invariant site: count once in 'all' and once in its nucleotide category
-            stats[compartment]['all']['sites'] += 1
-            for nuc_cat in nuc_categories:
-                stats[compartment][nuc_cat]['sites'] += 1
-        else:
+        # Calculate pi for polymorphic sites
+        is_poly = False
+        pi_val = 0.0
+        if not is_invariant:
             is_poly, pi_val, n_samples = calculate_pi_site(genotypes)
-            # Always count the site (even if not polymorphic by our depth criteria)
+        
+        # Update stats for ALL compartments this site belongs to
+        for compartment in compartments:
+            # Update 'all' category
             stats[compartment]['all']['sites'] += 1
-            for nuc_cat in nuc_categories:
-                stats[compartment][nuc_cat]['sites'] += 1
-            
             if is_poly:
-                # Add pi to 'all' category
                 stats[compartment]['all']['poly'] += 1
                 stats[compartment]['all']['pi_sum'] += pi_val
-                # Add pi to each nucleotide category the site belongs to
-                for nuc_cat in nuc_categories:
-                    stats[compartment][nuc_cat]['poly'] += 1
-                    stats[compartment][nuc_cat]['pi_sum'] += pi_val
+            
+            # Update specific nucleotide category
+            if nuc_category:
+                stats[compartment][nuc_category]['sites'] += 1
+                if is_poly:
+                    stats[compartment][nuc_category]['poly'] += 1
+                    stats[compartment][nuc_category]['pi_sum'] += pi_val
     
     if not stream and input_handle != sys.stdin:
         input_handle.close()
@@ -604,13 +748,24 @@ def write_summary(stats, output_file, chromosome=None):
     chrom_str = chromosome if chromosome else "all"
     print(f"\nWriting summary to: {output_file}")
     
-    compartments = ['intergenic', 'intron', 'first_exon_4fold', 'nonfirst_exon_4fold']
+    # All compartments in logical order
+    compartments = [
+        'intergenic',
+        'intergenic_upstream_10kb',
+        'intergenic_upstream_2kb',
+        'intron',
+        'exon_all',
+        'first_exon_4fold',
+        'nonfirst_exon_4fold'
+    ]
     
     with open(output_file, 'w') as out:
         # Header with chromosome column for merging across parallel jobs
         out.write("Chromosome\tCompartment\tNuc_Category\tSites\tPolymorphic\tPi_sum\tPi_mean\tPoly_fraction\n")
         
         for compartment in compartments:
+            if compartment not in stats:
+                continue
             for nuc_cat in NUC_CATEGORIES:
                 s = stats[compartment][nuc_cat]
                 n_sites = s['sites']
@@ -622,44 +777,70 @@ def write_summary(stats, output_file, chromosome=None):
                 out.write(f"{chrom_str}\t{compartment}\t{nuc_cat}\t{n_sites}\t{n_poly}\t{pi_sum:.6f}\t{pi_mean:.8f}\t{poly_frac:.6f}\n")
     
     # Also print to console - formatted nicely
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 95)
     print(f"SUMMARY: Nucleotide Diversity (π) by Genomic Compartment - {chrom_str}")
-    print("With C/G/AT Polarization (strand-corrected)")
-    print("=" * 90)
+    print("Nucleotide categories based on REFERENCE allele (strand-corrected for coding regions)")
+    print("=" * 95)
     
     # Print overall stats first
     print("\n--- OVERALL (all nucleotides) ---")
-    print(f"{'Compartment':<25} {'Sites':>12} {'Poly':>10} {'π mean':>12}")
-    print("-" * 60)
+    print(f"{'Compartment':<30} {'Sites':>12} {'Poly':>10} {'π mean':>12}")
+    print("-" * 65)
     for compartment in compartments:
+        if compartment not in stats:
+            continue
         s = stats[compartment]['all']
         n_sites = s['sites']
         n_poly = s['poly']
+        if n_sites == 0:
+            continue
         pi_mean = s['pi_sum'] / n_sites if n_sites > 0 else 0.0
-        print(f"{compartment:<25} {n_sites:>12,} {n_poly:>10,} {pi_mean:>12.8f}")
+        print(f"{compartment:<30} {n_sites:>12,} {n_poly:>10,} {pi_mean:>12.8f}")
     
     # Print C vs G vs AT comparison
     print("\n--- BY NUCLEOTIDE CATEGORY ---")
-    print(f"{'Compartment':<25} {'π_C':>12} {'π_G':>12} {'π_AT':>12} {'C/AT ratio':>12}")
-    print("-" * 75)
+    print(f"{'Compartment':<30} {'π_C':>12} {'π_G':>12} {'π_AT':>12} {'C/AT ratio':>12}")
+    print("-" * 80)
     for compartment in compartments:
+        if compartment not in stats:
+            continue
+        if stats[compartment]['all']['sites'] == 0:
+            continue
         pi_C = stats[compartment]['C']['pi_sum'] / stats[compartment]['C']['sites'] if stats[compartment]['C']['sites'] > 0 else 0.0
         pi_G = stats[compartment]['G']['pi_sum'] / stats[compartment]['G']['sites'] if stats[compartment]['G']['sites'] > 0 else 0.0
         pi_AT = stats[compartment]['AT']['pi_sum'] / stats[compartment]['AT']['sites'] if stats[compartment]['AT']['sites'] > 0 else 0.0
         ratio_C_AT = pi_C / pi_AT if pi_AT > 0 else float('nan')
-        print(f"{compartment:<25} {pi_C:>12.8f} {pi_G:>12.8f} {pi_AT:>12.8f} {ratio_C_AT:>12.4f}")
+        print(f"{compartment:<30} {pi_C:>12.8f} {pi_G:>12.8f} {pi_AT:>12.8f} {ratio_C_AT:>12.4f}")
     
-    print("=" * 90)
-    print("\nNote: C and G categories are strand-corrected for coding regions.")
-    print("      AT = sites with A or T alleles (weak nucleotides).")
-    print("      Ratio > 1 indicates elevated π at C sites relative to AT.")
+    # Print site count verification
+    print("\n--- SITE COUNT VERIFICATION (sum of C+G+AT should equal 'all') ---")
+    print(f"{'Compartment':<30} {'all':>12} {'C+G+AT':>12} {'Match':>8}")
+    print("-" * 55)
+    for compartment in compartments:
+        if compartment not in stats or stats[compartment]['all']['sites'] == 0:
+            continue
+        n_all = stats[compartment]['all']['sites']
+        n_sum = (stats[compartment]['C']['sites'] + 
+                 stats[compartment]['G']['sites'] + 
+                 stats[compartment]['AT']['sites'])
+        match = "✓" if n_all == n_sum else "✗"
+        print(f"{compartment:<30} {n_all:>12,} {n_sum:>12,} {match:>8}")
+    
+    print("=" * 95)
+    print("\nNotes:")
+    print("  - Nucleotide categories use REFERENCE allele only (each site in exactly one category)")
+    print("  - C and G are strand-corrected for coding regions")
+    print("  - AT = sites with A or T reference (weak nucleotides)")
+    print("  - exon_all includes ALL exonic sites (selection on amino acids visible)")
+    print("  - first/nonfirst_exon_4fold are subsets of exon_all (synonymous sites only)")
+    print("  - C/AT ratio > 1 indicates elevated π at C sites (CpG hypermutation)")
 
 
 # ====================== MAIN ======================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Calculate π across genomic compartments (intergenic, intron, first/non-first exon 4-fold sites)"
+        description="Calculate π across genomic compartments with C/G/AT polarization"
     )
     parser.add_argument('--vcf', type=str, help='Path to VCF file (gzip supported)')
     parser.add_argument('--stream', action='store_true', help='Read VCF from stdin')
@@ -681,24 +862,29 @@ def main():
     if target_chrom:
         print(f"Filtering for chromosome: {target_chrom}")
     
-    # 1. Parse GFF3 (filter by chromosome if specified)
+    print("\n=== Step 1: Parse GFF3 annotations ===")
     genes, exons, introns, gene_intervals = parse_gff3(args.gff, target_chrom=target_chrom)
     
-    # 2. Calculate intergenic windows
+    print("\n=== Step 2: Calculate intergenic windows ===")
     intergenic = calculate_intergenic_windows(gene_intervals)
     
-    # 3. Load degeneracy annotations
+    print("\n=== Step 3: Calculate upstream regions ===")
+    upstream_2kb, upstream_10kb = calculate_upstream_regions(genes, gene_intervals)
+    
+    print("\n=== Step 4: Load degeneracy annotations ===")
     degeneracy = load_degeneracy_annotations(args.degeneracy)
     
-    # 4. Process VCF
+    print("\n=== Step 5: Process VCF ===")
     stats = process_vcf(
         args.vcf if args.vcf else None,
         exons, introns, intergenic, degeneracy,
+        upstream_2kb=upstream_2kb,
+        upstream_10kb=upstream_10kb,
         stream=args.stream,
         target_chrom=target_chrom
     )
     
-    # 5. Write output
+    print("\n=== Step 6: Write output ===")
     write_summary(stats, args.output, chromosome=target_chrom)
     
     print("\nDone!")
