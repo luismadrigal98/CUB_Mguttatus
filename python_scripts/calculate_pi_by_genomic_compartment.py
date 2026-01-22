@@ -21,7 +21,7 @@ Input:
     - Degeneracy annotation file (from describe_gene_positions_by_degeneracy.py)
 
 Output:
-    - pi_by_compartment.txt: Summary statistics per compartment
+    - pi_by_compartment.txt: Summary statistics per compartment (Updated with Additive Components)
     - pi_by_window.txt: Per-window/region statistics
 
 Author: Luis Javier Madrigal-Roca & GitHub Copilot
@@ -751,7 +751,7 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy,
         is_poly = False
         pi_val = 0.0
         if not is_invariant:
-            is_poly, pi_val, n_samples = calculate_pi_site(genotypes)
+            is_poly, pi_val, _ = calculate_pi_site(genotypes)
         
         # Update stats for ALL compartments this site belongs to
         for compartment in compartments:
@@ -798,20 +798,35 @@ def write_summary(stats, output_file, chromosome=None):
     
     with open(output_file, 'w') as out:
         # Header with chromosome column for merging across parallel jobs
-        out.write("Chromosome\tCompartment\tNuc_Category\tSites\tPolymorphic\tPi_sum\tPi_mean\tPoly_fraction\n")
+        # [MODIFIED]: Added 'Pi_component' to the header
+        out.write("Chromosome\tCompartment\tNuc_Category\tSites\tPolymorphic\tPi_sum\tPi_mean\tPi_component\tPoly_fraction\n")
         
         for compartment in compartments:
+            
             if compartment not in stats:
                 continue
+
+            # [ADDED]: Get total sites for the compartment to use as denominator for additive components
+            # This follows the decomposition framework where sum(Pi_component_X) = Pi_total
+            total_compartment_sites = stats[compartment]['all']['sites']
+
             for nuc_cat in NUC_CATEGORIES:
                 s = stats[compartment][nuc_cat]
                 n_sites = s['sites']
                 n_poly = s['poly']
                 pi_sum = s['pi_sum']
+                
+                # 1. Conditional Mean: Diversity *within* this category (Sum_Pi / N_category)
                 pi_mean = pi_sum / n_sites if n_sites > 0 else 0.0
+                
+                # [ADDED] 2. Additive Component: Contribution to total diversity (Sum_Pi / N_total_compartment)
+                # This ensures that Pi_component(C) + Pi_component(G) + Pi_component(AT) = Pi_total
+                pi_component = pi_sum / total_compartment_sites if total_compartment_sites > 0 else 0.0
+                
                 poly_frac = n_poly / n_sites if n_sites > 0 else 0.0
                 
-                out.write(f"{chrom_str}\t{compartment}\t{nuc_cat}\t{n_sites}\t{n_poly}\t{pi_sum:.6f}\t{pi_mean:.8f}\t{poly_frac:.6f}\n")
+                # [MODIFIED]: Added pi_component to output
+                out.write(f"{chrom_str}\t{compartment}\t{nuc_cat}\t{n_sites}\t{n_poly}\t{pi_sum:.6f}\t{pi_mean:.8f}\t{pi_component:.8f}\t{poly_frac:.6f}\n")
     
     # Also print to console - formatted nicely
     print("\n" + "=" * 95)
@@ -835,7 +850,7 @@ def write_summary(stats, output_file, chromosome=None):
         print(f"{compartment:<30} {n_sites:>12,} {n_poly:>10,} {pi_mean:>12.8f}")
     
     # Print C vs G vs AT comparison
-    print("\n--- BY NUCLEOTIDE CATEGORY (Sites / Poly / π) ---")
+    print("\n--- BY NUCLEOTIDE CATEGORY (Sites / Poly / π_mean) ---")
     print(f"{'Compartment':<22} {'Sites_C':>10} {'Poly_C':>8} {'π_C':>10} {'Sites_G':>10} {'Poly_G':>8} {'π_G':>10} {'Sites_AT':>10} {'Poly_AT':>8} {'π_AT':>10} {'C/AT':>6}")
     print("-" * 130)
     for compartment in compartments:
@@ -855,60 +870,37 @@ def write_summary(stats, output_file, chromosome=None):
         ratio_C_AT = pi_C / pi_AT if pi_AT > 0 else float('nan')
         print(f"{compartment:<22} {n_C:>10,} {p_C:>8,} {pi_C:>10.6f} {n_G:>10,} {p_G:>8,} {pi_G:>10.6f} {n_AT:>10,} {p_AT:>8,} {pi_AT:>10.6f} {ratio_C_AT:>6.2f}")
     
-    # Print site count verification
-    print("\n--- SITE COUNT VERIFICATION (sum of C+G+AT should equal 'all') ---")
-    print(f"{'Compartment':<30} {'all':>12} {'C+G+AT':>12} {'Match':>8}")
-    print("-" * 55)
+    # [ADDED]: Console verification of the additive components
+    print("\n--- ADDITIVE COMPONENTS VERIFICATION ---")
+    print("Checking decomposition: π_total ≈ π_comp(C) + π_comp(G) + π_comp(AT)")
+    print(f"{'Compartment':<22} {'π_total':>10} {'Sum_Comps':>10} {'π_comp_C':>10} {'π_comp_G':>10} {'π_comp_AT':>10} {'Match':>6}")
+    print("-" * 85)
     for compartment in compartments:
         if compartment not in stats or stats[compartment]['all']['sites'] == 0:
             continue
-        n_all = stats[compartment]['all']['sites']
-        n_sum = (stats[compartment]['C']['sites'] + 
-                 stats[compartment]['G']['sites'] + 
-                 stats[compartment]['AT']['sites'])
-        match = "✓" if n_all == n_sum else "✗"
-        print(f"{compartment:<30} {n_all:>12,} {n_sum:>12,} {match:>8}")
-    
-    # Print weighted average verification: π_all = Σ(N_i/N_all × π_i)
-    # This demonstrates that the math is correct even when π_C > π_all
-    print("\n--- WEIGHTED AVERAGE VERIFICATION ---")
-    print("π_all should equal: (N_C/N_all)×π_C + (N_G/N_all)×π_G + (N_AT/N_all)×π_AT")
-    print(f"{'Compartment':<22} {'π_all':>10} {'weighted':>10} {'%C':>6} {'%G':>6} {'%AT':>6} {'Match':>6}")
-    print("-" * 70)
-    for compartment in compartments:
-        if compartment not in stats or stats[compartment]['all']['sites'] == 0:
-            continue
-        n_all = stats[compartment]['all']['sites']
-        n_C = stats[compartment]['C']['sites']
-        n_G = stats[compartment]['G']['sites']
-        n_AT = stats[compartment]['AT']['sites']
         
+        n_all = stats[compartment]['all']['sites']
         pi_all = stats[compartment]['all']['pi_sum'] / n_all if n_all > 0 else 0.0
-        pi_C = stats[compartment]['C']['pi_sum'] / n_C if n_C > 0 else 0.0
-        pi_G = stats[compartment]['G']['pi_sum'] / n_G if n_G > 0 else 0.0
-        pi_AT = stats[compartment]['AT']['pi_sum'] / n_AT if n_AT > 0 else 0.0
         
-        # Calculate weighted average
-        weighted = (n_C/n_all * pi_C) + (n_G/n_all * pi_G) + (n_AT/n_all * pi_AT)
+        # Calculate components using total site count as denominator
+        comp_C = stats[compartment]['C']['pi_sum'] / n_all
+        comp_G = stats[compartment]['G']['pi_sum'] / n_all
+        comp_AT = stats[compartment]['AT']['pi_sum'] / n_all
         
-        pct_C = 100.0 * n_C / n_all
-        pct_G = 100.0 * n_G / n_all
-        pct_AT = 100.0 * n_AT / n_all
+        sum_comps = comp_C + comp_G + comp_AT
         
-        match = "✓" if abs(pi_all - weighted) < 1e-10 else "✗"
-        print(f"{compartment:<22} {pi_all:>10.6f} {weighted:>10.6f} {pct_C:>5.1f}% {pct_G:>5.1f}% {pct_AT:>5.1f}% {match:>6}")
+        match = "✓" if abs(pi_all - sum_comps) < 1e-10 else "✗"
+        print(f"{compartment:<22} {pi_all:>10.6f} {sum_comps:>10.6f} {comp_C:>10.6f} {comp_G:>10.6f} {comp_AT:>10.6f} {match:>6}")
     
     print("=" * 95)
     print("\nNotes:")
     print("  - Nucleotide categories use REFERENCE allele only (each site in exactly one category)")
     print("  - C and G are strand-corrected for coding regions")
     print("  - AT = sites with A or T reference (weak nucleotides)")
-    print("  - π_C can exceed π_all because C sites have elevated mutation rates (CpG effect)")
-    print("    This is like how average income in a city can exceed the national average")
-    print("  - The weighted average π_all = Σ(fraction_i × π_i) must hold exactly")
+    print("  - π_mean: Average diversity within the category (can be > π_total for C sites)")
+    print("  - π_comp: Additive contribution to total diversity (π_comp values sum to π_total)")
     print("  - exon_all includes ALL exonic sites (selection on amino acids visible)")
     print("  - first/nonfirst_exon_4fold are subsets of exon_all (synonymous sites only)")
-    print("  - C/AT ratio > 1 indicates elevated π at C sites (CpG hypermutation)")
 
 
 # ====================== MAIN ======================
@@ -963,7 +955,6 @@ def main():
     write_summary(stats, args.output, chromosome=target_chrom)
     
     print("\nDone!")
-
 
 if __name__ == "__main__":
     main()
