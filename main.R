@@ -3073,17 +3073,19 @@ plot_data_pi_1_ready <- plot_data_pi_1 |>
 
 ggplot(data = plot_data_pi_1_ready, 
        mapping = aes(x = Expression_Group,
-                     y = Mean_pi_4_fold)) +
+                     y = Mean_pi_4_fold,
+                     color = Expression_Group)) +
   geom_point(size = 3) +
   geom_errorbar(aes(ymin = LL, ymax = UL), width = 0.2) +
   theme_custom() +
   labs(title = "Nucleotide Diversity (Pi) at 4-fold Sites by Expression Group",
        x = "Expression Group",
        y = "Mean Pi at 4-fold Sites") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_manual(values = c("#377EB8", "#999999", "#E41A1C"))
 
 ggsave("./results/diversity_modeling/Pi_by_expression_group_Mean_CI.pdf",
-       width = 6, height = 4)
+       width = 8, height = 6)
 
 # 12.1) Tracking frequency of preferred allele as a function of expression ----
 
