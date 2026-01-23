@@ -30,7 +30,8 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'admisc', 'corrr', 'patchwork', 'gprofiler2',
                         'ggnewscale', 'broom', 'reshape2',
                         'furrr', 'tidyr', 'gsl', 'rcompanion',
-                        'FSA')
+                        'FSA', 'matrixStats', 'ggpubr',
+                        'boot')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -148,17 +149,19 @@ exp_complete <- read.table(file = "./data/compiled_expression_IM767.txt",
   dplyr::distinct(Gene_name, .keep_all = TRUE)
 
 # Isolate the numeric data (Everything except Gene_name)
-numeric_data <- exp_complete[, -1] 
+numeric_data <- as.matrix(exp_complete[, -1])
 
 # Calculate the "Mean Log Expression"
 # Logic: Add 1 (pseudocount) -> Log10 -> Average across tissues
 exp_complete$Mean_Log10_Exp <- rowMeans(log10(numeric_data + 1))
+exp_complete$Max_Log10_Exp <- rowMaxs(log10(numeric_data + 1))
 
 # Geometric Mean
 exp_complete$Geom_Mean_CPM <- 10^(exp_complete$Mean_Log10_Exp) - 1
 
 # Check the result
-head(exp_complete[, c("Gene_name", "Mean_Log10_Exp", "Geom_Mean_CPM")])
+head(exp_complete[, c("Gene_name", "Mean_Log10_Exp", "Max_Log10_Exp", 
+                      "Geom_Mean_CPM")])
 
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
@@ -174,6 +177,7 @@ cub_results <- cub_summary(codon_usage, genetic_code_dna_long,
 # Creation of integrated data ----
 
 integrated_data <- dplyr::left_join(exp_complete |> dplyr::select(Gene_name, 
+                                                                  Max_Log10_Exp,
                                                                   Mean_Log10_Exp, 
                                                                   Geom_Mean_CPM), 
                                     cub_results$enc_results, 
@@ -390,7 +394,7 @@ ggsave("./results/ENC_deviation_by_CDC.pdf", p_enc_deviation, width = 9, height 
 integrated_data <- integrated_data |> 
   left_join(enc_cdc_data |> dplyr::select(Gene_name, CDC), by = "Gene_name")
   
-CDC_vs_exp <- glm(CDC ~ Mean_Log10_Exp + CDS_length_nt, 
+CDC_vs_exp <- glm(CDC ~ Max_Log10_Exp + CDS_length_nt, 
                  data = integrated_data, 
                  family = quasibinomial(link = "logit"))
 
@@ -415,7 +419,7 @@ ggsave("./results/CDC_observed_vs_predicted.pdf",
 
 # CDC ~ Exp
 ggplot(data = integrated_data, 
-       mapping = aes(x = Mean_Log10_Exp, y = CDC)) +
+       mapping = aes(x = Max_Log10_Exp, y = CDC)) +
   geom_pointdensity() +
   geom_smooth(method = lm, color = 'red') +
   theme_custom()
@@ -449,10 +453,50 @@ ggsave("./results/CDC_raw_vs_gene_length_density.pdf",
 # we are going to fit a GAM model to account for this and assess effectively the
 # effect of expression
 
-cdc_model_quasibinom <- gam(CDC ~ Mean_Log10_Exp + s(CDS_length_nt), 
-                      data = integrated_data, family = quasibinomial(link = "logit"))
+cdc_model_quasibinom <- gam(CDC ~ s(Max_Log10_Exp) + s(CDS_length_nt), 
+                      data = integrated_data, 
+                      family = quasibinomial(link = "logit"))
 
 summary(cdc_model_quasibinom)
+
+pdf("./results/Gam_visual_CDC_vs_expression.pdf")
+plot(cdc_model_quasibinom, pages = 1, residuals = TRUE, pch = 1, cex = 0.1, 
+     scheme = 1, shade = TRUE, trans = plogis, 
+     main = "Effect of Expression on CDC (Length-Corrected)")
+dev.off()
+
+pred_data <- data.frame(
+  Max_Log10_Exp = seq(min(integrated_data$Max_Log10_Exp), 
+                      max(integrated_data$Max_Log10_Exp), length.out = 400),
+  CDS_length_nt = median(integrated_data$CDS_length_nt)
+)
+
+preds <- predict(cdc_model_quasibinom, newdata = pred_data, type = "link", 
+                 se.fit = TRUE)
+
+pred_data$fit <- plogis(preds$fit)
+pred_data$lower <- plogis(preds$fit - 1.96 * preds$se.fit)
+pred_data$upper <- plogis(preds$fit + 1.96 * preds$se.fit)
+
+p1 <- ggplot(pred_data, aes(x = Max_Log10_Exp, y = fit)) +
+  #geom_point(data = integrated_data, aes(y = CDC), alpha = 0.05, 
+  #           color = "grey") +
+  
+  # The Confidence Interval Ribbon
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "blue") +
+  
+  # The Main Trend Line
+  geom_line(color = "blue", linewidth = 1) +
+  
+  # Formatting
+  labs(title = "Effect of Gene Expression on Codon Usage Bias (CDC)",
+       subtitle = "Controlled for CDS Length (fixed at median)",
+       x = "Max Log10 Expression",
+       y = "Predicted CDC") +
+  theme_custom()
+
+# Save
+ggsave("./results/GAM_CDC_vs_Expression_ggplot.pdf", p1, width = 6, height = 5)
 
 # Plotting detrended ENC against expression
 
@@ -460,36 +504,54 @@ confounder_model_gam <- gam(CDC ~ s(CDS_length_nt),
                             data = integrated_data,
                             family = quasibinomial(link = "logit"))
 
-integrated_data$CDC_detrended <- residuals(confounder_model_gam)
+integrated_data$CDC_detrended <- residuals(confounder_model_gam, 
+                                           type = "response")
 
-summary(lm(CDC_detrended ~ Mean_Log10_Exp, data = integrated_data))
-
-p_detrended <- ggplot(integrated_data, aes(x = Mean_Log10_Exp, y = CDC_detrended)) +
-  # Use ggpointdensity for a clear view of the cluster
-  geom_pointdensity(alpha = 0.5) + 
+p_detrended <- ggplot(integrated_data, aes(x = Max_Log10_Exp, y = CDC_detrended)) +
+  # Use density to handle the 22k points
+  geom_pointdensity(adjust = 0.1) + 
+  scale_color_viridis_c() +
   
-  # Add the linear regression line, which now shows the true effect
-  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  # This allows the J-shape (Selection threshold) to appear
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), color = "red") +
+  
+  # Add a horizontal line at 0 (No deviation from length expectation)
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
   
   labs(
-    title = "Detrended CDC vs. Gene Expression",
-    subtitle = "Showing CDC after accounting for non-linear effects of gene length",
-    y = "CDC Residuals (Detrended)",
-    x = "log10(Mean Expression + 1)"
+    title = "Isolated Effect of Expression on CDC",
+    subtitle = "Residuals after removing the effect of CDS Length",
+    y = "Deviation from Expected CDC (given Length)",
+    x = "Max Log10 Expression"
   ) +
   theme_custom()
 
-ggsave("./results/CDC_detrended_vs_expression.pdf", p_detrended, 
+ggsave("./results/CDC_detrended_vs_expression_curved.pdf", p_detrended, 
        width = 8, height = 6)
+
+# Analysis of deviance
+
+# Null model: Lenght only
+null_model <- gam(CDC ~ s(CDS_length_nt), 
+                  data = integrated_data, 
+                  family = quasibinomial(link = "logit"))
+
+# Full model: Lenght and Expression
+full_model <- gam(CDC ~ s(CDS_length_nt) + s(Max_Log10_Exp), 
+                  data = integrated_data, 
+                  family = quasibinomial(link = "logit"))
+
+# Comparation
+anova(null_model, full_model, test = "F")
 
 # Define expression groups: Top 5% vs Bottom 5% (extreme comparison) ----
 
-top_5_cutoff <- quantile(integrated_data$Mean_Log10_Exp, probs = 0.95)
-bottom_5_cutoff <- quantile(integrated_data$Mean_Log10_Exp, probs = 0.05)
+top_5_cutoff <- quantile(integrated_data$Max_Log10_Exp, probs = 0.95)
+bottom_5_cutoff <- quantile(integrated_data$Max_Log10_Exp, probs = 0.05)
 
 integrated_data$Expression_Group <- case_when(
-  integrated_data$Mean_Log10_Exp >= top_5_cutoff ~ "Top 5%",
-  integrated_data$Mean_Log10_Exp <= bottom_5_cutoff ~ "Bottom 5%",
+  integrated_data$Max_Log10_Exp >= top_5_cutoff ~ "Top 5%",
+  integrated_data$Max_Log10_Exp <= bottom_5_cutoff ~ "Bottom 5%",
   TRUE ~ "Middle 90%"
 )
 
@@ -541,13 +603,69 @@ p_boxplot_detrended <- ggplot(integrated_data, aes(x = Expression_Group,
                                 "Middle 90%" = "#999999")) +
   labs(title = "Detrended CDC Residuals by Expression Level",
        subtitle = "Diamond = mean, box = median ± IQR",
-       y = "CDC",
+       y = "CDC (lenght corrected)",
        x = "Expression Group") +
   theme_custom() +
   theme(legend.position = "none")
 
 ggsave("./results/Detrended_CDC_by_expression_group.pdf", 
        p_boxplot_detrended, width = 8, height = 6)
+
+# Median and CI version
+
+median_cl_boot <- function(x, conf = 0.95) {
+  x <- x[!is.na(x)]
+  n <- length(x)
+  # If sample is too small, just return quantiles
+  if (n < 10) {
+    q <- quantile(x, probs = c(0.5, (1-conf)/2, 1-(1-conf)/2))
+    return(data.frame(y = q[1], ymin = q[2], ymax = q[3]))
+  }
+  # Bootstrap the median
+  bmedian <- function(x, i) median(x[i])
+  boot.out <- boot(data = x, statistic = bmedian, R = 1000)
+  ci <- boot.ci(boot.out, type = "perc", conf = conf)$percent[4:5]
+  return(data.frame(y = median(x), ymin = ci[1], ymax = ci[2]))
+}
+
+plot_data <- integrated_data |>
+  dplyr::mutate(Exp_Group = factor(Expression_Group, 
+                                   levels = c("Bottom 5%", "Middle 90%", "Top 5%"))) |>
+  dplyr::filter(!is.na(Exp_Group))
+
+# Define the Comparisons for the plot
+my_comparisons <- list(c("Bottom 5%", "Middle 90%"), 
+                       c("Middle 90%", "Top 5%"), 
+                       c("Bottom 5%", "Top 5%"))
+
+# Create the Plot
+p_medians <- ggplot(plot_data, aes(x = Exp_Group, y = CDC_detrended)) +
+  
+  # A. Median and 95% CI (Bootstrap)
+  # We use the custom function defined above
+  stat_summary(fun.data = median_cl_boot, 
+               geom = "errorbar", width = 0.15, size = 0.8, color = "black") +
+  stat_summary(fun = median, geom = "point", size = 3.5, aes(color = Exp_Group)) +
+  
+  # B. Reference line
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.8) +
+  
+  # C. Formatting
+  scale_color_manual(values = c("#377EB8", "#999999", "#E41A1C")) +
+  
+  # Zoom in (Adjust these limits if your medians are slightly different than means)
+  coord_cartesian(ylim = c(NA, 0.01)) + 
+  
+  labs(y = "CDC Residuals (length corrected)",
+       x = NULL) +
+  theme_custom() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 11, face = "bold", color = "black"),
+        axis.title.y = element_text(size = 11),,
+        plot.subtitle = element_text(size = 10, color = "gray30"))
+
+# Save
+ggsave("./results/CDC_detrended_Medians_CI.pdf", p_medians, width = 4, height = 3.5)
 
 # Get CDC values for each group
 top5_cdc_de <- integrated_data |> filter(Expression_Group == "Top 5%") |> pull(CDC_detrended)
@@ -734,12 +852,44 @@ p_cai_boxplot <- ggplot(integrated_data, aes(x = Expression_Group, y = CAI, fill
   theme(legend.position = "none")
 
 ggsave("./results/CAI_by_expression_group.pdf", p_cai_boxplot, width = 8, height = 6)
-cat("\nBoxplot saved: ./results/CAI_by_expression_group.pdf\n")
+
+# Median + CI
+
+plot_data_cai <- integrated_data |>
+  dplyr::mutate(Exp_Group = factor(Expression_Group, 
+                                   levels = c("Bottom 5%", "Middle 90%", "Top 5%"))) |>
+  dplyr::filter(!is.na(Exp_Group))
+
+# 3. Create the Plot
+p_cai_median <- ggplot(plot_data_cai, aes(x = Exp_Group, y = CAI)) +
+  
+  # A. Median and 95% CI
+  stat_summary(fun.data = median_cl_boot, 
+               geom = "errorbar", width = 0.15, size = 0.8, color = "black") +
+  stat_summary(fun = median, geom = "point", size = 4, aes(color = Exp_Group)) +
+  
+  # B. Formatting
+  # Using your specific colors
+  scale_color_manual(values = c("Bottom 5%" = "#377EB8", 
+                                "Middle 90%" = "#999999", 
+                                "Top 5%" = "#E41A1C")) +
+  
+  labs(y = "CAI (Codon Adaptation Index)",
+       x = NULL) + # Remove X label as groups are self-explanatory
+  
+  theme_custom() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 11, face = "bold", color = "black"),
+        panel.grid.major.x = element_blank())
+
+# Save
+ggsave("./results/CAI_by_expression_group_Median_CI.pdf", p_cai_median, 
+       width = 4, height = 3.5)
 
 # Correlation between CAI and other metrics
 # Scatter plot: CAI vs ENC
 p_cdc_enc <- ggplot(integrated_data, aes(x = CDC_detrended, y = CAI, color = Expression_Group)) +
-  geom_point(alpha = 0.3, size = 1) +
+  geom_point(alpha = 0.3, size = 0.5) +
   # Add lm per group
   geom_smooth(method = "lm") +
   scale_color_manual(values = c("Top 5%" = "#E41A1C", 
@@ -1338,26 +1488,33 @@ ggsave()
 # 1. Filter for complete cases (Intersection of Leaf and Bud)
 # We strictly remove genes with 0 counts in either tissue
 multi_tissue_phi <- exp_complete |>
-  dplyr::select(Gene, Exp_leaf, Exp_bud) |>
-  dplyr::filter(Exp_leaf > 0 & Exp_bud > 0) |>
-  dplyr::rename(GeneID = Gene) |> # AnaCoDa expects "GeneID" as first col
-  dplyr::filter(GeneID %in% names(trans)) # Ensures correspondence with transcriptome file
+  dplyr::select(Gene_name, contains(c("IM62", "IM767"))) |>
+  dplyr::rename(GeneID = Gene_name) # AnaCoDa expects "GeneID" as first col
   
+multi_tissue_phi <- multi_tissue_phi |>
+  dplyr::filter(rowSums(as.matrix(multi_tissue_phi[, -1])) > 0) |>
+  dplyr::filter(GeneID %in% names(trans)) # Ensures correspondence with transcriptome file
+
 # 2. Calculate sphi (Global Prior)
 # We estimate the "True Phi" shape by taking the mean of the log-expressions
 # This gives the model the "width" of the overall distribution.
-log_means <- rowMeans(log(multi_tissue_phi[, c("Exp_leaf", "Exp_bud")]))
+log_means <- rowMeans(log(multi_tissue_phi[, -1] + 1))
 sphi_init <- sd(log_means)
 
 # 3. Calculate sepsilon (Noise per tissue)
 # AnaCoDa needs a vector: c(noise_leaf, noise_bud)
-# A good heuristic for initialization is the SD of the log-expression for that tissue.
+# A good heuristic for initialization is 0.5.
 # (The model will refine this during MCMC, but this puts it in the right ballpark)
 
-sepsilon_leaf <- sd(log(multi_tissue_phi$Exp_leaf))
-sepsilon_bud  <- sd(log(multi_tissue_phi$Exp_bud))
+num_tissues <- ncol(multi_tissue_phi) - 1
+sepsilon_init <- rep(0.5, num_tissues)
 
-sepsilon_init <- c(sepsilon_leaf, sepsilon_bud)
+sphi_str <- paste(round(sphi_init, 4), collapse = ",")
+sepsilon_str <- paste(round(sepsilon_init, 4), collapse = ",")
+
+message("\nUse these flags in your script:\n")
+message("--sphi_init ", sphi_str, "\n")
+message("--sepsilon_init ", shQuote(sepsilon_str), "\n")
 
 # 4. Write empirical expression data
 write.table(
@@ -2928,8 +3085,6 @@ ggplot(data = plot_data_pi_1_ready,
 ggsave("./results/diversity_modeling/Pi_by_expression_group_Mean_CI.pdf",
        width = 6, height = 4)
 
-
-
 # 12.1) Tracking frequency of preferred allele as a function of expression ----
 
 preferred_data <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt", 
@@ -2950,9 +3105,20 @@ integrated_data <- integrated_data |>
   left_join(preferred_data) |>
   na.exclude()
 
-summary(lm(Mean_preferred_freq ~ High_exp_log10, data = integrated_data))
+summary(lm(Mean_preferred_freq ~ Max_Log10_Exp + I(Max_Log10_Exp^2), 
+           data = integrated_data))
 
-# Assesing significance of expression over the detrended residuals
+Mean_preferred_vs_expression <- ggplot(integrated_data, aes(x = Max_Log10_Exp,
+                                                            y = Mean_preferred_freq)) +
+  geom_point() +
+  geom_smooth(method = lm, 
+              formula = y ~ x + I(x^2)) +
+  theme_custom()
+
+ggsave("./results/Mean_preferred_freq_vs_expression.pdf", 
+       Mean_preferred_vs_expression, width = 8, height = 6)
+
+# Assessing significance of expression over the detrended residuals
 
 cat("\n=== Kruskal-Wallis Test: Frequency of preferred codons across Groups ===\n")
 
@@ -3033,7 +3199,7 @@ ggsave("./results/Frequency_preferred_by_expression_group.pdf",
 
 # 12.2) Relationship between CDC-detrended and freq_preferred ----
 
-summary(lm(CDC ~ Mean_preferred_freq, 
+summary(lm(CDC_detrended ~ Mean_preferred_freq, 
            data = integrated_data))
 
 CDC_f_Mean_preferred_freq <- ggplot(integrated_data, aes(x = Mean_preferred_freq, 
