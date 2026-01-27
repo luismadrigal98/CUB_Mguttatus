@@ -31,7 +31,9 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'ggnewscale', 'broom', 'reshape2',
                         'furrr', 'tidyr', 'gsl', 'rcompanion',
                         'FSA', 'matrixStats', 'ggpubr',
-                        'boot', 'gratia')
+                        'boot', 'gratia', 'marginaleffects',
+                        'corrr', 'nortest', 'patchwork',
+                        'betareg')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -80,7 +82,7 @@ model_plants_PC <- read.table(file = "data/plant_preferred_codons.txt",
 # 3) Load the data ----
 ## _____________________________________________________________________________
 
-# 3.1) Analysis from transcript (if available is a shortcut) ----
+# 3.1) Analysis from transcript ----
 
 trans <- Biostrings::readDNAStringSet(filepath = "./data/Mguttatusvar_IM767_887_v2.1.cds_primaryTranscriptOnlyClean.fa", 
                                       format = 'fasta')
@@ -90,58 +92,7 @@ trans <- trans[check_canonical_start(trans)] |> check_cds()
 codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long), 
                            parallel = T)
 
-## 3.2) Clean the codon usage object (remove the STOP codon, alongside Trp and Met) ----
-
-# codon_usage <- codon_usage |>
-#   trim_uninformative(genetic_code = genetic_code_dna_long)
-#   >> check_cds already does that
-
-## 3.3) Load the expression data ----
-
-# ORIGINAL (2 sources only)
-# exp_data_bud <- read.table(file = "./data/bud_gene_expression_cpm_remapped.txt",
-#                            header = T) |>
-#   dplyr::rename(Exp_bud = Expression)
-# 
-# exp_data_leaf <- read.table(file = "./data/leaf_gene_expression_mean_cpm_renamed.txt",
-#                             header = T) |>
-#   dplyr::rename(Exp_leaf = Expression)
-
-# Combining CUB metric with expression profiles for buds and leafs
-
-# exp_complete <- dplyr::full_join(exp_data_leaf, exp_data_bud, by = "Gene")
-
-# exp_complete <- exp_complete |> 
-#   dplyr::rowwise() |>
-#   dplyr::mutate(
-#     High_exp = max(Exp_leaf, Exp_bud, na.rm = TRUE),
-#     
-#     Source_High_exp = case_when(
-#       # If both are NA, source is NA
-#       is.na(Exp_leaf) & is.na(Exp_bud) ~ NA_character_,
-#       
-#       # If bud is NA, leaf must be the max
-#       is.na(Exp_bud) ~ "Leaf",
-#       
-#       # If leaf is NA, bud must be the max
-#       is.na(Exp_leaf) ~ "Bud",
-#       
-#       # If leaf is greater or equal (handles ties)
-#       Exp_leaf >= Exp_bud ~ "Leaf",
-#       
-#       # Otherwise, bud must be greater
-#       Exp_bud > Exp_leaf ~ "Bud"
-#     )
-#   ) |>
-#   # Fix the -Inf from max(NA, NA, na.rm=T)
-#   dplyr::mutate(
-#     High_exp = if_else(is.infinite(High_exp), NA_real_, High_exp)
-#   ) |>
-#   dplyr::ungroup() |>
-#   dplyr::mutate(Source_High_exp = as.factor(Source_High_exp)) |>
-#   na.exclude()
-
-# ALTERNATIVE (multi-source)
+# Loading expression data (multi-source) ----
 
 exp_complete <- read.table(file = "./data/compiled_expression_IM767.txt", 
                            header = T, sep = '\t') |>
@@ -154,14 +105,28 @@ numeric_data <- as.matrix(exp_complete[, -1])
 # Calculate the "Mean Log Expression"
 # Logic: Add 1 (pseudocount) -> Log10 -> Average across tissues
 exp_complete$Mean_Log10_Exp <- rowMeans(log10(numeric_data + 1))
+
+# Get the "Max Log Expression"
+# Logic: Add 1 (pseudocount) -> Log10 -> Max across tissues
 exp_complete$Max_Log10_Exp <- rowMaxs(log10(numeric_data + 1))
+
+# Get the expression breadth
+# Logic: Count the number of instances where expression is higher than a threshold
+# defined by 1 CPM
+CPM_thr <- 1
+
+exp_complete$Exp_breadth <- apply(X = numeric_data, MARGIN = 1, 
+                                  FUN = function(x)
+                                    {
+                                    sum(x > CPM_thr)
+                                  })
 
 # Geometric Mean
 exp_complete$Geom_Mean_CPM <- 10^(exp_complete$Mean_Log10_Exp) - 1
 
 # Check the result
 head(exp_complete[, c("Gene_name", "Mean_Log10_Exp", "Max_Log10_Exp", 
-                      "Geom_Mean_CPM")])
+                      "Geom_Mean_CPM", "Exp_breadth")])
 
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
@@ -178,7 +143,8 @@ cub_results <- cub_summary(codon_usage, genetic_code_dna_long,
 
 integrated_data <- dplyr::left_join(exp_complete |> dplyr::select(Gene_name, 
                                                                   Max_Log10_Exp,
-                                                                  Mean_Log10_Exp, 
+                                                                  Mean_Log10_Exp,
+                                                                  Exp_breadth,
                                                                   Geom_Mean_CPM), 
                                     cub_results$enc_results, 
                                     by = dplyr::join_by(Gene_name)) |>
@@ -192,7 +158,7 @@ gene_lengths <- codon_usage |>
   dplyr::mutate(
     Total_Codons = rowSums(across(all_of(codon_columns)), na.rm = TRUE),
     CDS_length_nt = Total_Codons * 3,  # nucleotides
-    CDS_length_aa = Total_Codons        # amino acids (codons)
+    CDS_length_aa = Total_Codons       # amino acids (codons)
   ) |>
   dplyr::select(Gene_name, Total_Codons, CDS_length_nt, CDS_length_aa)
 
@@ -202,34 +168,24 @@ integrated_data <- integrated_data |>
 # Adding GC content variables
 
 integrated_data <- integrated_data |>
-  left_join(cub_results$gc_results, by = "Gene_name")
+  left_join(cub_results$gc_results, by = "Gene_name") |>
+  data.frame() # Strip attributes
 
 ## *****************************************************************************
 ## 5) CDC-based analysis ----
 ## _____________________________________________________________________________
 
 # Full integration with your pipeline
-cdc_results <- integrate_cdc_analysis(codon_usage, 
+integrated_data <- integrate_cdc_analysis(codon_usage, 
                                       genetic_code_dna_long, 
                                       integrated_data, 
                                       n_bootstrap = 10000,
-                                      n_cores = 10)
+                                      n_cores = parallel::detectCores() - 1)
 
 # Re-plotting CDC-based neutrality plot highlighting the significant genes with CDC ----
 
-# Extract just CDC columns we need
-cdc_for_merge <- cdc_results |>
-  dplyr::select(Gene_name, CDC, p_value, p_adj) |>
-  dplyr::filter(!is.na(CDC))  # Remove genes without CDC
-
-cat(sprintf("Valid CDC results: %d genes\n", nrow(cdc_for_merge)))
-
 # Merge ENC, GC3s, and CDC results
-enc_cdc_data <- cub_results$enc_results |>
-  dplyr::left_join(cub_results$gc_results |> dplyr::select(Gene_name, GC3s), 
-                   by = "Gene_name") |>
-  dplyr::left_join(cdc_for_merge, by = "Gene_name") |>
-  dplyr::filter(is.finite(ENC) & is.finite(GC3s) & ENC > 0 & ENC <= 61) |>
+integrated_data <- integrated_data |>
   dplyr::mutate(
     CDC_significant = !is.na(p_value) & p_value < 0.05,
     CDC_category = dplyr::case_when(
@@ -242,11 +198,11 @@ enc_cdc_data <- cub_results$enc_results |>
   )
 
 # Count significant genes
-n_sig <- sum(enc_cdc_data$CDC_significant, na.rm = TRUE)
-n_total <- sum(!is.na(enc_cdc_data$p_value))
+n_sig <- sum(integrated_data$CDC_significant, na.rm = TRUE)
+n_total <- sum(!is.na(integrated_data$p_adj))
 pct_sig <- 100 * n_sig / n_total
 
-cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (p < 0.05)\n", 
+cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (FDR < 0.05)\n", 
             n_sig, n_total, pct_sig))
 
 # Calculate expected ENC under mutation-drift equilibrium (Wright 1990)
@@ -262,11 +218,11 @@ expected_curve <- data.frame(
 # Create enhanced ENC plot
 p_enc_cdc <- ggplot() +
   # Background: non-significant genes
-  geom_point(data = enc_cdc_data |> filter(!CDC_significant | is.na(CDC_significant)),
+  geom_point(data = integrated_data |> filter(!CDC_significant | is.na(CDC_significant)),
              aes(x = GC3s, y = ENC), 
              color = "gray70", alpha = 0.3, size = 0.8) +
   # Foreground: CDC-significant genes
-  geom_point(data = enc_cdc_data |> filter(CDC_significant),
+  geom_point(data = integrated_data |> filter(CDC_significant),
              aes(x = GC3s, y = ENC, color = CDC_category), 
              size = 2, alpha = 0.7) +
   # Expected neutrality curve (Wright 1990)
@@ -298,13 +254,13 @@ p_enc_cdc <- ggplot() +
 ggsave("./results/ENC_plot_CDC_highlighted.pdf", p_enc_cdc, 
        width = 11, height = 7)
 
-cat("Enhanced ENC plot saved: ./results/ENC_plot_CDC_highlighted.pdf\n\n")
+message("Enhanced ENC plot saved: ./results/ENC_plot_CDC_highlighted.pdf\n\n")
 
 # Analyze CDC-significant genes: are they below the curve (under selection)?
 cat("=== Position Analysis: CDC-Significant Genes Relative to Neutrality Curve ===\n")
 
 # Calculate deviation from expected ENC
-enc_cdc_data <- enc_cdc_data |>
+integrated_data <- integrated_data |>
   mutate(
     ENC_expected = 2 + GC3s + 29 / (GC3s^2 + (1 - GC3s)^2),
     ENC_deviation = ENC - ENC_expected,
@@ -312,7 +268,7 @@ enc_cdc_data <- enc_cdc_data |>
   )
 
 # Compare CDC-significant vs non-significant genes
-cdc_position_summary <- enc_cdc_data |>
+cdc_position_summary <- integrated_data |>
   dplyr::filter(!is.na(CDC_significant)) |>
   dplyr::group_by(CDC_significant) |>
   summarize(
@@ -333,170 +289,125 @@ if (n_sig > 0) {
   # Test if CDC-significant genes have different ENC deviation
   wilcox_enc <- wilcox.test(
     ENC_deviation ~ CDC_significant,
-    data = enc_cdc_data |> filter(!is.na(CDC_significant))
+    data = integrated_data |> filter(!is.na(CDC_significant))
   )
   cat(sprintf("ENC deviation (CDC-sig vs non-sig): W = %.0f, p = %.2e\n", 
               wilcox_enc$statistic, wilcox_enc$p.value))
   
   # Test if more CDC-significant genes are below the curve
   below_curve_table <- table(
-    enc_cdc_data |> dplyr::filter(!is.na(CDC_significant)) |> dplyr::select(CDC_significant, Below_curve)
+    integrated_data |> dplyr::filter(!is.na(CDC_significant)) |> dplyr::select(CDC_significant, Below_curve)
   )
-  chi_test <- chisq.test(below_curve_table)
-  cat(sprintf("Position relative to curve (chi-squared): X² = %.2f, p = %.2e\n", 
-              chi_test$statistic, chi_test$p.value))
+  fisher_test <- fisher.test(below_curve_table)
+  cat(sprintf("Position relative to curve (Fisher test): OR = %.2f, p = %.2e\n", 
+              fisher_test$estimate, fisher_test$p.value))
 }
-
-# Create density plot of ENC deviation
-p_enc_deviation <- ggplot(enc_cdc_data |> filter(!is.na(CDC_significant)), 
-                          aes(x = ENC_deviation, fill = CDC_significant)) +
-  geom_density(alpha = 0.5) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
-  scale_fill_manual(
-    values = c("TRUE" = "#E41A1C", "FALSE" = "gray60"),
-    labels = c("TRUE" = "CDC Significant", "FALSE" = "Not Significant"),
-    name = ""
-  ) +
-  labs(
-    title = "ENC Deviation from Expected: CDC-Significant vs Non-Significant Genes",
-    subtitle = "Negative values = below neutrality curve (selection for codon bias)",
-    x = "ENC Deviation (Observed - Expected)",
-    y = "Density"
-  ) +
-  theme_bw() +
-  theme(legend.position = "top")
-
-ggsave("./results/ENC_deviation_by_CDC.pdf", p_enc_deviation, width = 9, height = 6)
 
 ## *****************************************************************************
 ## 6) Modeling relationship between CDC and Expression profiles ----
 ## _____________________________________________________________________________
 
-# Box-Cox Transformation of expression data (lambda = 0.1) Log2 for simplicity
-# Adding a small offset to the expression value (BoxCox works over positive numbers)
+# Set of predictors we care about
 
-# integrated_data <- integrated_data |>
-#   dplyr::mutate(High_exp = High_exp + 0.001)
-# 
-# box_cox_transformer <- preProcess(as.data.frame(integrated_data[, "High_exp"]), 
-#                                   method = "BoxCox")
-# 
-# integrated_data <- integrated_data |>
-#   dplyr::mutate(High_exp_BC = predict(box_cox_transformer, 
-#                                       as.data.frame(integrated_data[, "High_exp"]))[[1]])
+predictors <- c('Max_Log10_Exp', 'Mean_Log10_Exp', 'Exp_breadth', 
+                'CDS_length_nt')
 
-# integrated_data <- integrated_data |>
-#   dplyr::mutate(High_exp_log2 = log2(High_exp + 1), # Adding 1 to avoid log2(0)
-#                 High_exp_log10 = log10(High_exp + 1))  
+corrr::correlate(integrated_data[, predictors], method = "spearman") |> shave()
 
-# Generalized Linear Models ----
+# We preserve predictors with correlation less than 0.75
 
-integrated_data <- integrated_data |> 
-  left_join(enc_cdc_data |> dplyr::select(Gene_name, CDC), by = "Gene_name")
-  
-CDC_vs_exp <- glm(CDC ~ Max_Log10_Exp + CDS_length_nt, 
+predictors <-  c('Max_Log10_Exp', 'Exp_breadth', 'CDS_length_nt')
+
+# Generate Table ----
+# Using bind_rows directly on the list
+justification_list <- lapply(predictors, analyze_nonlinearity, 
+                             data = integrated_data)
+justification_table <- dplyr::bind_rows(justification_list)
+
+write.csv(justification_table, "results/Linearity_Justification_Table.csv", 
+          row.names = FALSE)
+
+# Generate Visuals (Safe Loop) ----
+plot_list <- list()
+
+for (pred in predictors) {
+  # Re-fit for plotting only if the previous step didn't error on this predictor
+  if (pred %in% justification_table$Predictor[justification_table$Recommendation != "ERROR in Fit"]) {
+    
+    form_gam <- as.formula(paste0("CDC ~ s(", pred, ")"))
+    model_gam <- gam(form_gam, data = integrated_data, 
+                     family = betar(link = "logit"))
+    
+    # Get rejection status for title
+    is_rej <- justification_table$Linearity_Rejected[justification_table$Predictor == pred]
+    
+    p <- gratia::draw(model_gam, residuals = TRUE) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "red", 
+                 alpha = 0.5) +
+      labs(title = paste0("Partial Effect on CDC (logit scale): ", pred),
+           subtitle = paste0("Linearity Rejected: ", is_rej)) +
+      theme_custom()
+    
+    plot_list[[pred]] <- p
+  }
+}
+
+combined_plot <- wrap_plots(plot_list, ncol = 3)
+ggsave("results/GAM_Partial_Effects_Gratia.pdf", combined_plot, width = 12, 
+       height = 4)
+
+# GAM final models ----
+
+# Given the non-lineariry effect of the predictors, we are going to model them
+# using GAM models
+
+# Competing models
+
+# Model 0: Null
+m_null <- gam(CDC ~ 1,
+              data = integrated_data, 
+              family = betar(link = "logit"), 
+              method = "REML")
+
+# Model 1: Additive (Independent effects)
+# Hypothesis: Each predictor affects CUB independently.
+
+m_additive <- gam(CDC ~ s(Max_Log10_Exp) + s(Exp_breadth) + s(CDS_length_nt),
+                  data = integrated_data, 
+                  family = betar(link = "logit"), 
+                  method = "REML",
+                  select = T)
+
+# Model 2: Expression Interaction (The "Trade-off" Hypothesis)
+# Hypothesis: High expression only forces strict CUB if the gene is broad.
+
+m_interaction <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth) + s(CDS_length_nt),
+                     data = integrated_data, 
+                     family = betar(link = "logit"), 
+                     method = "REML",
+                     select = T)
+
+# Model 3: Complex (Full Interaction)
+# Hypothesis: Length and expression interact in complex ways."
+m_complex <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth, CDS_length_nt),
                  data = integrated_data, 
-                 family = quasibinomial(link = "logit"))
+                 family = betar(link = "logit"), 
+                 method = "REML")
 
-summary(CDC_vs_exp)
+model_list <- list(Null = m_null,
+                   Additive = m_additive, 
+                   Interaction_Exp = m_interaction, 
+                   Interaction_Com = m_complex)
 
-# Check fitting results
-integrated_data$predicted_CDC <- predict(CDC_vs_exp, type = "response")
+# Select the best model
 
-# 2. Plot Observed vs Predicted
-ggplot(integrated_data, aes(x = predicted_CDC, y = CDC)) +
-  geom_point(alpha = 0.2) +
-  geom_abline(slope = 1, intercept = 0, color = "red") +
-  theme_custom() +
-  labs(title = "Quasibinomial GLM: Observed vs Predicted",
-       x = "Predicted CDC",
-       y = "Observed CDC")
-
-ggsave("./results/CDC_observed_vs_predicted.pdf", 
-       width = 8, height = 6)
-
-# Density plots
-
-# CDC ~ Exp
-ggplot(data = integrated_data, 
-       mapping = aes(x = Max_Log10_Exp, y = CDC)) +
-  geom_pointdensity() +
-  geom_smooth(method = lm, color = 'red') +
-  theme_custom()
-
-ggsave("./results/CDC_raw_vs_expression_density.pdf", 
-       width = 10, height = 8)
-
-# CDC ~ GC3
-ggplot(data = integrated_data, 
-       mapping = aes(x = GC3, y = CDC)) +
-  geom_pointdensity() +
-  geom_smooth(method = lm, color = 'red') +
-  theme_custom()
-
-ggsave("./results/CDC_raw_vs_GC3_density.pdf", 
-       width = 10, height = 8)
-
-# Enc ~ Gene length
-ggplot(data = integrated_data, 
-       mapping = aes(x = CDS_length_nt, y = CDC)) +
-  geom_pointdensity() +
-  geom_smooth(method = lm, color = 'red') +
-  theme_custom()
-
-ggsave("./results/CDC_raw_vs_gene_length_density.pdf", 
-       width = 10, height = 8)
-
-# GAM models ----
-
-# Given the non-lineariry effect of the main confounder gene length
-# we are going to fit a GAM model to account for this and assess effectively the
-# effect of expression
-
-cdc_model_quasibinom <- gam(CDC ~ s(Max_Log10_Exp) + s(CDS_length_nt), 
-                      data = integrated_data, 
-                      family = quasibinomial(link = "logit"))
-
-summary(cdc_model_quasibinom)
-
-pdf("./results/Gam_visual_CDC_vs_expression.pdf")
-plot(cdc_model_quasibinom, pages = 1, residuals = TRUE, pch = 1, cex = 0.1, 
-     scheme = 1, shade = TRUE, trans = plogis, 
-     main = "Effect of Expression on CDC (Length-Corrected)")
-dev.off()
-
-pred_data <- data.frame(
-  Max_Log10_Exp = seq(min(integrated_data$Max_Log10_Exp), 
-                      max(integrated_data$Max_Log10_Exp), length.out = 400),
-  CDS_length_nt = median(integrated_data$CDS_length_nt)
-)
-
-preds <- predict(cdc_model_quasibinom, newdata = pred_data, type = "link", 
-                 se.fit = TRUE)
-
-pred_data$fit <- plogis(preds$fit)
-pred_data$lower <- plogis(preds$fit - 1.96 * preds$se.fit)
-pred_data$upper <- plogis(preds$fit + 1.96 * preds$se.fit)
-
-p1 <- ggplot(pred_data, aes(x = Max_Log10_Exp, y = fit)) +
-  #geom_point(data = integrated_data, aes(y = CDC), alpha = 0.05, 
-  #           color = "grey") +
-  
-  # The Confidence Interval Ribbon
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "blue") +
-  
-  # The Main Trend Line
-  geom_line(color = "blue", linewidth = 1) +
-  
-  # Formatting
-  labs(title = "Effect of Gene Expression on Codon Usage Bias (CDC)",
-       subtitle = "Controlled for CDS Length (fixed at median)",
-       x = "Max Log10 Expression",
-       y = "Predicted CDC") +
-  theme_custom()
-
-# Save
-ggsave("./results/GAM_CDC_vs_Expression_ggplot.pdf", p1, width = 6, height = 5)
+selection_table <- do.call(rbind, lapply(names(model_list), function(n) {
+  m <- model_list[[n]]
+  data.frame(Model = n,
+             AIC = AIC(m),
+             Deviance_Expl = summary(m)$dev.expl,
+             R_sq = summary(m)$r.sq)
+}))
 
 # Plotting detrended ENC against expression
 
