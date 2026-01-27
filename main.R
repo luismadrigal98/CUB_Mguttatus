@@ -31,7 +31,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'ggnewscale', 'broom', 'reshape2',
                         'furrr', 'tidyr', 'gsl', 'rcompanion',
                         'FSA', 'matrixStats', 'ggpubr',
-                        'boot')
+                        'boot', 'gratia')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -234,9 +234,9 @@ enc_cdc_data <- cub_results$enc_results |>
     CDC_significant = !is.na(p_value) & p_value < 0.05,
     CDC_category = dplyr::case_when(
       is.na(p_value) ~ "No CDC data",
-      p_value < 0.001 ~ "p < 0.001",
-      p_value < 0.01 ~ "p < 0.01",
-      p_value < 0.05 ~ "p < 0.05",
+      p_adj < 0.001 ~ "p < 0.001",
+      p_adj < 0.01 ~ "p < 0.01",
+      p_adj < 0.05 ~ "p < 0.05",
       TRUE ~ "Not significant"
     )
   )
@@ -752,7 +752,7 @@ integrated_data <- integrated_data |>
 cat("\n=== CAI vs Expression Level ===\n")
 # Compare CAI across expression groups
 cai_by_group <- integrated_data |>
-  group_by(Expression_Group) |>
+  dplyr::group_by(Expression_Group) |>
   summarise(
     n = n(),
     mean_CAI = mean(CAI, na.rm = TRUE),
@@ -865,7 +865,7 @@ p_cai_median <- ggplot(plot_data_cai, aes(x = Exp_Group, y = CAI)) +
   
   # A. Median and 95% CI
   stat_summary(fun.data = median_cl_boot, 
-               geom = "errorbar", width = 0.15, size = 0.8, color = "black") +
+               geom = "errorbar", width = 0.15, linewidth = 0.8, color = "black") +
   stat_summary(fun = median, geom = "point", size = 4, aes(color = Exp_Group)) +
   
   # B. Formatting
@@ -1529,12 +1529,12 @@ write.table(
 
 # Setup paths for the 3 runs
 run_dirs <- c(
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_1",
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_2",
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_3",
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_4",
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_5",
-  "./results/MCMC_results/results_dM_fixed_with_phi/run_6"
+  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1",
+  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_2",
+  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_3",
+  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_4",
+  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_5",
+  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_6"
 )
 
 dM_fixed_with_phi_conv <- GR_convergence(run_dirs, 
@@ -1622,7 +1622,10 @@ dM_fixed_intergenic <- GR_convergence(run_dirs,
 run_dirs <- c(
   "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_1",
   "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_2",
-  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_3"
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_3",
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_4",
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_5",
+  "./results/MCMC_results/results_dM_fixed_with_phi_intergenic/run_6"
 )
 
 dM_fixed_with_phi_intergenic <- GR_convergence(run_dirs, 
@@ -1714,7 +1717,7 @@ ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", co
 
 # Using chain 1 results (independent chains are indistinguishable)
 
-eta_data <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv")
+eta_data <- read.csv(file = "results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv")
 
 preferred_codons <- sapply(unique(eta_data$AA), function(x) {
   AA <- x
@@ -3032,6 +3035,8 @@ cat("  Results saved to: ./results/tRNA_analysis_pairing/\n\n")
 ## 12) Polymorphism data integration ----
 ## _____________________________________________________________________________
 
+# Pi ----
+
 pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
 
 # Homogenizing gene names to match the previous convention
@@ -3087,6 +3092,87 @@ ggplot(data = plot_data_pi_1_ready,
 ggsave("./results/diversity_modeling/Pi_by_expression_group_Mean_CI.pdf",
        width = 8, height = 6)
 
+# GAM to avoid discretization
+gam_pi_check <- gam(Pi_mean_4fold ~ s(Max_Log10_Exp), 
+                    data = integrated_data, 
+                    family = gaussian())
+
+summary(gam_pi_check)
+
+# Visualize
+plot_gam_pi <- ggplot(integrated_data, aes(x = Max_Log10_Exp, y = Pi_mean_4fold)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), color = "blue") +
+  labs(title = "Continuous Check: Diversity vs Expression",
+       y = "Pi (4-fold)", x = "Max Log10 Expression") +
+  theme_custom()
+
+ggsave("./results/diversity_modeling/Pi_vs_expression_gam.pdf",
+       plot_gam_pi, width = 6, height = 6)
+
+# Tajima's D ----
+
+# ANOVA
+td_per_expression <- anova(lm(TajimaD_4fold ~ Expression_Group, 
+                              data = integrated_data))
+print(td_per_expression)
+
+# Post-hoc test (Tukey HSD)
+td_posthoc <- TukeyHSD(aov(lm(TajimaD_4fold ~ Expression_Group, 
+                              data = integrated_data)))
+
+# 3. Prepare Data for Plotting (Mean + 95% CI)
+
+# Filter valid Tajima's D values (remove NAs and infinite values)
+plot_data_td_1 <- integrated_data |>
+  dplyr::select(Gene_name, TajimaD_4fold, Expression_Group) |>
+  dplyr::filter(is.finite(TajimaD_4fold)) |> # Important for Tajima's D
+  na.exclude()
+
+# Calculate Summary Stats manually
+alpha <- 0.05
+
+plot_data_td_1_ready <- plot_data_td_1 |>
+  dplyr::group_by(Expression_Group) |>
+  dplyr::summarize(
+    Mean_TD_4_fold = mean(TajimaD_4fold),
+    # Calculate 95% CI
+    LL = mean(TajimaD_4fold) - qt(1 - alpha/2, (n() - 1)) * sd(TajimaD_4fold) / sqrt(n()),
+    UL = mean(TajimaD_4fold) + qt(1 - alpha/2, (n() - 1)) * sd(TajimaD_4fold) / sqrt(n())
+  )
+
+# 4. Visualization (Mean + CI)
+
+p_tajima <- ggplot(data = plot_data_td_1_ready, 
+                   mapping = aes(x = Expression_Group,
+                                 y = Mean_TD_4_fold,
+                                 color = Expression_Group)) +
+  
+  # Add points and error bars
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = LL, ymax = UL), width = 0.2, size = 1) +
+  
+  # Add Reference Line at 0 (Neutrality)
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  
+  # Formatting
+  theme_custom() +
+  labs(title = "Tajima's D at 4-fold Sites by Expression Group",
+       subtitle = "Mean ± 95% Confidence Interval",
+       x = "Expression Group",
+       y = "Mean Tajima's D (4-fold Sites)") +
+  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  
+  # Use your standard color palette
+  scale_color_manual(values = c("Bottom 5%" = "#377EB8", 
+                                "Middle 90%" = "#999999", 
+                                "Top 5%" = "#E41A1C"))
+
+# Save
+ggsave("./results/diversity_modeling/TajimaD_by_expression_group_Mean_CI.pdf",
+       p_tajima, width = 6, height = 6)
+
 # 12.1) Tracking frequency of preferred allele as a function of expression ----
 
 preferred_data <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt", 
@@ -3107,18 +3193,55 @@ integrated_data <- integrated_data |>
   left_join(preferred_data) |>
   na.exclude()
 
-summary(lm(Mean_preferred_freq ~ Max_Log10_Exp + I(Max_Log10_Exp^2), 
-           data = integrated_data))
+pref_model_gam <- gam(Mean_preferred_freq ~ s(Max_Log10_Exp) + s(CDS_length_nt),
+                      data = integrated_data,
+                      family = quasibinomial(link = "logit"))
 
-Mean_preferred_vs_expression <- ggplot(integrated_data, aes(x = Max_Log10_Exp,
-                                                            y = Mean_preferred_freq)) +
-  geom_point() +
-  geom_smooth(method = lm, 
-              formula = y ~ x + I(x^2)) +
-  theme_custom()
+summary(pref_model_gam)
 
-ggsave("./results/Mean_preferred_freq_vs_expression.pdf", 
-       Mean_preferred_vs_expression, width = 8, height = 6)
+# Partial effect plot
+
+# Create Prediction Data
+
+pred_data_pref <- data.frame(
+  Max_Log10_Exp = seq(min(integrated_data$Max_Log10_Exp), 
+                      max(integrated_data$Max_Log10_Exp), length.out = 400),
+  CDS_length_nt = median(integrated_data$CDS_length_nt)
+)
+
+# Predict with Standard Errors
+preds <- predict(pref_model_gam, newdata = pred_data_pref, type = "link", 
+                 se.fit = TRUE)
+
+# Transform back to Response Scale (0-1 Frequency)
+pred_data_pref$fit <- plogis(preds$fit)
+pred_data_pref$lower <- plogis(preds$fit - 1.96 * preds$se.fit)
+pred_data_pref$upper <- plogis(preds$fit + 1.96 * preds$se.fit)
+
+# Plot
+p_pref <- ggplot(pred_data_pref, aes(x = Max_Log10_Exp, y = fit)) +
+  
+  # A. Confidence Interval Ribbon
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "darkgreen") +
+  
+  # B. The Main Trend Line
+  geom_line(color = "darkgreen", size = 1) +
+  
+  geom_rug(data = integrated_data, aes(x = Max_Log10_Exp), 
+           sides = "b", alpha = 0.05, inherit.aes = FALSE) +
+  
+  # C. Formatting
+  labs(title = "Usage of Preferred Codons Increases with Expression",
+       subtitle = "Predicted Frequency controlled for CDS Length (fixed at median)",
+       x = "Max Log10 Expression",
+       y = "Mean Preferred Codon Frequency") +
+  theme_custom() +
+  theme(panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 11),
+        axis.title = element_text(size = 12, face = "bold"))
+
+# Save
+ggsave("./results/GAM_PreferredFreq_vs_Expression.pdf", p_pref, width = 6, height = 5)
 
 # Assessing significance of expression over the detrended residuals
 
@@ -3199,28 +3322,119 @@ p_boxplot_preferred <- ggplot(integrated_data, aes(x = Expression_Group,
 ggsave("./results/Frequency_preferred_by_expression_group.pdf", 
        p_boxplot_preferred, width = 8, height = 6)
 
+# Median and CI
+
+plot_data_pref <- integrated_data |>
+  dplyr::mutate(Exp_Group = factor(Expression_Group, 
+                                   levels = c("Bottom 5%", "Middle 90%", "Top 5%"))) |>
+  dplyr::filter(!is.na(Exp_Group))
+
+p_preferred_median <- ggplot(plot_data_pref, aes(x = Exp_Group, y = Mean_preferred_freq)) +
+  
+  # A. Median and 95% Bootstrap CI
+  stat_summary(fun.data = median_cl_boot, 
+               geom = "errorbar", width = 0.15, size = 0.8, color = "black") +
+  stat_summary(fun = median, geom = "point", size = 4, aes(color = Exp_Group)) +
+  
+  # B. Formatting
+  scale_color_manual(values = c("Bottom 5%" = "#377EB8", 
+                                "Middle 90%" = "#999999", 
+                                "Top 5%" = "#E41A1C")) +
+  
+  labs(title = "Usage of Preferred Codons Increases with Expression",
+       subtitle = "Median Frequency (± 95% Bootstrap CI)",
+       y = "Median Frequency of Preferred Codons",
+       x = NULL) + # Remove X label as groups are self-explanatory
+  
+  theme_custom() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 11, face = "bold", color = "black"),
+        panel.grid.major.x = element_blank())
+
+# Save
+ggsave("./results/Frequency_preferred_by_expression_group_Median_CI.pdf", 
+       p_preferred_median, width = 5, height = 6)
+
 # 12.2) Relationship between CDC-detrended and freq_preferred ----
 
-summary(lm(CDC_detrended ~ Mean_preferred_freq, 
-           data = integrated_data))
+gam_correlation <- gam(CDC ~ s(Mean_preferred_freq, k = 5) + s(CDS_length_nt),
+                       data = integrated_data,
+                       family = quasibinomial(link = "logit"),
+                       method = "REML")
 
-CDC_f_Mean_preferred_freq <- ggplot(integrated_data, aes(x = Mean_preferred_freq, 
-                                                         y = CDC)) +
-  # Use ggpointdensity for a clear view of the cluster
-  geom_pointdensity(alpha = 0.5) + 
-  
-  # Add the linear regression line, which now shows the true effect
-  geom_smooth(method = "lm", color = "red", se = FALSE) +
-  
-  labs(
-    title = "CDC vs. Mean_preferred_freq",
-    y = "CDC",
-    x = "Mean_preferred_freq"
-  ) +
-  theme_custom()
+gam.check(gam_correlation)
 
-ggsave("./results/CDC_vs_Mean_preferred_freq.pdf", 
-       CDC_f_Mean_preferred_freq, width = 8, height = 6)
+summary(gam_correlation)
+
+# If 's(Mean_preferred_freq)' is significant here, the relationship is real.
+
+# Visualize the Partial Effect (The "Isolated" Correlation)
+# Range Frequency from min to max, hold Length constant at median
+pred_data_corr <- data.frame(
+  Mean_preferred_freq = seq(min(integrated_data$Mean_preferred_freq), 
+                            max(integrated_data$Mean_preferred_freq), length.out = 400),
+  CDS_length_nt = median(integrated_data$CDS_length_nt)
+)
+
+preds <- predict(gam_correlation, newdata = pred_data_corr, type = "link", se.fit = TRUE)
+
+pred_data_corr$fit <- plogis(preds$fit)
+pred_data_corr$lower <- plogis(preds$fit - 1.96 * preds$se.fit)
+pred_data_corr$upper <- plogis(preds$fit + 1.96 * preds$se.fit)
+
+# Plot
+p_corr <- ggplot(pred_data_corr, aes(x = Mean_preferred_freq, y = fit)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "purple") +
+  geom_line(color = "purple", size = 1.2) +
+  labs(x = "Mean Frequency of Preferred Codons",
+       y = "Predicted CDC") +
+  theme_custom() +
+  theme()
+
+ggsave("./results/GAM_CDC_vs_PreferredFreq_Controlled.pdf", p_corr, width = 6, 
+       height = 5)
+
+# Dominance analysis
+# Full Model (Both predictors)
+gam_full <- gam(CDC ~ s(Mean_preferred_freq, k=5) + s(CDS_length_nt), 
+                data = integrated_data, family = quasibinomial(link = "logit"), 
+                method = "REML")
+# Length Only
+gam_len  <- gam(CDC ~ s(CDS_length_nt), 
+                data = integrated_data, family = quasibinomial(link = "logit"), 
+                method = "REML")
+
+# Frequency Only
+gam_freq <- gam(CDC ~ s(Mean_preferred_freq, k=5), 
+                data = integrated_data, family = quasibinomial(link = "logit"),
+                method = "REML")
+
+# Extraction of adjusted R^2
+r2_full <- summary(gam_full)$r.sq
+r2_len  <- summary(gam_len)$r.sq
+r2_freq <- summary(gam_freq)$r.sq
+
+# Dominance calculation
+contrib_len <- mean(c(r2_len, (r2_full - r2_freq)))
+contrib_freq <- mean(c(r2_freq, (r2_full - r2_len)))
+
+# Normalize
+total_explained <- contrib_len + contrib_freq
+pct_len  <- (contrib_len / total_explained) * 100
+pct_freq <- (contrib_freq / total_explained) * 100
+
+# Print Results
+message("=== RELATIVE IMPORTANCE ANALYSIS (GAM) ===\n")
+message("Total Variance Explained (Adj R2):", round(r2_full, 4), "\n\n")
+
+message("Raw Contribution (R2 units):\n")
+message("   CDS Length:        ", round(contrib_len, 4), "\n")
+message("   Preferred Freq:    ", round(contrib_freq, 4), "\n\n")
+
+message("Relative Importance (% of Explained Variance):\n")
+message("   CDS Length:        ", round(pct_len, 1), "%\n")
+message("   Preferred Freq:    ", round(pct_freq, 1), "%\n")
+message("==========================================\n")
 
 ## *****************************************************************************
 ## 13) Intronic Polymorphism-Based Selection Validation ----
@@ -3313,7 +3527,7 @@ target_n <- 90  # Define the projection size (must match your intron analysis)
 # Split the by quantiles in 20 intervals (to match with average S_roc per quantile and
 # determine scaling factor)
 
-cutoffs_exp <- quantile(integrated_data$Geom_Exp, seq(0, 1, by = 0.05),
+cutoffs_exp <- quantile(integrated_data$Geom_Mean_CPM, seq(0, 1, by = 0.05),
                     na.rm = TRUE)
 
 names_quantiles <- names(cutoffs_exp)
@@ -3329,7 +3543,7 @@ empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1),
   
   # Subset the original data as a function of the stablished thresholds
   sub_data_genes <- integrated_data |>
-    dplyr::filter(Geom_Exp > low_thr & Geom_Exp <= high_thr) |>
+    dplyr::filter(Geom_Mean_CPM > low_thr & Geom_Mean_CPM <= high_thr) |>
     pull(Gene_name)
   
   # Extreact the SFS for the subset of genes
@@ -3440,7 +3654,7 @@ gamma_summary_df[['Sig_G']] <- gamma_summary_df$Gamma_G_pval < 0.05
 cat("\n=== Gamma Estimates by Expression Quantile ===\n")
 print(gamma_summary_df[, c("Category", "Gamma_C", "Gamma_C_pval", "Gamma_G", "Gamma_G_pval", "Gamma_avg")])
 
-cutoffs_exp <- quantile(selection_coeff_intensity$Geom_Exp, seq(0, 1, by = 0.05),
+cutoffs_exp <- quantile(selection_coeff_intensity$Geom_Mean_CPM, seq(0, 1, by = 0.05),
                         na.rm = TRUE)
 
 names_quantiles <- names(cutoffs_exp)
@@ -3455,13 +3669,13 @@ selection_summary_full <- lapply(1:(length(cutoffs_exp) - 1), function(idx)
   high_thr <- cutoffs_exp[idx + 1]
   
   sub_data_genes <- selection_coeff_intensity |>
-    dplyr::filter(Geom_Exp > low_thr & Geom_Exp <= high_thr)
+    dplyr::filter(Geom_Mean_CPM > low_thr & Geom_Mean_CPM <= high_thr)
   
   list(
     mean_S = mean(sub_data_genes$S_coeff, na.rm = TRUE),
     se_S = sd(sub_data_genes$S_coeff, na.rm = TRUE) / sqrt(sum(!is.na(sub_data_genes$S_coeff))),
     n_genes = nrow(sub_data_genes),
-    mean_exp = mean(sub_data_genes$Geom_Exp, na.rm = TRUE)
+    mean_exp = mean(sub_data_genes$Geom_Mean_CPM, na.rm = TRUE)
   )
 })
 
@@ -3945,11 +4159,11 @@ cat("✓ MI summary saved: ./results/MI_analysis_summary.csv\n\n")
 # Kruskal-Wallis with Post-Hoc Dunn's Test (Mean + CI Visualization)
 
 # Prepare Data
-# Prepare Data
+
 clean_data_4cat <- selection_coeff_intensity |>
   dplyr::filter(
-    !is.na(S_coeff), !is.na(Geom_Exp), !is.na(Pi_mean_4fold),
-    is.finite(S_coeff), is.finite(Geom_Exp), is.finite(Pi_mean_4fold),
+    !is.na(S_coeff), !is.na(Geom_Mean_CPM), !is.na(Pi_mean_4fold),
+    is.finite(S_coeff), is.finite(Geom_Mean_CPM), is.finite(Pi_mean_4fold),
     Pi_mean_4fold < 0.05
   ) |>
   dplyr::mutate(
@@ -3960,8 +4174,8 @@ clean_data_4cat <- selection_coeff_intensity |>
                      include.lowest = TRUE),
     
     # Expression remains as Deciles
-    Exp_Bin = cut(Geom_Exp, 
-                  breaks = quantile(Geom_Exp, probs = seq(0, 1, 0.1)),
+    Exp_Bin = cut(Geom_Mean_CPM, 
+                  breaks = quantile(Geom_Mean_CPM, probs = seq(0, 1, 0.1)),
                   include.lowest = TRUE, labels = 1:10)
   )
 
@@ -4058,3 +4272,120 @@ cat("\nPlots saved successfully using the 4-category S_ROC binning.\n")
 ## *****************************************************************************
 ## 15) Diversity across different genomic compartment ----
 ## _____________________________________________________________________________
+
+pi_compartment <- read.table(file = "./data/all_chromosomes.pi_by_compartment.txt",
+                             header = T)
+
+# 1. Sanity Check: Calculate Overall Weighted Pi per Compartment
+# We filter for "all" nucleotides to avoid double counting C/G/AT breakdowns
+overall_pi_stats <- pi_compartment %>%
+  filter(Nuc_Category == "all") %>%
+  group_by(Compartment) %>%
+  summarise(
+    Total_Sites = sum(Sites, na.rm = TRUE),
+    Total_Pi_Sum = sum(Pi_sum, na.rm = TRUE),
+    # Weighted Average Pi = (Sum of all Pi differences) / (Total Sites)
+    Weighted_Mean_Pi = Total_Pi_Sum / Total_Sites,
+    # Standard Error of the mean (optional, treat chromosomes as replicates)
+    SE_Pi = sd(Pi_mean) / sqrt(n()) 
+  )
+
+print("=== Overall Weighted Pi by Compartment ===")
+print(overall_pi_stats)
+
+# HUMP EFFECT TEST ----
+# 1. Aggregate Data by "Selection Potential"
+# We group C, G, and CG as "GC_Segregating" (Where selection acts)
+# We keep AT as "AT_Only" (Where selection is absent/invisible)
+
+hump_test_data <- pi_compartment |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron")) |>
+  dplyr::mutate(Site_Type = ifelse(Nuc_Category == "AT", "AT_Only", "GC_Segregating")) |>
+  dplyr::group_by(Compartment, Site_Type) |>
+  summarise(
+    Total_Pi = sum(Pi_sum),
+    Total_Sites = sum(Sites),
+    Weighted_Pi = Total_Pi / Total_Sites,
+    .groups = "drop"
+  )
+
+print(hump_test_data)
+
+ggplot(hump_test_data, aes(x = Compartment, y = Weighted_Pi, fill = Site_Type)) +
+  geom_col(position = "dodge") +
+  labs(title = "Testing the McVean Hump Hypothesis",
+       subtitle = "Does opposing selection boost diversity at GC sites?",
+       y = "Weighted Nucleotide Diversity (Pi)",
+       x = "Genomic Compartment") +
+  scale_fill_manual(values = c("AT_Only" = "gray70", "GC_Segregating" = "firebrick")) +
+  theme_custom()
+
+ggsave("./results/diversity_hump_test_by_compartment.pdf", width = 7, height = 5)
+
+# 2) Formal testing
+
+# Create the summary dataframe directly from your results
+plot_data_hump <- data.frame(
+  Compartment = factor(c("Intron", "Intron", "Exon (4-fold)", "Exon (4-fold)"),
+                       levels = c("Intron", "Exon (4-fold)")),
+  Site_Type = c("AT_Only", "GC_Segregating", "AT_Only", "GC_Segregating"),
+  Weighted_Pi = c(0.00504, 0.0244, 0.00651, 0.0365)
+)
+
+# Plot: The Interaction Effect
+p_hump <- ggplot(plot_data_hump, aes(x = Compartment, y = Weighted_Pi, group = Site_Type, color = Site_Type)) +
+  
+  # Lines connecting the points highlight the differing slopes
+  geom_line(size = 1.2) +
+  geom_point(size = 5) +
+  
+  # Formatting
+  scale_color_manual(values = c("AT_Only" = "gray60", "GC_Segregating" = "firebrick")) +
+  labs(title = "Evidence for Weak Selection (The 'Hump' Effect)",
+       subtitle = "Selection opposing Mutational Bias boosts diversity specifically at GC sites",
+       y = "Nucleotide Diversity (Pi)",
+       x = NULL,
+       color = "Site Category") +
+  theme_custom() +
+  theme(axis.text = element_text(size = 12, face = "bold"),
+        legend.position = "top")
+
+ggsave("./results/Hump_Hypothesis_Confirmation.pdf", p_hump, width = 8, height = 6)
+
+# Statistical test
+
+# 1. Prepare Data with Aggregation step
+paired_test_data <- pi_compartment |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron")) |>
+  
+  # Create the new categories
+  dplyr::mutate(Site_Type = ifelse(Nuc_Category == "AT", "AT_Only", "GC_Segregating")) |>
+  
+  # CRITICAL FIX: Aggregate the multiple GC rows (C, G, CG) into one value per Chromosome
+  dplyr::group_by(Chromosome, Compartment, Site_Type) |>
+  dplyr::summarise(
+    # Recalculate weighted mean: Sum of Pi / Sum of Sites
+    Pi_mean = sum(Pi_sum) / sum(Sites), 
+    .groups = "drop"
+  ) |>
+  
+  # Now pivot (guaranteed to be unique now)
+  tidyr::pivot_wider(names_from = Compartment, values_from = Pi_mean) |>
+  
+  # Calculate the boost
+  dplyr::mutate(Diversity_Boost = nonfirst_exon_4fold - intron) |>
+  stats::na.omit()
+
+# 2. Run the Paired T-test
+# Compare if the boost in GC sites is larger than the boost in AT sites
+boost_comparison <- paired_test_data |>
+  dplyr::select(Chromosome, Site_Type, Diversity_Boost) |>
+  tidyr::pivot_wider(names_from = Site_Type, values_from = Diversity_Boost)
+
+t_test_result <- stats::t.test(boost_comparison$GC_Segregating, 
+                               boost_comparison$AT_Only, 
+                               paired = TRUE, 
+                               alternative = "greater")
+
+print("=== Paired Test: Does Selection Boost GC Diversity More than AT? ===")
+print(t_test_result)
