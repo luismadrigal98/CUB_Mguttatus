@@ -1042,14 +1042,6 @@ dM_results <- estimate_dM_from_neutral_regions(
   return_intermediates = TRUE  # Keep intermediate data for further analysis if needed
 )
 
-# Access results:
-# - dM_results$dM_introns          : dM data frame from introns
-# - dM_results$dM_intergenic       : dM data frame from intergenic
-# - dM_results$global_stats_introns: Nucleotide frequencies from introns
-# - dM_results$global_stats_intergenic: Nucleotide frequencies from intergenic
-# - dM_results$output_files        : Paths to generated CSV files
-# - dM_results$intermediates       : Raw data (seq_data, nuc_composition, etc.)
-
 # Optional: Additional analysis on the intermediate data
 # For example, cluster genomic windows by mutational spectrum
 if (!is.null(dM_results$intermediates$introns$nuc_filtered) &
