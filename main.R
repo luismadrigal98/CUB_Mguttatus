@@ -1102,17 +1102,19 @@ if (!is.null(dM_results$intermediates$introns$nuc_filtered) &
 
 # 8.1.1) Naive model ----
 
-# Setup paths for the 3 runs
+# Setup paths for the 6 runs
 run_dirs <- c(
-  "./results/MCMC_results/results_naive_2/run_1",
-  "./results/MCMC_results/results_naive_2/run_2",
-  "./results/MCMC_results/results_naive_2/run_3",
-  "./results/MCMC_results/results_naive_2/run_4",
-  "./results/MCMC_results/results_naive_2/run_5",
-  "./results/MCMC_results/results_naive_2/run_6"
+  "./results/MCMC_results/results_naive/run_1",
+  "./results/MCMC_results/results_naive/run_2",
+  "./results/MCMC_results/results_naive/run_3",
+  "./results/MCMC_results/results_naive/run_4",
+  "./results/MCMC_results/results_naive/run_5",
+  "./results/MCMC_results/results_naive/run_6"
 )
 
 Naive_conv <- GR_convergence(run_dirs)
+
+# Convergence: FALSE
 
 # 8.1.2) dM-fixed model ----
 
@@ -1128,7 +1130,7 @@ run_dirs <- c(
 
 dM_fixed_conv <- GR_convergence(run_dirs, parameter = 'selection') # Mutation is fixed
 
-# Convergence was achieved for dM_fixed
+# Convergence: TRUE
 
 # 8.1.2.1) Checking the correlation between estimates of phi and the expression data ----
 
@@ -1139,23 +1141,26 @@ phi_hat_dM_fixed <- read.csv(file = "results/MCMC_results/results_dM_fixed/run_1
   dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
 
 phi_dM_fixed <- exp_complete |>
-  left_join(phi_hat_dM_fixed, by = join_by("Gene" == "GeneID")) |>
-  dplyr::mutate(High_exp_log10 = log10(High_exp + 1)) |>
+  left_join(phi_hat_dM_fixed, by = join_by("Gene_name" == "GeneID")) |>
   na.exclude()
 
-cor.test(phi_dM_fixed$Mean.log10.Phi, phi_dM_fixed$High_exp_log10)
+cor.test(phi_dM_fixed$Mean.log10.Phi, phi_dM_fixed$Mean_Log10_Exp)
+
+# We would expect a positive correlation. A negative rho suggest a model 
+# misspecification
 
 # Visualization
 
 ggplot(data = phi_dM_fixed, aes(x = Mean.log10.Phi,
-                                y = High_exp_log10)) +
+                                y = Mean_Log10_Exp)) +
   geom_point() +
-  geom_smooth(method = "lm") +
-  theme_bw() +
+  geom_smooth() +
+  theme_custom() +
   xlab("Estimated phi (log10)") +
   ylab("Empirical Max Expresion (log10)")
 
-ggsave()
+ggsave("./results/phi_estimates_vs_expression_dM_fixed.pdf",
+       width = 6, height = 5)
 
 # There is no good correspondence with empirical data
 # Next step is to pass expression data to the AnaCoDa
@@ -1422,7 +1427,7 @@ preferred_codons_roc <- preferred_codons |>
                 Family = aa) |>
   dplyr::mutate(Source = "ROC_SEMPPR")
 
-cat(sprintf("✓ Preferred codons from ROC model: %d amino acids\n", nrow(preferred_codons_roc)))
+message(sprintf("✓ Preferred codons from ROC model: %d amino acids\n", nrow(preferred_codons_roc)))
 
 # 8.3) Extracting selection estimates from the best model (dM-fixed-with_phi) ----
 
@@ -1453,7 +1458,8 @@ plot_data <- eta_data |>
 p <- ggplot(plot_data, aes(x = Codon, y = Mean, color = Status)) +
   
   # A. The Reference Line (The Baseline)
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", linewidth = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", 
+             linewidth = 0.5) +
   
   # B. The Estimates with Error Bars
   # geom_pointrange is perfect for Mean + Credible Intervals
@@ -1514,10 +1520,12 @@ counts_aligned <- counts_df[common_genes, common_codons]
 sel_aligned <- sel_mat[common_genes, common_codons]
 counts_aligned <- as.matrix(counts_aligned)
 
+# S_ROC
+sel_roc <- rowMeans(abs(sel_aligned), na.rm = TRUE)
+
 # Logic: Count * abs(Selection_Coefficient)
 # We use abs() because our values are negative penalties (e.g., -0.06).
 # A penalty of -0.06 is a "load" of 0.06.
-
 # Element-wise multiplication (NOT matrix multiplication %*%)
 gene_load_matrix <- counts_aligned * abs(sel_aligned)
 
@@ -1527,14 +1535,12 @@ total_selection_load <- rowSums(gene_load_matrix, na.rm = TRUE)
 # Selection intensity ----
 n_synonymous_codons <- rowSums(counts_aligned, na.rm = TRUE)
 
-sel_intensity <- total_selection_load / n_synonymous_codons
+sel_load <- total_selection_load / n_synonymous_codons
 
-# Unweighted selection intensity
-sel_intensity_uw <- rowMeans(abs(sel_aligned), na.rm = TRUE)
-
-selection_coeff_intensity <- data.frame(Gene_name = names(sel_intensity),
-                                        S_coeff = as.vector(sel_intensity),
-                                        S_coeff_uw = as.vector(sel_intensity_uw))
+# Aggregate
+selection_coeff_intensity <- data.frame(Gene_name = names(sel_load),
+                                        S_ROC = as.vector(sel_roc),
+                                        S_Load = as.vector(sel_load))
 
 # 8.3.1) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
@@ -1555,7 +1561,7 @@ selection_coeff_intensity <- selection_coeff_intensity |>
 
 # Relation between geom_expression and S
 
-ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_coeff)) +
+ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_Load)) +
   geom_point(alpha = 0.5) +
   geom_smooth() +
   theme_custom()
@@ -1565,25 +1571,25 @@ ggsave(filename = "./results/Selection_Coefficient_vs_Geom_Expression.pdf",
 
 # Relation between geom_expression and S_uw
 
-ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_coeff_uw)) +
+ggplot(selection_coeff_intensity, aes(x = Geom_Exp, y = S_ROC)) +
   geom_point(alpha = 0.5) +
   geom_smooth() +
   theme_custom()
 
 ggsave(filename = "./results/Selection_Coefficient_Unweighted_vs_Geom_Expression.pdf",       width = 6, height = 4)
 
-cor.test(selection_coeff_intensity$S_coeff_uw, selection_coeff_intensity$S_coeff)
+cor.test(selection_coeff_intensity$S_ROC, selection_coeff_intensity$S_Load)
 
 # Correlation between selection metric and CUB metrics
 
 cor_S_and_bias <- corrr::correlate(x = as.matrix(selection_coeff_intensity[, 2:5]),
                                    method = "spearman")
 
-cor.test(selection_coeff_intensity$S_coeff, selection_coeff_intensity$CAI)
+cor.test(selection_coeff_intensity$S_Load, selection_coeff_intensity$CAI)
 
 # Plot both selection measurements
 
-ggplot(selection_coeff_intensity, aes(x = S_coeff_uw, y = S_coeff)) +
+ggplot(selection_coeff_intensity, aes(x = S_ROC, y = S_Load)) +
   geom_point(alpha = 0.5) +
   geom_smooth() +
   theme_custom() +
@@ -1599,7 +1605,7 @@ plot_data <- selection_coeff_intensity |>
   mutate(
     # Log Transform Selection Load (Load = Total Cost per Gene)
     # Note: If you want Intensity (per codon), swap S_load for Selection_Intensity
-    Log_S_coeff = log10(S_coeff_uw + 0.01), 
+    Log_S_Load = log10(S_ROC + 0.01), 
     
     # Log Transform Expression (using the new clear name)
     Log_Phi = log10(Geom_Exp + 0.0001), 
@@ -1616,22 +1622,22 @@ phi_range <- range(plot_data$Log_Phi, na.rm = TRUE)
 
 # Fit linear model for Panel C annotation (Load vs Length)
 tail_data <- plot_data |> 
-  dplyr::filter(Log_S_coeff > -0.5)
+  dplyr::filter(Log_S_Load > -0.5)
 
 # Fit LM specifically on the tail
-lm_tail <- lm(GC3s ~ Log_S_coeff, data = tail_data)
+lm_tail <- lm(GC3s ~ Log_S_Load, data = tail_data)
 lm_tail_eq <- sprintf("Tail: y = %.2f + %.2fx\nR² = %.3f, p = %.4f",
                       coef(lm_tail)[1], 
                       coef(lm_tail)[2], 
                       summary(lm_tail)$r.squared,
-                      summary(lm_tail)$coefficients["Log_S_coeff","Pr(>|t|)"])
+                      summary(lm_tail)$coefficients["Log_S_Load","Pr(>|t|)"])
 
 # Panel A: Selection Load Distribution
 drift_thresh <- log10(1 + 0.01)   
 strong_thresh <- log10(5 + 0.01)
 y_max_anno <- 10000
 
-p1 <- ggplot(plot_data, aes(x = Log_S_coeff)) +
+p1 <- ggplot(plot_data, aes(x = Log_S_Load)) +
   
   # --- Background Shading ---
   annotate("rect", xmin = -Inf, xmax = drift_thresh, 
@@ -1661,7 +1667,7 @@ p1 <- ggplot(plot_data, aes(x = Log_S_coeff)) +
   
   # --- Custom "Separated" Rug ---
   # We draw segments explicitly at y = -0.5 (below axis) to create the gap
-  geom_segment(aes(x = Log_S_coeff, xend = Log_S_coeff, 
+  geom_segment(aes(x = Log_S_Load, xend = Log_S_Load, 
                    y = -0.05, yend = -0.2), # Adjust these values for tick length/position
                alpha = 0.3, color = "darkgreen") +
   
@@ -1684,7 +1690,7 @@ p1 <- ggplot(plot_data, aes(x = Log_S_coeff)) +
   theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
 
 # Panel B: CAI vs Selection Load
-p2 <- ggplot(plot_data, aes(x = Log_S_coeff, y = CAI)) +
+p2 <- ggplot(plot_data, aes(x = Log_S_Load, y = CAI)) +
   geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
   scale_color_viridis_c(option = "plasma", name = expression(Log[10](Phi[geom])), 
                         limits = phi_range, direction = 1) +
@@ -1693,7 +1699,7 @@ p2 <- ggplot(plot_data, aes(x = Log_S_coeff, y = CAI)) +
   theme_custom()
 
 # Panel C: Gene Length Effect
-p3_main <- ggplot(plot_data, aes(x = Log_S_coeff, y = GC3s)) +
+p3_main <- ggplot(plot_data, aes(x = Log_S_Load, y = GC3s)) +
   geom_point(aes(color = Log_Phi), alpha = 0.3, size = 0.8) +
   
   # Use GAM to show the true shape (Flat -> Rising)
@@ -1703,7 +1709,7 @@ p3_main <- ggplot(plot_data, aes(x = Log_S_coeff, y = GC3s)) +
                         limits = phi_range, direction = 1) +
   
   # Add a box to show where the inset comes from
-  annotate("rect", xmin = -0.5, xmax = max(plot_data$Log_S_coeff), 
+  annotate("rect", xmin = -0.5, xmax = max(plot_data$Log_S_Load), 
            ymin = min(tail_data$GC3s), ymax = max(tail_data$GC3s),
            fill = NA, color = "red", linetype = "dashed", alpha = 0.5) +
   
@@ -1713,14 +1719,14 @@ p3_main <- ggplot(plot_data, aes(x = Log_S_coeff, y = GC3s)) +
   theme(legend.position = "none") # Remove legend (shared in combined plot)
 
 # --- 3. Create the Inset Plot (The Linear Tail) ---
-p3_zoom_in <- ggplot(tail_data, aes(x = Log_S_coeff, y = GC3s)) +
+p3_zoom_in <- ggplot(tail_data, aes(x = Log_S_Load, y = GC3s)) +
   geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
   # Linear model for the tail
   geom_smooth(method = "lm", color = "red", se = TRUE) +
   scale_color_viridis_c(option = "plasma", limits = phi_range, direction = 1) +
   
   # Add the equation inside the inset
-  annotate("text", x = min(tail_data$Log_S_coeff), y = max(tail_data$GC3s), 
+  annotate("text", x = min(tail_data$Log_S_Load), y = max(tail_data$GC3s), 
            label = lm_tail_eq, hjust = 0, vjust = 1, size = 3, color = "red") +
   
   theme_custom() +
@@ -1737,7 +1743,7 @@ ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 11, heigh
 thr_sel <- 1
 
 subset_strongly_shaped_by_s <- selection_coeff_intensity |>
-  dplyr::filter(S_coeff > thr_sel) |>
+  dplyr::filter(S_Load > thr_sel) |>
   dplyr::pull(Gene_name)
 
 custom_bag <- selection_coeff_intensity |> dplyr::pull(Gene_name)
@@ -1765,8 +1771,8 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
 # 8.5) Getting top 10 genes in terms of S_load ----
 
 subset_strongly_shaped_by_s <- selection_coeff_intensity |>
-  dplyr::filter(S_coeff > thr_sel) |>
-  dplyr::arrange(desc(S_coeff)) |>
+  dplyr::filter(S_Load > thr_sel) |>
+  dplyr::arrange(desc(S_Load)) |>
   dplyr::slice(1:10) |>
   dplyr::pull(Gene_name)
 
@@ -3349,8 +3355,8 @@ selection_summary_full <- lapply(1:(length(cutoffs_exp) - 1), function(idx)
     dplyr::filter(Geom_Mean_CPM > low_thr & Geom_Mean_CPM <= high_thr)
   
   list(
-    mean_S = mean(sub_data_genes$S_coeff, na.rm = TRUE),
-    se_S = sd(sub_data_genes$S_coeff, na.rm = TRUE) / sqrt(sum(!is.na(sub_data_genes$S_coeff))),
+    mean_S = mean(sub_data_genes$S_Load, na.rm = TRUE),
+    se_S = sd(sub_data_genes$S_Load, na.rm = TRUE) / sqrt(sum(!is.na(sub_data_genes$S_Load))),
     n_genes = nrow(sub_data_genes),
     mean_exp = mean(sub_data_genes$Geom_Mean_CPM, na.rm = TRUE)
   )
@@ -3831,7 +3837,7 @@ cat("✓ MI summary saved: ./results/MI_analysis_summary.csv\n\n")
 ## 14) Diversity Hump Validation (EMPIRICAL Pi vs. Selection Intensity) ----
 ## _____________________________________________________________________________
 ## This section tests the hump pattern using OBSERVED Pi_mean_4fold values
-## binned by S_coeff from AnaCoDa. This is the primary empirical validation.
+## binned by S_Load from AnaCoDa. This is the primary empirical validation.
 
 # Kruskal-Wallis with Post-Hoc Dunn's Test (Mean + CI Visualization)
 
@@ -3839,13 +3845,13 @@ cat("✓ MI summary saved: ./results/MI_analysis_summary.csv\n\n")
 
 clean_data_4cat <- selection_coeff_intensity |>
   dplyr::filter(
-    !is.na(S_coeff), !is.na(Geom_Mean_CPM), !is.na(Pi_mean_4fold),
-    is.finite(S_coeff), is.finite(Geom_Mean_CPM), is.finite(Pi_mean_4fold),
+    !is.na(S_Load), !is.na(Geom_Mean_CPM), !is.na(Pi_mean_4fold),
+    is.finite(S_Load), is.finite(Geom_Mean_CPM), is.finite(Pi_mean_4fold),
     Pi_mean_4fold < 0.05
   ) |>
   dplyr::mutate(
     # Use safe internal codes (A-D) to prevent regex errors in cldList
-    S_Bin_Code = cut(S_coeff, 
+    S_Bin_Code = cut(S_Load, 
                      breaks = c(-Inf, 0.5, 1, 2, Inf), 
                      labels = c("A", "B", "C", "D"), 
                      include.lowest = TRUE),
