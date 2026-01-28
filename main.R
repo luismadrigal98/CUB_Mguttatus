@@ -410,28 +410,25 @@ selection_table <- do.call(rbind, lapply(names(model_list), function(n) {
 # Selected model: m_interaction
 
 # We hold CDS Length constant at the mean to isolate the interaction
+# Visual of the predictions of the model
 p_effects <- plot_predictions(m_interaction, 
                               condition = c("Max_Log10_Exp", "Exp_breadth"), 
                               newdata = datagrid(
                                 CDS_length_nt = mean(clean_data$CDS_length_nt)),
                               type = "response") + 
+  geom_rug(data = integrated_data, aes(x = Max_Log10_Exp), 
+           sides = "b", alpha = 0.05, inherit.aes = FALSE) +
   # THEME & LABELS
   theme_custom() + 
   scale_fill_viridis_d() + 
   scale_color_viridis_d() +
-  labs(title = "Predicted Codon Usage Bias (CDC)",
-       subtitle = "Interaction between Expression Level and Tissue Breadth",
-       y = "Predicted CDC",
+  labs(y = "Predicted CDC",
        x = "Max Expression (Log10 CPM)")
 
-print(p_effects)
-ggsave("./results/GAM_Interaction_Predictions_CDC.pdf", plot = p_effects, width = 10, height = 6)
+ggsave("./results/GAM_Interaction_Predictions_CDC.pdf", 
+       plot = p_effects, width = 10, height = 6)
 
-
-# ==============================================================================
-# PART 2: VISUALIZING THE RATE OF CHANGE (The Slope)
-# Question: Does high expression drive bias accumulation faster in broad genes?
-# ==============================================================================
+# VISUALIZING THE RATE OF CHANGE (The Slope)
 
 p_slopes <- plot_slopes(m_interaction, 
                         variables = "Max_Log10_Exp",
@@ -441,24 +438,20 @@ p_slopes <- plot_slopes(m_interaction,
                         type = "response") +
   # RED LINE = Zero Slope (Where the relationship flattens/saturates)
   geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_rug(data = integrated_data, aes(x = Max_Log10_Exp), 
+           sides = "b", alpha = 0.05, inherit.aes = FALSE) +
   
   # THEME & LABELS
-  theme_bw() +
-  labs(title = "Rate of Change in Codon Bias",
-       subtitle = "How much does CDC increase for every 1-unit increase in Expression?",
-       y = "Slope (Change in CDC / Change in Exp)",
-       x = "Max Expression (Log10 TPM)")
+  theme_custom() +
+  labs(y = "Slope (Change in CDC / Change in Exp)",
+       x = "Max Expression (Log10 CPM)")
 
-print(p_slopes)
 ggsave("./results/GAM_Interaction_Slopes.pdf", p_slopes, width = 10, height = 6)
 
-
-# ==============================================================================
-# PART 3: FORMAL HYPOTHESIS TESTING
+# FORMAL HYPOTHESIS TESTING
 # Question: Is the rate of bias accumulation significantly different?
-# ==============================================================================
 
-# 1. Calculate average slopes for specific breadths (e.g., Narrow vs Broad)
+# Calculate average slopes for specific breadths (e.g., Narrow vs Broad)
 slopes <- avg_slopes(
   m_interaction,
   variables = "Max_Log10_Exp",
@@ -466,66 +459,59 @@ slopes <- avg_slopes(
   newdata = datagrid(Exp_breadth = c(1, 25, 29))
 )
 
-# 2. Pairwise Tests (Comparing the slopes)
+# Pairwise Tests (Comparing the slopes)
 # We test if the relationship between Exp and CDC is stronger in one group.
-cat("--- Test: Difference in Slopes (Broad vs Narrow) ---\n")
+message("Test: Difference in Slopes (Broad vs Narrow) ---\n")
 test_broad_vs_narrow <- hypotheses(slopes, hypothesis = "b3 - b1 = 0")
 print(test_broad_vs_narrow)
 
-cat("--- Test: Difference in Slopes (Medium vs Narrow) ---\n")
+message("Test: Difference in Slopes (Medium vs Narrow) ---\n")
 test_medium_vs_narrow <- hypotheses(slopes, hypothesis = "b2 - b1 = 0")
 print(test_medium_vs_narrow)
 
+# VARIANCE ANALYSIS (Evolutionary Constraint)
+# Question: Does breadth constrain the variation in codon bias?
 
-# ==============================================================================
-# PART 4: VARIANCE ANALYSIS (Evolutionary Constraint)
-# Question: Does breadth constrain the *variation* in codon bias?
-# (This disentangles precise selection from noisy mutation/drift)
-# ==============================================================================
-
-# 1. Extract Residuals (The "Noise" or deviation from the expected CDC)
+# Extract Residuals (The "Noise" or deviation from the expected CDC)
 # If residuals are high, other factors (mutation, drift) are overpowering expression.
-clean_data$bias_deviation <- abs(residuals(m_interaction, type = "response"))
+integrated_data$bias_deviation <- abs(residuals(m_interaction, type = "response"))
 
-# 2. Visualize the Constraint
-p_constraint <- ggplot(clean_data, aes(x = Exp_breadth, y = bias_deviation)) +
+# Visualize the Constraint
+p_constraint <- ggplot(integrated_data, aes(x = Exp_breadth, y = bias_deviation)) +
   geom_point(alpha = 0.1, color = "gray60") +
   
   # Fit a smooth trend line to the noise
   geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), 
               color = "firebrick", fill = "firebrick") +
   
-  theme_bw() +
-  labs(title = "Variance in Codon Bias vs. Breadth",
-       subtitle = "Decreasing deviation suggests tighter evolutionary constraints",
-       y = "Absolute Residuals (Deviation from Expected CDC)",
+  theme_custom() +
+  labs(y = "Absolute Residuals (Deviation from Expected CDC)",
        x = "Expression Breadth (Number of Tissues)")
 
-print(p_constraint)
-ggsave("./results/Evolutionary_Constraint_Plot.pdf", p_constraint, width = 8, height = 6)
+ggsave("./results/Evolutionary_Constraint_Plot.pdf", 
+       p_constraint, width = 8, height = 6)
 
-# 3. Statistical Test of Constraint
+# Statistical Test of Constraint
 # Gamma regression is ideal for modeling variance (always positive)
 m_noise <- gam(bias_deviation ~ s(Exp_breadth), 
                data = clean_data, 
                family = Gamma(link = "log"))
 
-cat("--- Significance of Variance Reduction ---\n")
 print(summary(m_noise))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+# Compare predictions at extreme expression levels, holding length constant
+contrasts <- avg_comparisons(
+  m_interaction,
+  variables = "Max_Log10_Exp",
+  newdata = datagrid(
+    Max_Log10_Exp = c(
+      quantile(integrated_data$Max_Log10_Exp, 0.05),  # Bottom 5%
+      quantile(integrated_data$Max_Log10_Exp, 0.95)   # Top 5%
+    ),
+    CDS_length_nt = mean(integrated_data$CDS_length_nt),
+    Exp_breadth = c(1, 29)
+  )
+)
 
 # Plotting detrended ENC against expression
 
@@ -627,21 +613,6 @@ ggsave("./results/Detrended_CDC_by_expression_group.pdf",
 
 # Median and CI version
 
-median_cl_boot <- function(x, conf = 0.95) {
-  x <- x[!is.na(x)]
-  n <- length(x)
-  # If sample is too small, just return quantiles
-  if (n < 10) {
-    q <- quantile(x, probs = c(0.5, (1-conf)/2, 1-(1-conf)/2))
-    return(data.frame(y = q[1], ymin = q[2], ymax = q[3]))
-  }
-  # Bootstrap the median
-  bmedian <- function(x, i) median(x[i])
-  boot.out <- boot(data = x, statistic = bmedian, R = 1000)
-  ci <- boot.ci(boot.out, type = "perc", conf = conf)$percent[4:5]
-  return(data.frame(y = median(x), ymin = ci[1], ymax = ci[2]))
-}
-
 plot_data <- integrated_data |>
   dplyr::mutate(Exp_Group = factor(Expression_Group, 
                                    levels = c("Bottom 5%", "Middle 90%", "Top 5%"))) |>
@@ -658,7 +629,7 @@ p_medians <- ggplot(plot_data, aes(x = Exp_Group, y = CDC_detrended)) +
   # A. Median and 95% CI (Bootstrap)
   # We use the custom function defined above
   stat_summary(fun.data = median_cl_boot, 
-               geom = "errorbar", width = 0.15, size = 0.8, color = "black") +
+               geom = "errorbar", width = 0.15, linewidth = 0.8, color = "black") +
   stat_summary(fun = median, geom = "point", size = 3.5, aes(color = Exp_Group)) +
   
   # B. Reference line
@@ -708,15 +679,11 @@ cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium
 ## 7) Calculate Codon Adaptation Index (CAI) ----
 ## _____________________________________________________________________________
 
-cat("\n=== Step 10: Codon Adaptation Index (CAI) ===\n")
-cat("CAI measures the degree of bias towards codons preferred in highly expressed genes\n")
-cat("CAI ranges from 0 to 1, where higher values indicate stronger adaptation\n")
-cat("Higher CAI = more similar to codon usage in highly expressed genes\n\n")
-
-# Define reference set: Top 5% expressed genes
+# Define reference set: Genes which are constitutively highly expressed
+# Example: Elongation factors
 reference_genes <- read.table(file = 'data/CAI_Reference_Set_Mguttatus.txt')[, 1]
 
-cat(sprintf("Using %d highly expressed genes as reference set with relevant functional annotations\n", 
+message(sprintf("Using %d highly expressed genes as reference set with relevant functional annotations\n", 
             length(reference_genes)))
 
 # Calculate CAI for all genes
@@ -756,10 +723,10 @@ ggplot(data = w_table |> dplyr::filter(amino_acid != "Met" & amino_acid != "Trp"
   ) +
   labs(y = "Relative Adaptiveness (w)", x = "Codon")
 
-ggsave("./results/optimal_codons_relative_adaptiveness.pdf", 
+ggsave("./results/codons_relative_adaptiveness.pdf", 
        width = 12, height = 10)
 
-# Merge CAI with expression and ENC data
+# Merge CAI with expression and integrated data
 integrated_data <- integrated_data |>
   left_join(cai_values, by = "Gene_name")
 
@@ -778,21 +745,14 @@ cai_by_group <- integrated_data |>
 print(cai_by_group)
 
 # Statistical tests for three groups
-cat("\n=== Kruskal-Wallis Test: CAI across All Three Groups ===\n")
-cat("H0: All three groups have the same median CAI\n")
+message("\n=== Kruskal-Wallis Test: CAI across All Three Groups ===\n")
+message("H0: All three groups have the same median CAI\n")
 kw_test <- kruskal.test(CAI ~ Expression_Group, data = integrated_data)
 print(kw_test)
 
 if (kw_test$p.value < 0.05) {
-  cat("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
-  cat("\n=== Dunn's Test: Pairwise Comparisons with FDR Correction ===\n")
-  
-  # Install and load dunn.test if not available
-  if (!require("dunn.test", quietly = TRUE)) {
-    cat("Installing dunn.test package...\n")
-    install.packages("dunn.test", repos = "https://cloud.r-project.org")
-    library(dunn.test)
-  }
+  message("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
+  message("\n=== Dunn's Test: Pairwise Comparisons with FDR Correction ===\n")
   
   # Perform Dunn's test with FDR correction
   dunn_result <- dunn.test::dunn.test(
@@ -807,17 +767,13 @@ if (kw_test$p.value < 0.05) {
     altp = TRUE
   )
   
-  cat("\nInterpretation of pairwise comparisons:\n")
-  cat("  - Adjusted p-values account for multiple testing (FDR)\n")
-  cat("  - p < 0.05 indicates significant difference between groups\n")
-  
 } else {
-  cat("\nNo significant difference among groups (p >= 0.05)\n")
-  cat("Post-hoc tests not necessary.\n")
+  message("\nNo significant difference among groups (p >= 0.05)\n")
+  message("Post-hoc tests not necessary.\n")
 }
 
 # Additional pairwise effect sizes
-cat("\n=== Effect Sizes (Cohen's d) for Pairwise Comparisons ===\n")
+message("\n=== Effect Sizes (Cohen's d) for Pairwise Comparisons ===\n")
 
 # Get CAI values for each group
 top_cai <- integrated_data |> dplyr::filter(Expression_Group == "Top 5%") |> pull(CAI)
@@ -835,20 +791,20 @@ if (length(bottom_cai) == 0) {
 # Calculate effect sizes
 if (length(top_cai) > 0 && length(middle_cai) > 0) {
   d_top_middle <- cohens_d_calc(top_cai, middle_cai)
-  cat(sprintf("Top 5%% vs Middle 90%%: d = %.3f\n", d_top_middle))
+  message(sprintf("Top 5%% vs Middle 90%%: d = %.3f\n", d_top_middle))
 }
 
 if (length(top_cai) > 0 && length(bottom_cai) > 0) {
   d_top_bottom <- cohens_d_calc(top_cai, bottom_cai)
-  cat(sprintf("Top 5%% vs Bottom 5%%: d = %.3f\n", d_top_bottom))
+  message(sprintf("Top 5%% vs Bottom 5%%: d = %.3f\n", d_top_bottom))
 }
 
 if (length(middle_cai) > 0 && length(bottom_cai) > 0) {
   d_middle_bottom <- cohens_d_calc(middle_cai, bottom_cai)
-  cat(sprintf("Middle 90%% vs Bottom 5%%: d = %.3f\n", d_middle_bottom))
+  message(sprintf("Middle 90%% vs Bottom 5%%: d = %.3f\n", d_middle_bottom))
 }
 
-cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
+message("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
 # Plot CAI by expression group
 p_cai_boxplot <- ggplot(integrated_data, aes(x = Expression_Group, y = CAI, fill = Expression_Group)) +
