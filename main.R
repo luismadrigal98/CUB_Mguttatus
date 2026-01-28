@@ -321,8 +321,11 @@ predictors <-  c('Max_Log10_Exp', 'Exp_breadth', 'CDS_length_nt')
 # Generate Table ----
 # Using bind_rows directly on the list
 justification_list <- lapply(predictors, analyze_nonlinearity, 
-                             data = integrated_data)
+                             data = integrated_data,
+                             resp = "CDC")
 justification_table <- dplyr::bind_rows(justification_list)
+justification_table$
+
 
 write.csv(justification_table, "results/Linearity_Justification_Table.csv", 
           row.names = FALSE)
@@ -331,28 +334,23 @@ write.csv(justification_table, "results/Linearity_Justification_Table.csv",
 plot_list <- list()
 
 for (pred in predictors) {
-  # Re-fit for plotting only if the previous step didn't error on this predictor
-  if (pred %in% justification_table$Predictor[justification_table$Recommendation != "ERROR in Fit"]) {
     
-    form_gam <- as.formula(paste0("CDC ~ s(", pred, ")"))
-    model_gam <- gam(form_gam, data = integrated_data, 
-                     family = betar(link = "logit"))
-    
-    # Get rejection status for title
-    is_rej <- justification_table$Linearity_Rejected[justification_table$Predictor == pred]
-    
-    p <- gratia::draw(model_gam, residuals = TRUE) +
-      geom_hline(yintercept = 0, linetype = "dashed", color = "red", 
-                 alpha = 0.5) +
-      labs(title = paste0("Partial Effect on CDC (logit scale): ", pred),
-           subtitle = paste0("Linearity Rejected: ", is_rej)) +
-      theme_custom()
-    
-    plot_list[[pred]] <- p
-  }
+  form_gam <- as.formula(paste0("CDC ~ s(", pred, ")"))
+  model_gam <- gam(form_gam, data = integrated_data, 
+                   family = betar(link = "logit"),
+                   method = "REML",
+                   select = T)
+  
+  p <- gratia::draw(model_gam, residuals = FALSE) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red", 
+               alpha = 0.5) +
+    labs(title = paste0("Partial Effect on CDC (logit scale): ", pred)) +
+    theme_custom()
+  
+  plot_list[[pred]] <- p
 }
 
-combined_plot <- wrap_plots(plot_list, ncol = 3)
+combined_plot <- wrap_plots(plot_list, ncol = 3, scales = "free")
 ggsave("results/GAM_Partial_Effects_Gratia.pdf", combined_plot, width = 12, 
        height = 4)
 
@@ -409,6 +407,126 @@ selection_table <- do.call(rbind, lapply(names(model_list), function(n) {
              R_sq = summary(m)$r.sq)
 }))
 
+# Selected model: m_interaction
+
+# We hold CDS Length constant at the mean to isolate the interaction
+p_effects <- plot_predictions(m_interaction, 
+                              condition = c("Max_Log10_Exp", "Exp_breadth"), 
+                              newdata = datagrid(
+                                CDS_length_nt = mean(clean_data$CDS_length_nt)),
+                              type = "response") + 
+  # THEME & LABELS
+  theme_custom() + 
+  scale_fill_viridis_d() + 
+  scale_color_viridis_d() +
+  labs(title = "Predicted Codon Usage Bias (CDC)",
+       subtitle = "Interaction between Expression Level and Tissue Breadth",
+       y = "Predicted CDC",
+       x = "Max Expression (Log10 CPM)")
+
+print(p_effects)
+ggsave("./results/GAM_Interaction_Predictions_CDC.pdf", plot = p_effects, width = 10, height = 6)
+
+
+# ==============================================================================
+# PART 2: VISUALIZING THE RATE OF CHANGE (The Slope)
+# Question: Does high expression drive bias accumulation faster in broad genes?
+# ==============================================================================
+
+p_slopes <- plot_slopes(m_interaction, 
+                        variables = "Max_Log10_Exp",
+                        condition = c("Max_Log10_Exp", "Exp_breadth"), 
+                        newdata = datagrid(
+                          CDS_length_nt = mean(clean_data$CDS_length_nt)),
+                        type = "response") +
+  # RED LINE = Zero Slope (Where the relationship flattens/saturates)
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  
+  # THEME & LABELS
+  theme_bw() +
+  labs(title = "Rate of Change in Codon Bias",
+       subtitle = "How much does CDC increase for every 1-unit increase in Expression?",
+       y = "Slope (Change in CDC / Change in Exp)",
+       x = "Max Expression (Log10 TPM)")
+
+print(p_slopes)
+ggsave("./results/GAM_Interaction_Slopes.pdf", p_slopes, width = 10, height = 6)
+
+
+# ==============================================================================
+# PART 3: FORMAL HYPOTHESIS TESTING
+# Question: Is the rate of bias accumulation significantly different?
+# ==============================================================================
+
+# 1. Calculate average slopes for specific breadths (e.g., Narrow vs Broad)
+slopes <- avg_slopes(
+  m_interaction,
+  variables = "Max_Log10_Exp",
+  by = "Exp_breadth", 
+  newdata = datagrid(Exp_breadth = c(1, 25, 29))
+)
+
+# 2. Pairwise Tests (Comparing the slopes)
+# We test if the relationship between Exp and CDC is stronger in one group.
+cat("--- Test: Difference in Slopes (Broad vs Narrow) ---\n")
+test_broad_vs_narrow <- hypotheses(slopes, hypothesis = "b3 - b1 = 0")
+print(test_broad_vs_narrow)
+
+cat("--- Test: Difference in Slopes (Medium vs Narrow) ---\n")
+test_medium_vs_narrow <- hypotheses(slopes, hypothesis = "b2 - b1 = 0")
+print(test_medium_vs_narrow)
+
+
+# ==============================================================================
+# PART 4: VARIANCE ANALYSIS (Evolutionary Constraint)
+# Question: Does breadth constrain the *variation* in codon bias?
+# (This disentangles precise selection from noisy mutation/drift)
+# ==============================================================================
+
+# 1. Extract Residuals (The "Noise" or deviation from the expected CDC)
+# If residuals are high, other factors (mutation, drift) are overpowering expression.
+clean_data$bias_deviation <- abs(residuals(m_interaction, type = "response"))
+
+# 2. Visualize the Constraint
+p_constraint <- ggplot(clean_data, aes(x = Exp_breadth, y = bias_deviation)) +
+  geom_point(alpha = 0.1, color = "gray60") +
+  
+  # Fit a smooth trend line to the noise
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), 
+              color = "firebrick", fill = "firebrick") +
+  
+  theme_bw() +
+  labs(title = "Variance in Codon Bias vs. Breadth",
+       subtitle = "Decreasing deviation suggests tighter evolutionary constraints",
+       y = "Absolute Residuals (Deviation from Expected CDC)",
+       x = "Expression Breadth (Number of Tissues)")
+
+print(p_constraint)
+ggsave("./results/Evolutionary_Constraint_Plot.pdf", p_constraint, width = 8, height = 6)
+
+# 3. Statistical Test of Constraint
+# Gamma regression is ideal for modeling variance (always positive)
+m_noise <- gam(bias_deviation ~ s(Exp_breadth), 
+               data = clean_data, 
+               family = Gamma(link = "log"))
+
+cat("--- Significance of Variance Reduction ---\n")
+print(summary(m_noise))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Plotting detrended ENC against expression
 
 confounder_model_gam <- gam(CDC ~ s(CDS_length_nt),
@@ -439,21 +557,6 @@ p_detrended <- ggplot(integrated_data, aes(x = Max_Log10_Exp, y = CDC_detrended)
 
 ggsave("./results/CDC_detrended_vs_expression_curved.pdf", p_detrended, 
        width = 8, height = 6)
-
-# Analysis of deviance
-
-# Null model: Lenght only
-null_model <- gam(CDC ~ s(CDS_length_nt), 
-                  data = integrated_data, 
-                  family = quasibinomial(link = "logit"))
-
-# Full model: Lenght and Expression
-full_model <- gam(CDC ~ s(CDS_length_nt) + s(Max_Log10_Exp), 
-                  data = integrated_data, 
-                  family = quasibinomial(link = "logit"))
-
-# Comparation
-anova(null_model, full_model, test = "F")
 
 # Define expression groups: Top 5% vs Bottom 5% (extreme comparison) ----
 

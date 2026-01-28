@@ -1,9 +1,22 @@
-analyze_nonlinearity <- function(pred, data) {
+#' Analyze Non-Linearity of Predictor in Beta Regression
+#' 
+#' This function evaluates whether a given predictor variable exhibits non-linear behavior
+#' with respect to a response variable bounded between 0 and 1. It fits both a linear
+#' Beta regression model (GLM) and a smooth Beta regression model (GAM), then compares their
+#' AIC values to determine which model is more appropriate.
+#' 
+#' @param resp Character string representing the name of the response variable 
+#' (bounded between 0 and 1, non inclusive).
+#' @param pred Character string representing the name of the predictor variable to analyze.
+#' @param data Data frame containing the response and predictor variables.
+#' @return A tibble summarizing the AIC values of both models, the delta AIC, and a recommendation
+
+analyze_nonlinearity <- function(resp, pred, data) {
   
   tryCatch({
     # Formulas
-    form_glm <- as.formula(paste0("CDC_beta ~ ", pred))
-    form_gam <- as.formula(paste0("CDC_beta ~ s(", pred, ")"))
+    form_glm <- as.formula(paste0(resp, " ~ ", pred))
+    form_gam <- as.formula(paste0(resp, " ~ s(", pred, ")"))
     
     # A. Fit Models
     # GLM (Linear Beta) - Note: link.phi=NULL uses constant precision
