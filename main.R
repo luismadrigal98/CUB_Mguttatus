@@ -856,31 +856,9 @@ p_cai_median <- ggplot(plot_data_cai, aes(x = Exp_Group, y = CAI)) +
 ggsave("./results/CAI_by_expression_group_Median_CI.pdf", p_cai_median, 
        width = 4, height = 3.5)
 
-# Correlation between CAI and other metrics
-# Scatter plot: CAI vs ENC
-p_cdc_enc <- ggplot(integrated_data, aes(x = CDC_detrended, y = CAI, color = Expression_Group)) +
-  geom_point(alpha = 0.3, size = 0.5) +
-  # Add lm per group
-  geom_smooth(method = "lm") +
-  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
-                                 "Bottom 5%" = "#377EB8",
-                                 "Middle 90%" = "#999999")) +
-  labs(title = "CAI vs CDC detrended by Expression Level",
-       subtitle = "Higher CDC_detrended and Higher CAI indicate stronger codon bias",
-       x = "CDC_detrended",
-       y = "CAI (Codon Adaptation Index)",
-       color = "Expression Group") +
-  theme_custom()
-
-ggsave("./results/CAI_vs_CDC_scatter.pdf", p_cdc_enc, width = 10, height = 6)
-
 # 7.2) Compare absolute codon frequencies: Top 5% vs Rest ----
-# This shows that raw frequencies differ, but not all differences are due to selection
-# Some codons are frequent simply because their amino acids are frequent
-# This motivates the need for enrichment analysis to correct for amino acid composition
-
-cat("\n=== 7.1: Absolute Codon Frequencies in Top 5% vs Rest ===\n")
-cat("Comparing raw codon usage to motivate enrichment-based correction\n\n")
+# This shows that raw frequencies differ, but not all differences are due to 
+# selection some codons are frequent simply because their amino acids are frequent
 
 # Get gene lists
 top5_genes <- integrated_data |>
@@ -951,7 +929,7 @@ p_freq_comparison <- ggplot(freq_long,
     legend.position = "top"
   ) +
   labs(
-    y = "Absolute Frequency",
+    y = "Frequency",
     x = "Codon",
     title = "Raw Codon Frequencies: Top 5% vs Rest",
     subtitle = "Not all differences reflect selection - some codons are frequent due to amino acid composition"
@@ -966,25 +944,12 @@ cat(sprintf("\nTop 5%% genes: %d genes, %d total codons\n",
 cat(sprintf("Rest genes: %d genes, %d total codons\n", 
             length(rest_genes), freq_comparison$Total_Rest[1]))
 
-# Show codons with largest absolute differences
-cat("\nCodons with largest frequency differences (Top 5% - Rest):\n")
-top_diff <- freq_comparison |>
-  arrange(desc(abs(Freq_Diff))) |>
-  dplyr::select(Codon, AA, Freq_Top5, Freq_Rest, Freq_Diff) |>
-  head(10)
-print(top_diff)
-
-cat("\nNote: These raw differences don't account for amino acid composition.\n")
-cat("Enrichment analysis (via w-table) corrects for this by normalizing within amino acids.\n\n")
-
 # 7.2.1) Enriched codons usage ----
 
 # Get enriched codons (w = 1.0 from CAI)
 enriched_codons_vec <- w_table |>
   dplyr::filter(relative_adaptiveness == 1.0) |>
   dplyr::pull(codon)
-
-cat(sprintf("Using %d preferred codons (w = 1.0)\n\n", length(enriched_codons_vec)))
 
 # Merge codon usage with expression groups
 codon_usage_with_groups <- codon_usage |>
@@ -995,16 +960,16 @@ codon_usage_with_groups <- codon_usage |>
 top5_genes <- codon_usage_with_groups |> dplyr::filter(Expression_Group == "Top 5%")
 rest_genes <- codon_usage_with_groups |> dplyr::filter(Expression_Group != "Top 5%")
 
-cat(sprintf("Top 5%% genes (selected): %d genes\n", nrow(top5_genes)))
-cat(sprintf("Bottom 95%% genes (neutral/rest): %d genes\n\n", nrow(rest_genes)))
 
 # Calculate for both groups
-cat("Calculating preferred codon usage per amino acid...\n")
+cat("Calculating enrichment of codon per amino acid...\n")
 
-enriched_aa <- count_preferred_by_aa(top5_genes, enriched_codons_vec, genetic_code_dna_long)
+enriched_aa <- count_preferred_by_aa(top5_genes, enriched_codons_vec, 
+                                     genetic_code_dna_long)
 enriched_aa$Group <- "Selected (Top 5%)"
 
-rest_aa <- count_preferred_by_aa(rest_genes, enriched_codons_vec, genetic_code_dna_long)
+rest_aa <- count_preferred_by_aa(rest_genes, enriched_codons_vec, 
+                                 genetic_code_dna_long)
 rest_aa$Group <- "Rest (Bottom 95%)"
 
 # Combine for comparison
@@ -1028,46 +993,10 @@ comparison_table <- enriched_aa |>
 write.csv(comparison_table, "./results/enriched_codon_usage.csv",
           row.names = FALSE)
 
-cat("\n✓ Results saved: ./results/enriched_codon_usage.csv\n\n")
-
-# Print table
-cat("=== Enriched Codon Usage: Selected vs Rest ===\n\n")
-cat(sprintf("%-4s %-4s %-15s %-12s %-12s %-12s %-8s\n",
-            "AA", "Deg", "Preferred", "Top5%", "Rest95%", "Difference", "Fold"))
-cat(paste(rep("-", 80), collapse = ""), "\n")
-
-for (i in 1:nrow(comparison_table)) {
-  row <- comparison_table[i, ]
-  cat(sprintf("%-4s %-4d %-15s %-12.4f %-12.4f %-12.4f %-8.2f\n",
-              row$Amino_Acid,
-              row$N_synonymous,
-              substr(row$Preferred_codons, 1, 15),
-              row$Selected_prop,
-              row$Rest_prop,
-              row$Difference,
-              row$Fold_enrichment))
-}
-cat(paste(rep("-", 80), collapse = ""), "\n\n")
-
-# Statistical summary
-cat("=== Summary Statistics ===\n\n")
-cat(sprintf("Mean proportion enriched (Top 5%%): %.4f\n", 
-            mean(comparison_table$Selected_prop, na.rm = TRUE)))
-cat(sprintf("Mean proportion enriched (Rest 95%%): %.4f\n", 
-            mean(comparison_table$Rest_prop, na.rm = TRUE)))
-cat(sprintf("Mean difference: %.4f\n", 
-            mean(comparison_table$Difference, na.rm = TRUE)))
-cat(sprintf("Mean fold enrichment: %.2f\n\n", 
-            mean(comparison_table$Fold_enrichment, na.rm = TRUE)))
-
 # Wilcoxon test
 wilcox_test <- wilcox.test(comparison_table$Selected_prop, 
                            comparison_table$Rest_prop,
                            paired = TRUE)
-
-cat(sprintf("Wilcoxon signed-rank test (paired by amino acid):\n"))
-cat(sprintf("  V = %.1f, p-value = %.2e\n", 
-            wilcox_test$statistic, wilcox_test$p.value))
 
 # Create visualization
 p_comparison <- ggplot(comparison_table, 
@@ -1081,10 +1010,8 @@ p_comparison <- ggplot(comparison_table,
   scale_color_manual(values = c("Top 5%" = "#E41A1C", 
                                 "Rest 95%" = "#377EB8"),
                      name = "") +
-  labs(title = "Preferred Codon Usage: Top 5% vs Rest (Original w=1)",
-       subtitle = "Proportion of preferred codons per amino acid (before enrichment correction)",
-       x = "Amino Acid (ordered by difference)",
-       y = "Proportion of Preferred Codons") +
+  labs(x = "Amino Acid (ordered by difference)",
+       y = "Proportion of Enriched Codons") +
   theme_custom() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
         legend.position = "bottom",
@@ -1092,218 +1019,6 @@ p_comparison <- ggplot(comparison_table,
 
 ggsave("./results/preferred_codon_usage_comparison.pdf", p_comparison,
        width = 10, height = 6)
-
-cat("\n")
-
-# 7.2.2) Statistical testing for codon-level differences ----
-
-cat("=== Statistical Testing: Per-Codon Proportion Differences ===\n\n")
-
-# Source the testing function
-source("./src/test_codon_proportions.R")
-
-# Test each codon individually
-codon_test_results <- test_codon_proportions(
-  selected_usage = top5_genes,
-  neutral_usage = rest_genes,
-  genetic_code = genetic_code_dna_long,
-  method = "chisq",
-  fdr_correction = TRUE
-)
-
-# Save results
-write.csv(codon_test_results, 
-          "./results/codon_proportion_test_results.csv",
-          row.names = FALSE)
-
-cat("\n✓ Results saved: ./results/codon_proportion_test_results.csv\n")
-
-# Create summary plots
-p_selection_summary <- plot_codon_selection_summary(
-  codon_test_results,
-  output_file = "./results/codon_selection_summary.pdf"
-)
-
-p_classification_heatmap <- plot_codon_classification_heatmap(
-  codon_test_results,
-  w_table,
-  output_file = "./results/codon_classification_heatmap.pdf"
-)
-
-# Print key findings
-cat("\n=== Key Findings ===\n\n")
-
-sig_codons <- codon_test_results |> dplyr::filter(Significant)
-sig_preferred <- sig_codons |> 
-  dplyr::left_join(w_table |> dplyr::select(codon, relative_adaptiveness),
-                   by = c("Codon" = "codon")) |>
-  dplyr::filter(relative_adaptiveness == 1.0)
-
-cat(sprintf("Codons with significant proportion differences (FDR < 0.05): %d / %d (%.1f%%)\n",
-            nrow(sig_codons), 
-            nrow(codon_test_results),
-            100 * nrow(sig_codons) / nrow(codon_test_results)))
-
-cat(sprintf("  - Enriched in Top 5%% (under selection): %d\n", 
-            sum(sig_codons$Difference > 0)))
-cat(sprintf("  - Depleted in Top 5%% (avoided): %d\n", 
-            sum(sig_codons$Difference < 0)))
-
-cat(sprintf("\nPreferred codons (w=1) that are significantly enriched: %d / %d (%.1f%%)\n",
-            nrow(sig_preferred),
-            length(enriched_codons_vec),
-            100 * nrow(sig_preferred) / length(enriched_codons_vec)))
-
-if (nrow(sig_preferred) > 0) {
-  cat("\nThese 'under selection' preferred codons are:\n")
-  sig_pref_sorted <- sig_preferred |> 
-    dplyr::arrange(dplyr::desc(Difference)) |>
-    dplyr::select(Codon, Amino_Acid, Selected_Prop, Neutral_Prop, 
-                  Difference, p_adj)
-  print(sig_pref_sorted)
-}
-
-cat("\n")
-
-# 7.2.3) Diagnose CAI vs Proportion Discrepancies ----
-
-cat("=== Diagnosing CAI w-values vs Proportion Differences ===\n\n")
-
-# Source diagnostic function
-source("./src/diagnose_cai_vs_proportion.R")
-
-# Run diagnostic
-diagnostic_results <- diagnose_cai_vs_proportion(
-  w_table = w_table,
-  test_results = codon_test_results,
-  codon_usage = codon_usage,
-  expression_groups = integrated_data,
-  genetic_code = genetic_code_dna_long
-)
-
-# Create corrected classification
-corrected_classification <- create_corrected_classification(
-  w_table = w_table,
-  test_results = codon_test_results
-)
-
-# Save corrected classification
-write.csv(corrected_classification,
-          "./results/codon_classification_corrected.csv",
-          row.names = FALSE)
-
-cat("\n✓ Corrected classification saved: ./results/codon_classification_corrected.csv\n")
-
-# Update the codon_test_results with corrected classification for biplots
-codon_test_results <- codon_test_results |>
-  left_join(corrected_classification |> 
-              dplyr::select(Codon, Combined_Classification),
-            by = "Codon") |>
-  dplyr::mutate(
-    # Update Classification to be more accurate
-    Classification_Original = Classification,
-    Classification = Combined_Classification
-  )
-
-# 7.2.4) Enriched codons (corrected) ----
-cat("\n=== 7.2.4: Defining Corrected Preferred Codons ===\n")
-cat("Strategy: Preferentially choose w=1 codons, but use enrichment data when conflicts arise\n\n")
-
-# Merge w-table with statistical test results
-codon_combined <- w_table |>
-  dplyr::left_join(
-    codon_test_results |> 
-      dplyr::select(Codon, Amino_Acid, Selected_Prop, Neutral_Prop, Difference, 
-                    p_value, p_adj, Significant),
-    by = c("codon" = "Codon")
-  ) |>
-  dplyr::rename(Codon = codon, AA = amino_acid)
-
-# Decision rule for each amino acid:
-# 1. If w=1 codon is significantly enriched (p_adj < 0.05 & Difference > 0): PREFERRED
-# 2. If w=1 codon is NOT significantly enriched BUT another codon IS: Use the enriched one
-# 3. If no codon is significantly enriched: Use w=1 as default (CAI definition)
-# 4. If multiple codons enriched: Use the one with largest effect size
-
-enriched_codons_corrected <- codon_combined |>
-  dplyr::group_by(AA) |>
-  dplyr::mutate(
-    # Flag w=1 codons
-    is_w1 = (relative_adaptiveness == 1.0),
-    # Flag significantly enriched codons
-    is_enriched = (Significant & Difference > 0),
-    # Flag w=1 AND enriched (ideal case)
-    is_w1_and_enriched = is_w1 & is_enriched
-  ) |>
-  dplyr::arrange(AA, desc(is_w1_and_enriched), desc(is_enriched), 
-                 desc(relative_adaptiveness), desc(abs(Difference))) |>
-  dplyr::slice(1) |>  # Take first (best) codon per amino acid
-  dplyr::ungroup() |>
-  dplyr::mutate(
-    Selection_Rationale = dplyr::case_when(
-      is_w1_and_enriched ~ "w=1 AND enriched (strong evidence)",
-      is_w1 & !is_enriched & !any(is_enriched) ~ "w=1, no enrichment signal (CAI default)",
-      is_w1 & !is_enriched & any(is_enriched) ~ "w=1 but NOT enriched (kept due to no better option)",
-      !is_w1 & is_enriched ~ "NOT w=1 but significantly enriched (corrected)",
-      TRUE ~ "Default (CAI w=1)"
-    )
-  )
-
-# Summary of decisions
-cat("Decision Summary:\n")
-decision_summary <- enriched_codons_corrected |>
-  dplyr::group_by(Selection_Rationale) |>
-  dplyr::summarise(
-    n_codons = n(),
-    codons = paste(Codon, collapse = ", ")
-  )
-print(decision_summary)
-cat("\n")
-
-# Highlight cases where enrichment overrode w=1
-conflicts <- codon_combined |>
-  dplyr::group_by(AA) |>
-  dplyr::filter(any(relative_adaptiveness == 1.0) & 
-                any(Significant & Difference > 0)) |>
-  dplyr::arrange(AA, desc(relative_adaptiveness)) |>
-  dplyr::ungroup()
-
-if (nrow(conflicts) > 0) {
-  cat("=== Cases where w=1 and enrichment disagree ===\n")
-  
-  # For each AA with conflict, show w=1 vs enriched
-  conflict_summary <- conflicts |>
-    dplyr::group_by(AA) |>
-    dplyr::summarise(
-      w1_codon = Codon[relative_adaptiveness == 1.0][1],
-      w1_enriched = Significant[relative_adaptiveness == 1.0][1] & 
-                    Difference[relative_adaptiveness == 1.0][1] > 0,
-      enriched_codons = paste(Codon[Significant & Difference > 0], collapse = ", "),
-      n_enriched = sum(Significant & Difference > 0, na.rm = TRUE),
-      final_choice = enriched_codons_corrected$Codon[enriched_codons_corrected$AA == AA[1]][1]
-    )
-  
-  print(conflict_summary)
-  cat("\n")
-}
-
-# Save corrected preferred codons
-write.csv(enriched_codons_corrected, 
-          "./results/enriched_codons_corrected.csv",
-          row.names = FALSE)
-
-cat("✓ Corrected preferred codons saved: ./results/enriched_codons_corrected.csv\n\n")
-
-# Show final preferred codon set
-cat("=== Final Enriched Codons (Corrected) ===\n")
-final_table <- enriched_codons_corrected |>
-  dplyr::select(AA, Codon, w = relative_adaptiveness, 
-                Enriched = is_enriched, Diff = Difference, Selection_Rationale)
-print(final_table, n = Inf)
-cat("\n")
-
-# Use corrected set for downstream analysis
-enriched_codons_mg <- enriched_codons_corrected
 
 ## *****************************************************************************
 ## 8) AnaCoDa-based analysis ----
