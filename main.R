@@ -324,8 +324,6 @@ justification_list <- lapply(predictors, analyze_nonlinearity,
                              data = integrated_data,
                              resp = "CDC")
 justification_table <- dplyr::bind_rows(justification_list)
-justification_table$
-
 
 write.csv(justification_table, "results/Linearity_Justification_Table.csv", 
           row.names = FALSE)
@@ -356,7 +354,7 @@ ggsave("results/GAM_Partial_Effects_Gratia.pdf", combined_plot, width = 12,
 
 # GAM final models ----
 
-# Given the non-lineariry effect of the predictors, we are going to model them
+# Given the non-linearity effect of the predictors, we are going to model them
 # using GAM models
 
 # Competing models
@@ -1368,32 +1366,11 @@ parameters_objects <- list(run1 = listRDA(paste(run_dirs[1], "R_objects/paramete
 # 1. Select one of the high deviants codons
 codon_index <- 36  
 
-# 2. Extract Data function
-# This pulls the specific codon trace from all 3 runs into one data frame
-extract_traces <- function(objects, codon_idx) {
-  df_list <- list()
-  
-  for (run_name in names(objects)) {
-    # Access logic: Run -> selectionTrace -> Mixture 1 -> Codon Index
-    trace_data <- objects[[run_name]]$selectionTrace[[1]][[codon_idx]]
-    
-    # Create temporary DF
-    temp_df <- data.frame(
-      Iteration = 1:length(trace_data),
-      Value = trace_data,
-      Run = run_name
-    )
-    df_list[[run_name]] <- temp_df
-  }
-  
-  return(do.call(rbind, df_list))
-}
-
-# 3. Create the Master Data Frame
+# 2. Create the Master Data Frame
 plot_data <- extract_traces(parameters_objects, codon_index)
 plot_data <- subset(plot_data, Iteration > max(plot_data$Iteration) * 0.5)
 
-# 4. PLOT 1: The Trace Overlay (The "Are we mixing?" Plot)
+# 3. PLOT 1: The Trace Overlay (The "Are we mixing?" Plot)
 p1 <- ggplot(plot_data, aes(x = Iteration, y = Value, color = Run)) +
   geom_line(alpha = 0.7, linewidth = 0.3) +
   theme_custom() +
@@ -1403,7 +1380,7 @@ p1 <- ggplot(plot_data, aes(x = Iteration, y = Value, color = Run)) +
        x = "MCMC Sample") +
   theme(legend.position = "top")
 
-# 5. PLOT 2: Density Overlay (The "Distinct Realities" Plot)
+# 4. PLOT 2: Density Overlay (The "Distinct Realities" Plot)
 p2 <- ggplot(plot_data, aes(x = Value, fill = Run)) +
   geom_density(alpha = 0.5) +
   theme_custom() +
@@ -1413,7 +1390,7 @@ p2 <- ggplot(plot_data, aes(x = Value, fill = Run)) +
        y = "Density") +
   theme(legend.position = "top")
 
-# 6. PLOT 3: Autocorrelation (The "Stickiness" Check)
+# 5. PLOT 3: Autocorrelation (The "Stickiness" Check)
 # We calculate ACF for just Run 1 to prove it's not "sticky"
 acf_val <- acf(subset(plot_data, Run == "run1")$Value, plot = FALSE, lag.max = 40)
 acf_df <- data.frame(Lag = acf_val$lag, ACF = acf_val$acf)
@@ -2055,9 +2032,6 @@ ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison,
 ## *****************************************************************************
 ## 10) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
-## Simplified version: One biplot per analysis showing preferred vs non-preferred codons
-
-source("./src/enhanced_biplot.R")
 
 # 10.1) CA Analysis ---- 
 
@@ -2226,27 +2200,27 @@ for (i in seq_len(nrow(pca_wilcox_results))) {
               pca_wilcox_results$Significance[i]))
 }
 
-# 10.3) Selection Load (S_load) Based Analysis ----
+# 10.3) Selection (S_ROC) Based Analysis ----
 
 # Test whether genes under strong vs weak selection show distinct codon patterns
 
-if (exists("selection_coeff_intensity") && "S_load" %in% names(selection_coeff_intensity)) {
+if (exists("selection_metrics") && "S_ROC" %in% names(selection_metrics)) {
   
   cat("\n--- CA/PCA Analysis by Selection Load ---\n")
   
   # Create S_load-based groups
-  s_quantiles <- quantile(selection_coeff_intensity$S_load, 
+  s_quantiles <- quantile(selection_metrics$S_ROC, 
                           probs = c(0.05, 0.95), na.rm = TRUE)
   
-  selection_groups <- selection_coeff_intensity |>
+  selection_groups <- selection_metrics |>
     dplyr::mutate(
       S_Group = dplyr::case_when(
-        S_load >= s_quantiles[2] ~ "High Selection (Top 5%)",
-        S_load <= s_quantiles[1] ~ "Low Selection (Bottom 5%)",
+        S_ROC >= s_quantiles[2] ~ "High Selection (Top 5%)",
+        S_ROC <= s_quantiles[1] ~ "Low Selection (Bottom 5%)",
         TRUE ~ "Intermediate"
       )
     ) |>
-    dplyr::select(Gene_name, S_load, S_Group)
+    dplyr::select(Gene_name, S_ROC, S_Group)
   
   cat("\nSelection Load Group Distribution:\n")
   print(table(selection_groups$S_Group))
@@ -2371,95 +2345,6 @@ if (exists("selection_coeff_intensity") && "S_load" %in% names(selection_coeff_i
 cat("\n✓ CA/PCA ordination analysis complete\n")
 cat("  Key outputs: CA_preference_biplot.pdf, PCA_preference_biplot.pdf\n\n")
 
-# 10.5) 3D visuals for PCA results ----
-
-cat("\n=== 10.5: Creating 3D PCA Visualizations ===\n")
-
-source("./src/create_3d_pca_video.R")
-
-# 10.3.1) Generate dynamics 3D videos for presentation ----
-
-cat("\n10.3.1: Creating interactive 3D PCA plot...\n")
-
-# Ensure preferred_codons_roc has the required columns for 3D functions
-preferred_codons_roc <- preferred_codons_roc |>
-  dplyr::mutate(
-    Codon = Preferred_Codons,
-    relative_adaptiveness = 1
-  )
-
-# Create interactive 3D plot (HTML)
-pca_3d_interactive <- create_3d_pca_plot(
-  pca_result = rscu_PCA,
-  gene_data = gene_data_pca,
-  codon_test_results = codon_test_results,
-  preferred_codons = preferred_codons_roc,
-  dims = c(1, 2, 3),
-  color_by = "expression",
-  show_loadings = TRUE,
-  loading_scale = 5.0,
-  title = "3D PCA: RSCU Analysis with Codon Loadings (ROC)"
-)
-
-# Save interactive plot
-htmlwidgets::saveWidget(
-  widget = pca_3d_interactive,
-  file = "./results/PCA_3D_interactive.html",
-  selfcontained = TRUE
-)
-
-cat("✓ Interactive 3D plot saved: ./results/PCA_3D_interactive.html\n")
-cat("  Open in browser to explore (rotate, zoom, hover for details)\n\n")
-
-# Create rotating animation (HTML with auto-rotation)
-cat("10.3.2: Creating rotating 3D animation...\n")
-
-pca_3d_animation <- create_3d_pca_animation(
-  pca_result = rscu_PCA,
-  gene_data = gene_data_pca,
-  codon_test_results = codon_test_results,
-  preferred_codons = preferred_codons_roc,
-  dims = c(1, 2, 3),
-  color_by = "expression",
-  show_loadings = TRUE,
-  loading_scale = 5.0,
-  title = "3D PCA Animation - RSCU Analysis (ROC)",
-  output_file = "./results/PCA_3D_animation.html",
-  n_frames = 360,
-  frame_duration = 50
-)
-
-# Create simple GIF animation (uses ggplot2, no heavy dependencies)
-cat("8.3.3: Creating simple GIF video...\n")
-if (requireNamespace("magick", quietly = TRUE)) {
-  
-  source("./src/create_simple_3d_gif.R")
-  
-  create_simple_3d_gif(
-    pca_result = rscu_PCA,
-    gene_data = gene_data_pca,
-    codon_test_results = codon_test_results,
-    preferred_codons = preferred_codons_roc,
-    dims = c(1, 2, 3),
-    color_by = "expression",
-    show_loadings = TRUE,
-    loading_scale = 5.0,
-    title = "3D PCA - RSCU Analysis",
-    output_file = "./results/PCA_3D_rotation.gif",
-    n_frames = 60,
-    width = 1000,
-    height = 800,
-    point_size = 1.5,
-    resolution = 120
-  )
-  
-} else {
-  cat("  Skipping GIF creation (requires 'magick' package)\n")
-  cat("  Install with: install.packages('magick')\n\n")
-}
-
-cat("✓ 3D visualizations complete\n\n")
-
 ## *****************************************************************************
 ## 11) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
@@ -2475,65 +2360,6 @@ tRNA_copynumber_results <- tRNA_codon_correlation(
   mode = "by.copy.number"
 )
 
-cat("\n✓ tRNA copy number correlation analysis complete!\n")
-
-# Analysis 2: By tRNA expression levels (all genes)
-cat("\n=== Analysis 2: tRNA Expression Levels (All Genes) ===\n")
-cat("Analyzing correlation using tRNA gene expression from RNA-seq\n\n")
-
-# Prepare expression data
-expression_df <- integrated_data |>
-  dplyr::select(Gene_name, Expression = High_exp)
-
-tRNA_expression_all_results <- tRNA_codon_correlation(
-  codon_counts = codon_usage,
-  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
-  genetic_code = genetic_code_dna_long,
-  output_dir = "./results/tRNA_analysis_expression_all",
-  test_method = "spearman",
-  mode = "by.expression",
-  ann = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
-  expression_data = expression_df
-)
-
-cat("\n✓ tRNA expression correlation analysis (all genes) complete!\n")
-
-# Analysis 3: By tRNA expression levels (top 5% expressed genes only)
-cat("\n=== Analysis 3: tRNA Expression Levels (Top 5% Genes) ===\n")
-cat("Analyzing correlation for highly expressed genes only\n\n")
-
-# Filter to top 5% genes
-top5_threshold <- quantile(integrated_data$High_exp, probs = 0.95, na.rm = TRUE)
-top5_genes <- integrated_data |>
-  filter(High_exp >= top5_threshold) |>
-  pull(Gene_name)
-
-codon_usage_top5 <- codon_usage |>
-  filter(Gene_name %in% top5_genes)
-
-cat(sprintf("Analyzing %d genes in top 5%% (expression >= %.2f)\n", 
-            nrow(codon_usage_top5), top5_threshold))
-
-tRNA_expression_top5_results <- tRNA_codon_correlation(
-  codon_counts = codon_usage_top5,
-  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
-  genetic_code = genetic_code_dna_long,
-  output_dir = "./results/tRNA_analysis_expression_top5",
-  test_method = "spearman",
-  mode = "by.expression",
-  ann = "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
-  expression_data = expression_df
-)
-
-cat("\n✓ tRNA expression correlation analysis (top 5%) complete!\n")
-
-# Sanity check: Does amino acid frequency match tRNA supply?
-cat("\n=== Sanity Check: Amino Acid Frequency vs tRNA Supply ===\n")
-cat("Testing if amino acids with more tRNA genes are used more frequently\n")
-cat("This validates the tRNA adaptation hypothesis at the amino acid level\n\n")
-
-source("./src/check_aa_trna_supply.R")
-
 aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
   codon_usage = codon_usage,
   tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
@@ -2541,14 +2367,7 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
   output_dir = "./results/aa_trna_sanity_check"
 )
 
-cat("✓ Amino acid vs tRNA supply sanity check complete!\n\n")
-
-# ---- Final Analysis: Translational Accuracy Hypothesis ----
-cat("\n=== TRANSLATIONAL ACCURACY HYPOTHESIS TEST ===\n")
-cat("Testing if selection favors Watson-Crick pairing (high fidelity) over wobble pairing\n")
-cat("Hypothesis: Preferred codons should use accurate Watson-Crick pairs at wobble position\n\n")
-
-source("./src/classify_codon_anticodon_pairing.R")
+# Analysis 2: Translational Accuracy Hypothesis ----
 
 # Load tRNA data for the pairing analysis
 tRNA_data <- fread("./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt")
@@ -2603,9 +2422,6 @@ pairing_analysis <- classify_codon_anticodon_pairing(
   save_results = TRUE
 )
 
-cat("\n✓ Translational accuracy hypothesis test complete!\n")
-cat("  Results saved to: ./results/tRNA_analysis_pairing/\n\n")
-
 ## *****************************************************************************
 ## 12) Polymorphism data integration ----
 ## _____________________________________________________________________________
@@ -2625,64 +2441,15 @@ pi_data <- pi_data |>
 integrated_data <- integrated_data |>
   dplyr::left_join(pi_data, by = "Gene_name")
 
-# Differences in pi at synonymous sites as a function of expression
+# Is the relationship between pi and predictors of interest linear?
 
-pi_per_expression <- anova(lm(Pi_mean_4fold ~ Expression_Group, 
-                           data = integrated_data))
+# Using bind_rows directly on the list
+justification_list <- lapply(predictors, analyze_nonlinearity, # Same predictors than for CDC
+                             data = integrated_data,
+                             resp = "Pi_mean_4fold")
+justification_table <- dplyr::bind_rows(justification_list)
 
-# Post-hoc test
 
-pi_posthoc <- TukeyHSD(aov(lm(Pi_mean_4fold ~ Expression_Group, 
-                              data = integrated_data)))
-
-# Getting required information
-
-plot_data_pi_1 <- integrated_data |>
-  dplyr::select(Gene_name, Pi_mean_4fold, Expression_Group) |>
-  na.exclude()
-
-alpha <- 0.05
-
-plot_data_pi_1_ready <- plot_data_pi_1 |>
-  dplyr::group_by(Expression_Group) |>
-  dplyr::summarize(Mean_pi_4_fold = mean(Pi_mean_4fold),
-                   LL = mean(Pi_mean_4fold) - qt(1 - alpha/2, (n() - 1)) * sd(Pi_mean_4fold) / sqrt(n()),
-                   UL = mean(Pi_mean_4fold) + qt(1 - alpha/2, (n() - 1)) * sd(Pi_mean_4fold) / sqrt(n()))
-
-# Visual (Mean + CI)
-
-ggplot(data = plot_data_pi_1_ready, 
-       mapping = aes(x = Expression_Group,
-                     y = Mean_pi_4_fold,
-                     color = Expression_Group)) +
-  geom_point(size = 3) +
-  geom_errorbar(aes(ymin = LL, ymax = UL), width = 0.2) +
-  theme_custom() +
-  labs(title = "Nucleotide Diversity (Pi) at 4-fold Sites by Expression Group",
-       x = "Expression Group",
-       y = "Mean Pi at 4-fold Sites") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  scale_color_manual(values = c("#377EB8", "#999999", "#E41A1C"))
-
-ggsave("./results/diversity_modeling/Pi_by_expression_group_Mean_CI.pdf",
-       width = 8, height = 6)
-
-# GAM to avoid discretization
-gam_pi_check <- gam(Pi_mean_4fold ~ s(Max_Log10_Exp), 
-                    data = integrated_data, 
-                    family = gaussian())
-
-summary(gam_pi_check)
-
-# Visualize
-plot_gam_pi <- ggplot(integrated_data, aes(x = Max_Log10_Exp, y = Pi_mean_4fold)) +
-  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), color = "blue") +
-  labs(title = "Continuous Check: Diversity vs Expression",
-       y = "Pi (4-fold)", x = "Max Log10 Expression") +
-  theme_custom()
-
-ggsave("./results/diversity_modeling/Pi_vs_expression_gam.pdf",
-       plot_gam_pi, width = 6, height = 6)
 
 # Tajima's D ----
 
