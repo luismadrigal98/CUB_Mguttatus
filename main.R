@@ -2439,81 +2439,74 @@ pi_data <- pi_data |>
 
 # Join polymorphism data to integrated_data
 integrated_data <- integrated_data |>
-  dplyr::left_join(pi_data, by = "Gene_name")
+  dplyr::left_join(pi_data, by = "Gene_name") |>
+  na.exclude()
 
 # Is the relationship between pi and predictors of interest linear?
 
-# Using bind_rows directly on the list
-justification_list <- lapply(predictors, analyze_nonlinearity, # Same predictors than for CDC
-                             data = integrated_data,
-                             resp = "Pi_mean_4fold")
-justification_table <- dplyr::bind_rows(justification_list)
+# Analysis based on expression
+pi_nonlinearity_results <- analyze_nonlinearity_suite(
+  resp = "Pi_mean_4fold",
+  predictors = predictors,
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  family = Gamma(link = "log")
+)
 
+pi_models <- fit_codon_gam_suite(
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  response_var = "Pi_mean_4fold",
+  family = Gamma(link = "log") 
+)
 
+pi_selection <- get_model_selection_stats(pi_models)
+pi_secection_winner <- pi_selection |> dplyr::filter(AIC == min(AIC))
 
-# Tajima's D ----
+run_posteriori_gam_analysis(model = pi_models[["Complex"]], 
+                            data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+                            response_name = "Pi_mean_4fold")
 
-# ANOVA
-td_per_expression <- anova(lm(TajimaD_4fold ~ Expression_Group, 
-                              data = integrated_data))
-print(td_per_expression)
+# Analysis based on selection estimates
 
-# Post-hoc test (Tukey HSD)
-td_posthoc <- TukeyHSD(aov(lm(TajimaD_4fold ~ Expression_Group, 
-                              data = integrated_data)))
+# Geting the mutational bias (fraction of GC3 that cannot be explained by S_ROC)
 
-# 3. Prepare Data for Plotting (Mean + 95% CI)
+confounding_results <- 
+  check_confounding_vif(integrated_data, focal_pred = "S_ROC", 
+                        comp_pred = "GC")
+print(confounding_results$plot)
 
-# Filter valid Tajima's D values (remove NAs and infinite values)
-plot_data_td_1 <- integrated_data |>
-  dplyr::select(Gene_name, TajimaD_4fold, Expression_Group) |>
-  dplyr::filter(is.finite(TajimaD_4fold)) |> # Important for Tajima's D
-  na.exclude()
+predictors_s <- c("S_ROC", "Total_Codons", "Exp_breadth", "GC3")
 
-# Calculate Summary Stats manually
-alpha <- 0.05
+pi_nonlinearity_results_s <- analyze_nonlinearity_suite(
+  resp = "Pi_mean_4fold",
+  predictors = predictors_s,
+  data = integrated_data,
+  family = Gamma(link = "log")
+)
 
-plot_data_td_1_ready <- plot_data_td_1 |>
-  dplyr::group_by(Expression_Group) |>
-  dplyr::summarize(
-    Mean_TD_4_fold = mean(TajimaD_4fold),
-    # Calculate 95% CI
-    LL = mean(TajimaD_4fold) - qt(1 - alpha/2, (n() - 1)) * sd(TajimaD_4fold) / sqrt(n()),
-    UL = mean(TajimaD_4fold) + qt(1 - alpha/2, (n() - 1)) * sd(TajimaD_4fold) / sqrt(n())
-  )
+pi_models_s <- fit_codon_gam_suite(
+  data = integrated_data,
+  model_list = alist(
+    Null        = ~ 1,
+    Additive    = ~ s(S_ROC) + s(Total_Codons) + s(Exp_breadth) + s(GC3),
+    S_Length    = ~ te(S_ROC, Total_Codons) + s(Exp_breadth) + s(GC3),
+    S_Breadth   = ~ te(S_ROC, Exp_breadth) + s(Total_Codons) + s(GC3),
+    S_GC3       = ~ te(S_ROC, GC3) + s(Total_Codons) + s(Exp_breadth),
+    Complex     = ~ te(S_ROC, Total_Codons, Exp_breadth, GC3)
+  ),
+  response_var = "Pi_mean_4fold",
+  family = Gamma(link = "log") 
+)
 
-# 4. Visualization (Mean + CI)
+pi_selection_s <- get_model_selection_stats(pi_models_s)
+pi_secection_winner_s <- pi_selection_s |> dplyr::filter(AIC == min(AIC))
 
-p_tajima <- ggplot(data = plot_data_td_1_ready, 
-                   mapping = aes(x = Expression_Group,
-                                 y = Mean_TD_4_fold,
-                                 color = Expression_Group)) +
-  
-  # Add points and error bars
-  geom_point(size = 4) +
-  geom_errorbar(aes(ymin = LL, ymax = UL), width = 0.2, size = 1) +
-  
-  # Add Reference Line at 0 (Neutrality)
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
-  
-  # Formatting
-  theme_custom() +
-  labs(title = "Tajima's D at 4-fold Sites by Expression Group",
-       subtitle = "Mean ± 95% Confidence Interval",
-       x = "Expression Group",
-       y = "Mean Tajima's D (4-fold Sites)") +
-  
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "none") +
-  
-  # Use your standard color palette
-  scale_color_manual(values = c("Bottom 5%" = "#377EB8", 
-                                "Middle 90%" = "#999999", 
-                                "Top 5%" = "#E41A1C"))
-
-# Save
-ggsave("./results/diversity_modeling/TajimaD_by_expression_group_Mean_CI.pdf",
-       p_tajima, width = 6, height = 6)
+run_posteriori_gam_analysis(model = pi_models_s[["Complex"]], 
+                            data = integrated_data,
+                            focal_pred = "S_ROC", 
+                            interact_pred = "Total_Codons",
+                            third_pred = NULL,
+                            response_name = "Pi_mean_4fold",
+                            prefix = "Selection")
 
 # 12.1) Tracking frequency of preferred allele as a function of expression ----
 
@@ -2526,8 +2519,7 @@ preferred_data <- preferred_data |>
   dplyr::rename(Gene_name = Gene) |>
   dplyr::group_by(Gene_name) |>
   summarize(
-    Mean_preferred_freq = mean(Preferred_Freq),
-    n_codons = n()
+    Mean_preferred_freq = mean(Preferred_Freq)
   ) |>
   ungroup()
 
@@ -2535,55 +2527,43 @@ integrated_data <- integrated_data |>
   left_join(preferred_data) |>
   na.exclude()
 
-pref_model_gam <- gam(Mean_preferred_freq ~ s(Max_Log10_Exp) + s(CDS_length_nt),
-                      data = integrated_data,
-                      family = quasibinomial(link = "logit"))
+# GAM wrappers
 
-summary(pref_model_gam)
+predictors_p <- c("Max_Log10_Exp", "Exp_breadth", "Total_Codons")
 
-# Partial effect plot
-
-# Create Prediction Data
-
-pred_data_pref <- data.frame(
-  Max_Log10_Exp = seq(min(integrated_data$Max_Log10_Exp), 
-                      max(integrated_data$Max_Log10_Exp), length.out = 400),
-  CDS_length_nt = median(integrated_data$CDS_length_nt)
+preferred_nonlinearity_results <- analyze_nonlinearity_suite(
+  resp = "Mean_preferred_freq",
+  predictors = predictors_p,
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  family = betar(link = "logit")
 )
 
-# Predict with Standard Errors
-preds <- predict(pref_model_gam, newdata = pred_data_pref, type = "link", 
-                 se.fit = TRUE)
+preferred_models <- fit_codon_gam_suite(
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  model_list = alist(
+    Null        = ~ 1,
+    Additive    = ~ s(Max_Log10_Exp) + s(Exp_breadth) + s(Total_Codons),
+    Interaction = ~ te(Max_Log10_Exp, Exp_breadth) + s(Total_Codons),
+    Complex     = ~ te(Max_Log10_Exp, Exp_breadth, Total_Codons)
+  ),
+  response_var = "Mean_preferred_freq",
+  family = betar(link = "logit") 
+)
 
-# Transform back to Response Scale (0-1 Frequency)
-pred_data_pref$fit <- plogis(preds$fit)
-pred_data_pref$lower <- plogis(preds$fit - 1.96 * preds$se.fit)
-pred_data_pref$upper <- plogis(preds$fit + 1.96 * preds$se.fit)
+preferred_selection <- get_model_selection_stats(preferred_models)
+preferred_selection_winner <- preferred_selection |> 
+  dplyr::filter(AIC == min(AIC))
 
-# Plot
-p_pref <- ggplot(pred_data_pref, aes(x = Max_Log10_Exp, y = fit)) +
-  
-  # A. Confidence Interval Ribbon
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "darkgreen") +
-  
-  # B. The Main Trend Line
-  geom_line(color = "darkgreen", size = 1) +
-  
-  geom_rug(data = integrated_data, aes(x = Max_Log10_Exp), 
-           sides = "b", alpha = 0.05, inherit.aes = FALSE) +
-  
-  # C. Formatting
-  labs(title = "Usage of Preferred Codons Increases with Expression",
-       subtitle = "Predicted Frequency controlled for CDS Length (fixed at median)",
-       x = "Max Log10 Expression",
-       y = "Mean Preferred Codon Frequency") +
-  theme_custom() +
-  theme(panel.grid.minor = element_blank(),
-        axis.text = element_text(size = 11),
-        axis.title = element_text(size = 12, face = "bold"))
+run_posteriori_gam_analysis(model = preferred_models[["Complex"]], 
+                            data = integrated_data |> 
+                              dplyr::filter(Exp_breadth > 0),
+                            focal_pred = "Max_Log10_Exp", 
+                            interact_pred = "Exp_breadth",
+                            third_pred = NULL,
+                            response_name = "Mean_preferred_freq",
+                            prefix = "Preferred")
 
-# Save
-ggsave("./results/GAM_PreferredFreq_vs_Expression.pdf", p_pref, width = 6, height = 5)
+summary(preferred_models[["Complex"]])
 
 # Assessing significance of expression over the detrended residuals
 
@@ -2683,9 +2663,7 @@ p_preferred_median <- ggplot(plot_data_pref, aes(x = Exp_Group, y = Mean_preferr
                                 "Middle 90%" = "#999999", 
                                 "Top 5%" = "#E41A1C")) +
   
-  labs(title = "Usage of Preferred Codons Increases with Expression",
-       subtitle = "Median Frequency (± 95% Bootstrap CI)",
-       y = "Median Frequency of Preferred Codons",
+  labs(y = "Median Frequency of Preferred Codons",
        x = NULL) + # Remove X label as groups are self-explanatory
   
   theme_custom() +
@@ -2697,86 +2675,12 @@ p_preferred_median <- ggplot(plot_data_pref, aes(x = Exp_Group, y = Mean_preferr
 ggsave("./results/Frequency_preferred_by_expression_group_Median_CI.pdf", 
        p_preferred_median, width = 5, height = 6)
 
-# 12.2) Relationship between CDC-detrended and freq_preferred ----
-
-gam_correlation <- gam(CDC ~ s(Mean_preferred_freq, k = 5) + s(CDS_length_nt),
-                       data = integrated_data,
-                       family = quasibinomial(link = "logit"),
-                       method = "REML")
-
-gam.check(gam_correlation)
-
-summary(gam_correlation)
-
-# If 's(Mean_preferred_freq)' is significant here, the relationship is real.
-
-# Visualize the Partial Effect (The "Isolated" Correlation)
-# Range Frequency from min to max, hold Length constant at median
-pred_data_corr <- data.frame(
-  Mean_preferred_freq = seq(min(integrated_data$Mean_preferred_freq), 
-                            max(integrated_data$Mean_preferred_freq), length.out = 400),
-  CDS_length_nt = median(integrated_data$CDS_length_nt)
+# Execute for your 16% model
+p_surface_pref <- plot_selection_surface(
+  model = preferred_models[["Complex"]], 
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  response_name = "Mean_preferred_freq"
 )
-
-preds <- predict(gam_correlation, newdata = pred_data_corr, type = "link", se.fit = TRUE)
-
-pred_data_corr$fit <- plogis(preds$fit)
-pred_data_corr$lower <- plogis(preds$fit - 1.96 * preds$se.fit)
-pred_data_corr$upper <- plogis(preds$fit + 1.96 * preds$se.fit)
-
-# Plot
-p_corr <- ggplot(pred_data_corr, aes(x = Mean_preferred_freq, y = fit)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "purple") +
-  geom_line(color = "purple", size = 1.2) +
-  labs(x = "Mean Frequency of Preferred Codons",
-       y = "Predicted CDC") +
-  theme_custom() +
-  theme()
-
-ggsave("./results/GAM_CDC_vs_PreferredFreq_Controlled.pdf", p_corr, width = 6, 
-       height = 5)
-
-# Dominance analysis
-# Full Model (Both predictors)
-gam_full <- gam(CDC ~ s(Mean_preferred_freq, k=5) + s(CDS_length_nt), 
-                data = integrated_data, family = quasibinomial(link = "logit"), 
-                method = "REML")
-# Length Only
-gam_len  <- gam(CDC ~ s(CDS_length_nt), 
-                data = integrated_data, family = quasibinomial(link = "logit"), 
-                method = "REML")
-
-# Frequency Only
-gam_freq <- gam(CDC ~ s(Mean_preferred_freq, k=5), 
-                data = integrated_data, family = quasibinomial(link = "logit"),
-                method = "REML")
-
-# Extraction of adjusted R^2
-r2_full <- summary(gam_full)$r.sq
-r2_len  <- summary(gam_len)$r.sq
-r2_freq <- summary(gam_freq)$r.sq
-
-# Dominance calculation
-contrib_len <- mean(c(r2_len, (r2_full - r2_freq)))
-contrib_freq <- mean(c(r2_freq, (r2_full - r2_len)))
-
-# Normalize
-total_explained <- contrib_len + contrib_freq
-pct_len  <- (contrib_len / total_explained) * 100
-pct_freq <- (contrib_freq / total_explained) * 100
-
-# Print Results
-message("=== RELATIVE IMPORTANCE ANALYSIS (GAM) ===\n")
-message("Total Variance Explained (Adj R2):", round(r2_full, 4), "\n\n")
-
-message("Raw Contribution (R2 units):\n")
-message("   CDS Length:        ", round(contrib_len, 4), "\n")
-message("   Preferred Freq:    ", round(contrib_freq, 4), "\n\n")
-
-message("Relative Importance (% of Explained Variance):\n")
-message("   CDS Length:        ", round(pct_len, 1), "%\n")
-message("   Preferred Freq:    ", round(pct_freq, 1), "%\n")
-message("==========================================\n")
 
 ## *****************************************************************************
 ## 13) Intronic Polymorphism-Based Selection Validation ----
@@ -2996,7 +2900,7 @@ gamma_summary_df[['Sig_G']] <- gamma_summary_df$Gamma_G_pval < 0.05
 cat("\n=== Gamma Estimates by Expression Quantile ===\n")
 print(gamma_summary_df[, c("Category", "Gamma_C", "Gamma_C_pval", "Gamma_G", "Gamma_G_pval", "Gamma_avg")])
 
-cutoffs_exp <- quantile(selection_coeff_intensity$Geom_Mean_CPM, seq(0, 1, by = 0.05),
+cutoffs_exp <- quantile(integrated_data$Max_Log10_Exp, seq(0, 1, by = 0.05),
                         na.rm = TRUE)
 
 names_quantiles <- names(cutoffs_exp)
@@ -3010,14 +2914,14 @@ selection_summary_full <- lapply(1:(length(cutoffs_exp) - 1), function(idx)
                     cutoffs_exp[idx])
   high_thr <- cutoffs_exp[idx + 1]
   
-  sub_data_genes <- selection_coeff_intensity |>
-    dplyr::filter(Geom_Mean_CPM > low_thr & Geom_Mean_CPM <= high_thr)
+  sub_data_genes <- integrated_data |>
+    dplyr::filter(Max_Log10_Exp > low_thr & Max_Log10_Exp <= high_thr)
   
   list(
-    mean_S = mean(sub_data_genes$S_Load, na.rm = TRUE),
-    se_S = sd(sub_data_genes$S_Load, na.rm = TRUE) / sqrt(sum(!is.na(sub_data_genes$S_Load))),
+    mean_S = mean(sub_data_genes$S_ROC, na.rm = TRUE),
+    se_S = sd(sub_data_genes$S_ROC, na.rm = TRUE) / sqrt(sum(!is.na(sub_data_genes$S_ROC))),
     n_genes = nrow(sub_data_genes),
-    mean_exp = mean(sub_data_genes$Geom_Mean_CPM, na.rm = TRUE)
+    mean_exp = mean(sub_data_genes$Max_Log10_Exp, na.rm = TRUE)
   )
 })
 
@@ -3301,14 +3205,19 @@ print(sfs_summary)
 # STEP 6: Mutual Information Analysis (S_ROC vs Gamma) ----
 cat("\n=== STEP 6: Mutual Information Analysis ===\n")
 cat("Quantifying non-linear association between S_ROC and Gamma\n\n")
+
+# Data Cleaning & Type Conversion ---
+# Ensure variables are pure numeric vectors (not lists) and handle Infinite values
+scaling_df$S_ROC <- as.numeric(unlist(scaling_df$S_ROC))
+scaling_df$Gamma_avg <- as.numeric(unlist(scaling_df$Gamma_avg))
+
+# Convert Infinite values (possible from log(0)) to NA
+is.na(scaling_df$S_ROC) <- !is.finite(scaling_df$S_ROC)
+is.na(scaling_df$Gamma_avg) <- !is.finite(scaling_df$Gamma_avg)
+
 compute_mi_analysis <- function(x, y, n_bins = 10) {
   #' Compute mutual information between two continuous variables
   #' Uses discretization with equal-frequency binning
-  #' 
-  #' @param x First variable (e.g., S_ROC)
-  #' @param y Second variable (e.g., Gamma)
-  #' @param n_bins Number of bins for discretization
-  #' @return List with MI, normalized MI, and diagnostics
   
   # Remove NA values
   valid_idx <- complete.cases(x, y)
@@ -3318,10 +3227,16 @@ compute_mi_analysis <- function(x, y, n_bins = 10) {
   n <- length(x)
   
   # Equal-frequency binning (quantile-based)
-  x_bins <- cut(x, breaks = quantile(x, probs = seq(0, 1, length.out = n_bins + 1)), 
-                include.lowest = TRUE, labels = FALSE)
-  y_bins <- cut(y, breaks = quantile(y, probs = seq(0, 1, length.out = n_bins + 1)), 
-                include.lowest = TRUE, labels = FALSE)
+  x_breaks <- unique(quantile(x, probs = seq(0, 1, length.out = n_bins + 1)))
+  y_breaks <- unique(quantile(y, probs = seq(0, 1, length.out = n_bins + 1)))
+  
+  # If data is too sparse for requested bins, return NA or handle gracefully
+  if(length(x_breaks) < n_bins + 1 || length(y_breaks) < n_bins + 1) {
+    return(list(MI=NA, NMI=NA, H_X=NA, H_Y=NA, U_Y_given_X=NA, U_X_given_Y=NA))
+  }
+  
+  x_bins <- cut(x, breaks = x_breaks, include.lowest = TRUE, labels = FALSE)
+  y_bins <- cut(y, breaks = y_breaks, include.lowest = TRUE, labels = FALSE)
   
   # Compute joint and marginal probabilities
   joint_table <- table(x_bins, y_bins)
@@ -3329,7 +3244,7 @@ compute_mi_analysis <- function(x, y, n_bins = 10) {
   p_x <- rowSums(p_xy)
   p_y <- colSums(p_xy)
   
-  # Compute mutual information: I(X;Y) = sum p(x,y) * log(p(x,y) / (p(x)*p(y)))
+  # Compute mutual information
   mi <- 0
   for (i in seq_along(p_x)) {
     for (j in seq_along(p_y)) {
@@ -3344,46 +3259,46 @@ compute_mi_analysis <- function(x, y, n_bins = 10) {
   H_y <- -sum(p_y[p_y > 0] * log2(p_y[p_y > 0]))
   
   # Normalized MI (ranges 0-1)
-  nmi <- mi / sqrt(H_x * H_y)
-  
-  # Uncertainty coefficient (asymmetric): fraction of Y explained by X
-  u_y_given_x <- mi / H_y
-  u_x_given_y <- mi / H_x
+  nmi <- ifelse(H_x * H_y > 0, mi / sqrt(H_x * H_y), 0)
   
   return(list(
     MI = mi,
     NMI = nmi,
     H_X = H_x,
     H_Y = H_y,
-    U_Y_given_X = u_y_given_x,
-    U_X_given_Y = u_x_given_y,
+    U_Y_given_X = ifelse(H_y > 0, mi / H_y, 0),
+    U_X_given_Y = ifelse(H_x > 0, mi / H_x, 0),
     n_samples = n,
     n_bins = n_bins
   ))
 }
 
-# Compute MI for different numbers of bins (sensitivity analysis)
-mi_results <- lapply(c(5, 10, 15, 20), function(nb) {
+# We calculate for different bins, but note that for N=20 points, high bins are unreliable
+mi_results <- lapply(c(3, 4, 5, 8), function(nb) {
   res <- compute_mi_analysis(scaling_df$S_ROC, scaling_df$Gamma_avg, n_bins = nb)
   res$n_bins <- nb
   res
 })
 
-cat("=== Mutual Information Results (varying bin sizes) ===\n")
+cat("=== Mutual Information Results (Sensitivity) ===\n")
 for (res in mi_results) {
-  cat(sprintf("  Bins=%2d: MI=%.4f bits, NMI=%.4f, U(Gamma|S)=%.3f\n", 
-              res$n_bins, res$MI, res$NMI, res$U_Y_given_X))
+  if(!is.na(res$MI)) {
+    cat(sprintf("  Bins=%2d: MI=%.4f bits, NMI=%.4f, U(Gamma|S)=%.3f\n", 
+                res$n_bins, res$MI, res$NMI, res$U_Y_given_X))
+  }
 }
 
-# Use optimal binning (Sturges' rule approximation)
-optimal_bins <- max(5, min(15, ceiling(1 + log2(nrow(scaling_df)))))
-mi_optimal <- compute_mi_analysis(scaling_df$S_ROC, scaling_df$Gamma_avg, n_bins = optimal_bins)
+# For 20 data points (quantiles), 5 bins is the statistical maximum 
+# (approx 4 points per bin). Anything higher causes overfitting (NMI -> 1.0).
+optimal_bins <- 5
 
-cat(sprintf("\nOptimal Binning (%d bins):\n", optimal_bins))
+mi_optimal <- compute_mi_analysis(scaling_df$S_ROC, scaling_df$Gamma_avg, 
+                                  n_bins = optimal_bins)
+
+cat(sprintf("\nOptimal Binning (Robust N=%d):\n", optimal_bins))
 cat(sprintf("  Mutual Information: %.4f bits\n", mi_optimal$MI))
 cat(sprintf("  Normalized MI:      %.4f (0=independent, 1=perfect dependence)\n", mi_optimal$NMI))
 cat(sprintf("  U(Gamma|S_ROC):     %.3f (fraction of Gamma entropy explained by S_ROC)\n", mi_optimal$U_Y_given_X))
-cat(sprintf("  U(S_ROC|Gamma):     %.3f (fraction of S_ROC entropy explained by Gamma)\n\n", mi_optimal$U_X_given_Y))
 
 # Permutation test for significance
 cat("=== Permutation Test for MI Significance ===\n")
@@ -3392,8 +3307,12 @@ observed_mi <- mi_optimal$MI
 
 permuted_mi <- replicate(n_permutations, {
   y_shuffled <- sample(scaling_df$Gamma_avg)
-  compute_mi_analysis(scaling_df$S_ROC, y_shuffled, n_bins = optimal_bins)$MI
+  # Suppress warnings during permutation (sparse bins in random shuffles are common)
+  suppressWarnings(compute_mi_analysis(scaling_df$S_ROC, y_shuffled, n_bins = optimal_bins)$MI)
 })
+
+# Handle potential NAs in permutations
+permuted_mi <- permuted_mi[!is.na(permuted_mi)]
 
 mi_p_value <- mean(permuted_mi >= observed_mi)
 mi_zscore <- (observed_mi - mean(permuted_mi)) / sd(permuted_mi)
@@ -3401,7 +3320,7 @@ mi_zscore <- (observed_mi - mean(permuted_mi)) / sd(permuted_mi)
 cat(sprintf("Observed MI: %.4f bits\n", observed_mi))
 cat(sprintf("Permuted MI: %.4f ± %.4f bits (mean ± SD)\n", mean(permuted_mi), sd(permuted_mi)))
 cat(sprintf("Z-score:     %.2f\n", mi_zscore))
-cat(sprintf("P-value:     %.4f (from %d permutations)\n", mi_p_value, n_permutations))
+cat(sprintf("P-value:     %.4f (from %d valid permutations)\n", mi_p_value, length(permuted_mi)))
 
 if (mi_p_value < 0.05) {
   cat("RESULT: Significant non-random association between S_ROC and Gamma\n\n")
@@ -3410,26 +3329,9 @@ if (mi_p_value < 0.05) {
 }
 
 # Compare linear vs non-linear information
-cat("=== Linear vs Non-Linear Information ===\n")
-spearman_cor <- cor(scaling_df$S_ROC, scaling_df$Gamma_avg, method = "spearman")
-pearson_cor <- cor(scaling_df$S_ROC, scaling_df$Gamma_avg, method = "pearson")
-
-# Spearman captures monotonic (possibly non-linear) relationships
-# If NMI >> R², there's substantial non-linear information
-cat(sprintf("Pearson R:   %.4f (linear correlation)\n", pearson_cor))
-cat(sprintf("Pearson R²:  %.4f (linear variance explained)\n", pearson_cor^2))
-cat(sprintf("Spearman ρ:  %.4f (monotonic correlation)\n", spearman_cor))
-cat(sprintf("Spearman ρ²: %.4f (monotonic variance explained)\n", spearman_cor^2))
-cat(sprintf("NMI:         %.4f (total dependence including non-linear)\n", mi_optimal$NMI))
-cat(sprintf("\nNon-linearity indicator (NMI - R²): %.4f\n", mi_optimal$NMI - pearson_cor^2))
-
-if (mi_optimal$NMI - pearson_cor^2 > 0.1) {
-  cat("  → Substantial non-linear component in the relationship\n")
-} else if (mi_optimal$NMI - pearson_cor^2 > 0.05) {
-  cat("  → Moderate non-linear component\n")
-} else {
-  cat("  → Relationship is predominantly linear\n")
-}
+# Use use="complete.obs" to handle any NAs introduced by the infinite check
+spearman_cor <- cor(scaling_df$S_ROC, scaling_df$Gamma_avg, method = "spearman", use = "complete.obs")
+pearson_cor <- cor(scaling_df$S_ROC, scaling_df$Gamma_avg, method = "pearson", use = "complete.obs")
 
 # Create visualization of the MI analysis
 p_mi_heatmap <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_avg)) +
@@ -3448,7 +3350,6 @@ p_mi_heatmap <- ggplot(scaling_df, aes(x = S_ROC, y = Gamma_avg)) +
   theme(plot.title = element_text(face = "bold"))
 
 ggsave("./results/MI_heatmap_Sroc_vs_Gamma.pdf", plot = p_mi_heatmap, width = 8, height = 6)
-cat("\n✓ MI heatmap saved: ./results/MI_heatmap_Sroc_vs_Gamma.pdf\n")
 
 # Permutation distribution plot
 permutation_df <- data.frame(MI = permuted_mi)
@@ -3466,7 +3367,6 @@ p_permutation <- ggplot(permutation_df, aes(x = MI)) +
   theme_minimal()
 
 ggsave("./results/MI_permutation_test.pdf", plot = p_permutation, width = 8, height = 5)
-cat("✓ Permutation test plot saved: ./results/MI_permutation_test.pdf\n")
 
 # Save summary statistics
 mi_summary <- data.frame(
@@ -3490,7 +3390,6 @@ mi_summary <- data.frame(
 )
 
 write.csv(mi_summary, "./results/MI_analysis_summary.csv", row.names = FALSE)
-cat("✓ MI summary saved: ./results/MI_analysis_summary.csv\n\n")
 
 ## *****************************************************************************
 ## 14) Diversity Hump Validation (EMPIRICAL Pi vs. Selection Intensity) ----
@@ -3621,7 +3520,7 @@ pi_compartment <- read.table(file = "./data/all_chromosomes.pi_by_compartment.tx
 # 1. Sanity Check: Calculate Overall Weighted Pi per Compartment
 # We filter for "all" nucleotides to avoid double counting C/G/AT breakdowns
 overall_pi_stats <- pi_compartment %>%
-  filter(Nuc_Category == "all") %>%
+  dplyr::filter(Nuc_Category == "all") %>%
   group_by(Compartment) %>%
   summarise(
     Total_Sites = sum(Sites, na.rm = TRUE),
@@ -3634,6 +3533,10 @@ overall_pi_stats <- pi_compartment %>%
 
 print("=== Overall Weighted Pi by Compartment ===")
 print(overall_pi_stats)
+
+# Visual of pi per compartment in each chromosome
+
+pi_compartment <- ggplot()
 
 # HUMP EFFECT TEST ----
 # 1. Aggregate Data by "Selection Potential"
