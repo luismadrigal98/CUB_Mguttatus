@@ -3536,7 +3536,63 @@ print(overall_pi_stats)
 
 # Visual of pi per compartment in each chromosome
 
-pi_compartment <- ggplot()
+# 1. Define a Logical Biological Order
+# From "Most Neutral" to "Most Constrained"
+compartment_order <- c(
+  "intergenic", 
+  "intergenic_upstream_10kb", 
+  "intergenic_upstream_2kb", 
+  "intron", 
+  "nonfirst_exon_4fold", 
+  "first_exon_4fold", 
+  "exon_all"
+)
+
+# 2. Prepare the Data
+plot_data <- pi_compartment |>
+  # Remove the 'all' aggregate so we can see the components clearly
+  dplyr::filter(Nuc_Category %in% c("AT", "C", "G")) |> 
+  dplyr::mutate(
+    # Apply the logical order
+    Compartment = factor(Compartment, levels = compartment_order),
+    # Ensure Nucleotides are ordered for consistency (AT = Baseline)
+    Nuc_Category = factor(Nuc_Category, levels = c("AT", "C", "G"))
+  )
+
+# 3. Create the Plot
+pi_compart <- ggplot(plot_data, aes(x = Compartment, y = Pi_mean, fill = Nuc_Category)) +
+  
+  # A. Boxplots side-by-side (Dodged)
+  # outlier.shape = NA hides the "duplicate" points since we add jitter below
+  geom_boxplot(position = position_dodge(width = 0.8), 
+               outlier.shape = NA, 
+               alpha = 0.7) +
+  
+  # B. Jittered Points (The Chromosomes)
+  # This shows the actual variance across the genome
+  geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8), 
+             size = 1.2, alpha = 0.6, color = "black") +
+  
+  # C. Colors
+  # Use Gray for AT (Background) and colors for C/G (Active)
+  scale_fill_manual(values = c("AT" = "gray80", 
+                               "C" = "#E41A1C", # Red (High Mutation)
+                               "G" = "#377EB8"), # Blue
+                    name = "Nucleotide") +
+  
+  # D. Aesthetics
+  labs(title = "Nucleotide Diversity (Pi) by Genomic Compartment",
+       subtitle = "Separation of C/G hypermutability from AT background",
+       y = "Mean Nucleotide Diversity",
+       x = NULL) +
+  theme_custom() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    legend.position = "top"
+  )
+
+ggsave("./results/diversity_boxplot_improved.pdf",
+       pi_compart, width = 10, height = 6)
 
 # HUMP EFFECT TEST ----
 # 1. Aggregate Data by "Selection Potential"
