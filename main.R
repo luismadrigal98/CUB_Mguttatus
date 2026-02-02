@@ -361,7 +361,7 @@ ggsave("results/GAM_Partial_Effects_Gratia.pdf", combined_plot, width = 12,
 
 # Model 0: Null
 m_null <- gam(CDC ~ 1,
-              data = integrated_data, 
+              data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
               family = betar(link = "logit"), 
               method = "REML")
 
@@ -369,7 +369,7 @@ m_null <- gam(CDC ~ 1,
 # Hypothesis: Each predictor affects CUB independently.
 
 m_additive <- gam(CDC ~ s(Max_Log10_Exp) + s(Exp_breadth) + s(CDS_length_nt),
-                  data = integrated_data, 
+                  data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
                   family = betar(link = "logit"), 
                   method = "REML",
                   select = T)
@@ -378,7 +378,7 @@ m_additive <- gam(CDC ~ s(Max_Log10_Exp) + s(Exp_breadth) + s(CDS_length_nt),
 # Hypothesis: High expression only forces strict CUB if the gene is broad.
 
 m_interaction <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth) + s(CDS_length_nt),
-                     data = integrated_data, 
+                     data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
                      family = betar(link = "logit"), 
                      method = "REML",
                      select = T)
@@ -386,7 +386,7 @@ m_interaction <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth) + s(CDS_length_nt),
 # Model 3: Complex (Full Interaction)
 # Hypothesis: Length and expression interact in complex ways."
 m_complex <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth, CDS_length_nt),
-                 data = integrated_data, 
+                 data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
                  family = betar(link = "logit"), 
                  method = "REML")
 
@@ -414,7 +414,8 @@ p_effects <- plot_predictions(m_interaction,
                               newdata = datagrid(
                                 CDS_length_nt = mean(clean_data$CDS_length_nt)),
                               type = "response") + 
-  geom_rug(data = integrated_data, aes(x = Max_Log10_Exp), 
+  geom_rug(data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+           aes(x = Max_Log10_Exp), 
            sides = "b", alpha = 0.05, inherit.aes = FALSE) +
   # THEME & LABELS
   theme_custom() + 
@@ -436,7 +437,8 @@ p_slopes <- plot_slopes(m_interaction,
                         type = "response") +
   # RED LINE = Zero Slope (Where the relationship flattens/saturates)
   geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  geom_rug(data = integrated_data, aes(x = Max_Log10_Exp), 
+  geom_rug(data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+           aes(x = Max_Log10_Exp), 
            sides = "b", alpha = 0.05, inherit.aes = FALSE) +
   
   # THEME & LABELS
@@ -515,12 +517,13 @@ contrasts <- avg_comparisons(
 
 confounder_model_gam <- gam(CDC ~ s(CDS_length_nt),
                             data = integrated_data,
-                            family = quasibinomial(link = "logit"))
+                            family = betar(link = "logit"))
 
 integrated_data$CDC_detrended <- residuals(confounder_model_gam, 
                                            type = "response")
 
-p_detrended <- ggplot(integrated_data, aes(x = Max_Log10_Exp, y = CDC_detrended)) +
+p_detrended <- ggplot(integrated_data, aes(x = Max_Log10_Exp, 
+                                           y = CDC_detrended)) +
   # Use density to handle the 22k points
   geom_pointdensity(adjust = 0.1) + 
   scale_color_viridis_c() +
@@ -1609,7 +1612,9 @@ cor_load <- cor.test(final_analysis_data$Mean.log10.Phi, final_analysis_data$Lpr
 cor_eff <- cor.test(final_analysis_data$Mean.log10.Phi, final_analysis_data$Intrinsic_Inefficiency, method = "spearman")
 # Only in tail
 selection_genes <- final_analysis_data |> dplyr::filter(Mean.log10.Phi >= 1.5)
-cor_selection <- cor.test(selection_genes$Mean.log10.Phi, selection_genes$Intrinsic_Inefficiency, method = "spearman")
+cor_selection <- cor.test(selection_genes$Mean.log10.Phi, 
+                          selection_genes$Intrinsic_Inefficiency, method = "spearman",
+                          exact = F)
 
 # 8.3.2) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
@@ -2052,12 +2057,8 @@ codon_usage_CA_coord <- integrated_data |>
   dplyr::left_join(codon_usage_CA_coord, by = "Gene_name") |>
   dplyr::mutate(Expression_Group = as.character(Expression_Group))
 
-# Filter to extreme expression groups only
-codon_usage_CA_coord_extremes <- codon_usage_CA_coord |>
-  dplyr::filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
-
 # Prepare gene data for biplot
-gene_data_ca <- codon_usage_CA_coord_extremes |>
+gene_data_ca <- codon_usage_CA_coord |>
   dplyr::select(Gene_name, expression_group = Expression_Group)
 
 # Create single enhanced biplot: preferred vs non-preferred codons
@@ -2066,10 +2067,10 @@ p_ca <- create_preference_biplot(
   ordination_result = codon_usage_CA,
   gene_data = gene_data_ca,
   preferred_codons = preferred_codons_roc,
-  dims = c(1, 2),
+  dims = c(2, 3),
   arrow_scale = 1.0,
-  title = "CA Biplot: Codon Preference (ROC Model)",
-  subtitle = "Top 5% vs Bottom 5% expressed genes",
+  title = NULL,
+  subtitle = NULL,
   output_file = "./results/CA_preference_biplot.pdf"
 )
 
@@ -2135,12 +2136,8 @@ rscu_PCA_coord <- integrated_data |>
   dplyr::left_join(rscu_PCA_coord, by = "Gene_name") |>
   dplyr::mutate(Expression_Group = as.character(Expression_Group))
 
-# Filter to extreme expression groups
-rscu_PCA_coord_extremes <- rscu_PCA_coord |>
-  dplyr::filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
-
 # Prepare gene data for biplot
-gene_data_pca <- rscu_PCA_coord_extremes |>
+gene_data_pca <- rscu_PCA_coord |>
   dplyr::select(Gene_name, expression_group = Expression_Group)
 
 # Create single enhanced biplot: preferred vs non-preferred codons
@@ -2151,8 +2148,8 @@ p_pca <- create_preference_biplot(
   preferred_codons = preferred_codons_roc,
   dims = c(1, 2),
   arrow_scale = 1.5,
-  title = "PCA Biplot: Codon Preference (ROC Model)",
-  subtitle = "Top 5% vs Bottom 5% expressed genes",
+  title = NULL,
+  subtitle = NULL,
   output_file = "./results/PCA_preference_biplot.pdf"
 )
 
@@ -2444,6 +2441,8 @@ integrated_data <- integrated_data |>
 
 # Is the relationship between pi and predictors of interest linear?
 
+predictors <- c('Max_Log10_Exp', 'Exp_breadth', 'CDS_length_nt')
+
 # Analysis based on expression
 pi_nonlinearity_results <- analyze_nonlinearity_suite(
   resp = "Pi_mean_4fold",
@@ -2459,7 +2458,7 @@ pi_models <- fit_codon_gam_suite(
 )
 
 pi_selection <- get_model_selection_stats(pi_models)
-pi_secection_winner <- pi_selection |> dplyr::filter(AIC == min(AIC))
+pi_selection_winner <- pi_selection |> dplyr::filter(AIC == min(AIC))
 
 run_posteriori_gam_analysis(model = pi_models[["Complex"]], 
                             data = integrated_data |> dplyr::filter(Exp_breadth > 0),
@@ -2474,7 +2473,7 @@ confounding_results <-
                         comp_pred = "GC")
 print(confounding_results$plot)
 
-predictors_s <- c("S_ROC", "Total_Codons", "Exp_breadth", "GC3")
+predictors_s <- c("S_ROC", "Total_Codons", "Exp_breadth")
 
 pi_nonlinearity_results_s <- analyze_nonlinearity_suite(
   resp = "Pi_mean_4fold",
@@ -2487,11 +2486,10 @@ pi_models_s <- fit_codon_gam_suite(
   data = integrated_data,
   model_list = alist(
     Null        = ~ 1,
-    Additive    = ~ s(S_ROC) + s(Total_Codons) + s(Exp_breadth) + s(GC3),
-    S_Length    = ~ te(S_ROC, Total_Codons) + s(Exp_breadth) + s(GC3),
-    S_Breadth   = ~ te(S_ROC, Exp_breadth) + s(Total_Codons) + s(GC3),
-    S_GC3       = ~ te(S_ROC, GC3) + s(Total_Codons) + s(Exp_breadth),
-    Complex     = ~ te(S_ROC, Total_Codons, Exp_breadth, GC3)
+    Additive    = ~ s(S_ROC) + s(Total_Codons) + s(Exp_breadth),
+    S_Length    = ~ te(S_ROC, Total_Codons) + s(Exp_breadth),
+    S_Breadth   = ~ te(S_ROC, Exp_breadth) + s(Total_Codons),
+    Complex     = ~ te(S_ROC, Total_Codons, Exp_breadth)
   ),
   response_var = "Pi_mean_4fold",
   family = Gamma(link = "log") 
@@ -2500,13 +2498,13 @@ pi_models_s <- fit_codon_gam_suite(
 pi_selection_s <- get_model_selection_stats(pi_models_s)
 pi_secection_winner_s <- pi_selection_s |> dplyr::filter(AIC == min(AIC))
 
-run_posteriori_gam_analysis(model = pi_models_s[["Complex"]], 
+run_posteriori_gam_analysis(model = pi_models_s[["S_Length"]], 
                             data = integrated_data,
                             focal_pred = "S_ROC", 
-                            interact_pred = "Total_Codons",
+                            interact_pred = "Exp_breadth",
                             third_pred = NULL,
                             response_name = "Pi_mean_4fold",
-                            prefix = "Selection")
+                            prefix = "SelectionPi")
 
 # 12.1) Tracking frequency of preferred allele as a function of expression ----
 
@@ -2567,9 +2565,16 @@ summary(preferred_models[["Complex"]])
 
 # Assessing significance of expression over the detrended residuals
 
+confounder_model_gam <- gam(Mean_preferred_freq ~ s(CDS_length_nt),
+                            data = integrated_data,
+                            family = betar(link = "logit"))
+
+integrated_data$Mean_preferred_freq_detrended <- residuals(confounder_model_gam, 
+                                           type = "response")
+
 cat("\n=== Kruskal-Wallis Test: Frequency of preferred codons across Groups ===\n")
 
-kw_preferred_freq <- kruskal.test(Mean_preferred_freq ~ Expression_Group, 
+kw_preferred_freq <- kruskal.test(Mean_preferred_freq_detrended ~ Expression_Group, 
                                   data = integrated_data)
 
 # Plotting and assessing significance using Dunn
@@ -2581,7 +2586,7 @@ if (kw_detrended$p.value < 0.05) {
   
   # Perform Dunn's test with FDR correction
   dunn_result_detrended <- dunn.test::dunn.test(
-    x = integrated_data$Mean_preferred_freq,
+    x = integrated_data$Mean_preferred_freq_detrended,
     g = integrated_data$Expression_Group,
     method = "bh",
     kw = TRUE,
@@ -2599,15 +2604,15 @@ if (kw_detrended$p.value < 0.05) {
 # Extract groups for effect size calculations
 top5_preferred <- integrated_data |>
   dplyr::filter(Expression_Group == "Top 5%") |>
-  dplyr::pull(Mean_preferred_freq)
+  dplyr::pull(Mean_preferred_freq_detrended)
 
 middle_preferred <- integrated_data |>
   dplyr::filter(Expression_Group == "Middle 90%") |>
-  dplyr::pull(Mean_preferred_freq)
+  dplyr::pull(Mean_preferred_freq_detrended)
 
 bottom5_preferred <- integrated_data |>
   dplyr::filter(Expression_Group == "Bottom 5%") |>
-  dplyr::pull(Mean_preferred_freq)
+  dplyr::pull(Mean_preferred_freq_detrended)
 
 # Calculate effect sizes
 if (length(top5_preferred) > 0 && length(middle_preferred) > 0) {
@@ -2628,7 +2633,7 @@ if (length(middle_preferred) > 0 && length(bottom5_preferred) > 0) {
 # Ploting box plot
 
 p_boxplot_preferred <- ggplot(integrated_data, aes(x = Expression_Group, 
-                                                   y = Mean_preferred_freq, 
+                                                   y = Mean_preferred_freq_detrended, 
                                                    fill = Expression_Group)) +
   geom_violin(alpha = 0.3) +
   geom_boxplot(outlier.alpha = 0.3) +
@@ -2651,7 +2656,7 @@ plot_data_pref <- integrated_data |>
                                    levels = c("Bottom 5%", "Middle 90%", "Top 5%"))) |>
   dplyr::filter(!is.na(Exp_Group))
 
-p_preferred_median <- ggplot(plot_data_pref, aes(x = Exp_Group, y = Mean_preferred_freq)) +
+p_preferred_median <- ggplot(plot_data_pref, aes(x = Exp_Group, y = Mean_preferred_freq_detrended)) +
   
   # A. Median and 95% Bootstrap CI
   stat_summary(fun.data = median_cl_boot, 
@@ -2663,7 +2668,7 @@ p_preferred_median <- ggplot(plot_data_pref, aes(x = Exp_Group, y = Mean_preferr
                                 "Middle 90%" = "#999999", 
                                 "Top 5%" = "#E41A1C")) +
   
-  labs(y = "Median Frequency of Preferred Codons",
+  labs(y = "Median Frequency of Preferred Codons (length corrected)",
        x = NULL) + # Remove X label as groups are self-explanatory
   
   theme_custom() +
@@ -3392,126 +3397,7 @@ mi_summary <- data.frame(
 write.csv(mi_summary, "./results/MI_analysis_summary.csv", row.names = FALSE)
 
 ## *****************************************************************************
-## 14) Diversity Hump Validation (EMPIRICAL Pi vs. Selection Intensity) ----
-## _____________________________________________________________________________
-## This section tests the hump pattern using OBSERVED Pi_mean_4fold values
-## binned by S_Load from AnaCoDa. This is the primary empirical validation.
-
-# Kruskal-Wallis with Post-Hoc Dunn's Test (Mean + CI Visualization)
-
-# Prepare Data
-
-clean_data_4cat <- selection_coeff_intensity |>
-  dplyr::filter(
-    !is.na(S_Load), !is.na(Geom_Mean_CPM), !is.na(Pi_mean_4fold),
-    is.finite(S_Load), is.finite(Geom_Mean_CPM), is.finite(Pi_mean_4fold),
-    Pi_mean_4fold < 0.05
-  ) |>
-  dplyr::mutate(
-    # Use safe internal codes (A-D) to prevent regex errors in cldList
-    S_Bin_Code = cut(S_Load, 
-                     breaks = c(-Inf, 0.5, 1, 2, Inf), 
-                     labels = c("A", "B", "C", "D"), 
-                     include.lowest = TRUE),
-    
-    # Expression remains as Deciles
-    Exp_Bin = cut(Geom_Mean_CPM, 
-                  breaks = quantile(Geom_Mean_CPM, probs = seq(0, 1, 0.1)),
-                  include.lowest = TRUE, labels = 1:10)
-  )
-
-# Define pretty labels for mapping back later
-s_bin_labels <- c("A" = "0-0.5", "B" = "0.5-1", "C" = "1-2", "D" = ">2")
-
-# Analysis Function
-analyze_and_summarize <- function(data, group_col, response_col = "Pi_mean_4fold") {
-  
-  f <- as.formula(paste(response_col, "~", group_col))
-  dunn_res <- FSA::dunnTest(f, data = data, method = "bh")
-  
-  # Generate Letters
-  cld <- rcompanion::cldList(P.adj ~ Comparison, data = dunn_res$res, threshold = 0.05)
-  
-  # Clean CLD
-  cld_clean <- cld |>
-    dplyr::rename(!!group_col := Group, Letter = Letter) |>
-    dplyr::mutate(!!group_col := trimws(as.character(!!sym(group_col)))) |>
-    dplyr::select(!!group_col, Letter)
-  
-  # Summary Stats
-  summary_stats <- data |>
-    dplyr::group_by(!!sym(group_col)) |>
-    dplyr::summarise(
-      Mean = mean(!!sym(response_col), na.rm = TRUE),
-      SD = sd(!!sym(response_col), na.rm = TRUE),
-      N = n(),
-      SE = SD / sqrt(N),
-      CI_95 = 1.96 * SE,
-      Upper = Mean + CI_95,
-      Lower = Mean - CI_95,
-      .groups = "drop"
-    ) |>
-    dplyr::mutate(!!group_col := as.character(!!sym(group_col))) |>
-    dplyr::left_join(cld_clean, by = group_col) |>
-    dplyr::mutate(!!group_col := factor(!!sym(group_col), 
-                                        levels = levels(data[[group_col]])))
-  
-  return(summary_stats)
-}
-
-# Run Analysis
-stats_S <- analyze_and_summarize(clean_data_4cat, "S_Bin_Code")
-stats_Exp <- analyze_and_summarize(clean_data_4cat, "Exp_Bin")
-
-# Map codes back to pretty labels for S_ROC
-stats_S$Pretty_Label <- s_bin_labels[as.character(stats_S$S_Bin_Code)]
-stats_S$Pretty_Label <- factor(stats_S$Pretty_Label, levels = c("0-0.5", "0.5-1", "1-2", ">2"))
-
-# For Expression, the labels are already correct
-stats_Exp$Pretty_Label <- stats_Exp$Exp_Bin
-
-# Plotting Function
-plot_mean_ci <- function(summary_data, title, subtitle, x_lab) {
-  
-  y_max <- max(summary_data$Upper, na.rm = TRUE)
-  y_min <- min(summary_data$Lower, na.rm = TRUE)
-  text_offset <- (y_max - y_min) * 0.15
-  
-  ggplot(summary_data, aes(x = Pretty_Label, y = Mean)) +
-    geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.2, linewidth = 0.8) +
-    geom_point(aes(fill = Pretty_Label), shape = 21, size = 5, color = "black", stroke = 1) +
-    geom_text(aes(y = Upper + text_offset, label = Letter), size = 6, fontface = "bold") +
-    scale_fill_viridis_d(option = "magma", begin = 0.2, end = 0.9) +
-    scale_y_continuous(expand = expansion(mult = c(0.1, 0.2))) +
-    labs(
-      title = title,
-      subtitle = subtitle,
-      x = x_lab,
-      y = "Nucleotide Diversity (Pi) ± 95% CI"
-    ) +
-    theme_custom() +
-    theme(legend.position = "none",
-          plot.title = element_text(face = "bold"))
-}
-
-# Generate and Save
-p_select <- plot_mean_ci(stats_S, 
-                         "Diversity vs Selection (4 Categories)", 
-                         "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)",
-                         "Selection Intensity (S_ROC)")
-
-p_exp <- plot_mean_ci(stats_Exp, 
-                      "Diversity vs Expression (Deciles)", 
-                      "Mean ± 95% CI | Letters: Post-hoc Dunn's Test (p < 0.05)",
-                      "Expression Decile")
-
-ggsave("results/Results_Pi_vs_S_4Cat.pdf", p_select, width = 7, height = 6)
-ggsave("results/Results_Pi_vs_Exp_Deciles.pdf", p_exp, width = 8, height = 6)
-
-cat("\nPlots saved successfully using the 4-category S_ROC binning.\n")
-
-## *****************************************************************************
-## 15) Diversity across different genomic compartment ----
+## 14) Diversity across different genomic compartment ----
 ## _____________________________________________________________________________
 
 pi_compartment <- read.table(file = "./data/all_chromosomes.pi_by_compartment.txt",

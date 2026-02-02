@@ -12,199 +12,123 @@ create_preference_biplot <- function(
     subtitle = NULL,
     output_file = NULL
 ) {
-  #' Create a clean biplot showing preferred vs non-preferred codons
-
-  #' 
-  #' @param ordination_result CA or PCA result object from FactoMineR
-
-  #' @param gene_data data.frame with Gene_name and expression_group columns
-
-  #' @param preferred_codons data.frame with Preferred_Codons column (from ROC)
-  #' @param dims numeric vector of length 2, which dimensions to plot
-  #' @param arrow_scale numeric, scaling factor for codon arrows
-  #' @param title character, plot title
-  #' @param subtitle character, optional subtitle
-  #' @param output_file character, path to save PDF (NULL = no save)
-  #' @return ggplot object
-  
   require(ggplot2)
   require(dplyr)
-  require(ggnewscale)
   
-  # Detect analysis type and extract coordinates
-  if (inherits(ordination_result, "PCA")) {
-    # PCA from FactoMineR
-    gene_scores <- as.data.frame(ordination_result$ind$coord[, dims])
-    codon_loadings <- as.data.frame(ordination_result$var$coord[, dims])
-    var_explained <- ordination_result$eig[dims, 2]
-    analysis_type <- "PCA"
-  } else if (inherits(ordination_result, "CA")) {
-    # CA from FactoMineR
+  # 1. Extract Coordinates
+  if (inherits(ordination_result, "CA")) {
     gene_scores <- as.data.frame(ordination_result$row$coord[, dims])
     codon_loadings <- as.data.frame(ordination_result$col$coord[, dims])
-    var_explained <- ordination_result$eig[dims, 2]
-    analysis_type <- "CA"
-  } else if (inherits(ordination_result, "coa") || "li" %in% names(ordination_result)) {
-    # ade4 style or converted CA object
-    gene_scores <- as.data.frame(ordination_result$li[, dims])
-    codon_loadings <- as.data.frame(ordination_result$co[, dims])
-    if ("eig" %in% names(ordination_result) && is.matrix(ordination_result$eig)) {
-      var_explained <- ordination_result$eig[dims, 2]
-    } else if ("eig" %in% names(ordination_result)) {
-      total <- sum(ordination_result$eig)
-      var_explained <- ordination_result$eig[dims] / total * 100
-    } else {
-      var_explained <- c(NA, NA)
-    }
-    analysis_type <- "CA"
   } else {
-    stop("Unsupported ordination result type")
+    gene_scores <- as.data.frame(ordination_result$ind$coord[, dims])
+    codon_loadings <- as.data.frame(ordination_result$var$coord[, dims])
   }
   
-  # Standardize column names
-  names(gene_scores) <- c("Dim1", "Dim2")
-  names(codon_loadings) <- c("Dim1", "Dim2")
+  # Standardize internal names
+  names(gene_scores) <- c("DimX", "DimY")
+  names(codon_loadings) <- c("DimX", "DimY")
   
-  # Add gene names
+  # Clean gene names to ensure matching
   gene_scores$Gene_name <- sub("\\.1$", "", rownames(gene_scores))
   codon_loadings$Codon <- rownames(codon_loadings)
   
-  # Merge with gene data (expression groups)
-  gene_scores <- gene_scores |>
-    dplyr::left_join(gene_data, by = "Gene_name") |>
-    dplyr::filter(!is.na(expression_group))
+  # 2. Merge and Label the Middle 90%
+  gene_scores <- gene_scores %>%
+    dplyr::left_join(gene_data, by = "Gene_name") %>%
+    dplyr::mutate(expression_group = ifelse(is.na(expression_group), 
+                                            "Middle 90%", 
+                                            as.character(expression_group)))
   
-  # Classify codons as preferred vs non-preferred
-  # Handle different column name formats
-  if ("Preferred_Codons" %in% names(preferred_codons)) {
-    preferred_list <- preferred_codons$Preferred_Codons
-  } else if ("codon" %in% names(preferred_codons)) {
-    preferred_list <- preferred_codons$codon
-  } else if ("Codon" %in% names(preferred_codons)) {
-    preferred_list <- preferred_codons$Codon
+  # 3. Codon Classification
+  preferred_list <- if ("Preferred_Codons" %in% names(preferred_codons)) {
+    preferred_codons$Preferred_Codons
   } else {
-    preferred_list <- preferred_codons[[1]]
+    preferred_codons[[1]]
   }
   
-  codon_loadings <- codon_loadings |>
+  codon_loadings <- codon_loadings %>%
+    dplyr::mutate(Preference = ifelse(Codon %in% preferred_list, "Preferred", "Non-preferred"))
+  
+  # 4. Scaling Logic for Arrows
+  gene_range <- max(diff(range(gene_scores$DimX)), diff(range(gene_scores$DimY)))
+  codon_range <- max(diff(range(codon_loadings$DimX)), diff(range(codon_loadings$DimY)))
+  effective_scale <- arrow_scale * ((gene_range * 0.4) / codon_range)
+  
+  codon_loadings <- codon_loadings %>%
     dplyr::mutate(
-      Preference = ifelse(Codon %in% preferred_list, "Preferred", "Non-preferred")
+      DimX_scaled = DimX * effective_scale, 
+      DimY_scaled = DimY * effective_scale
     )
   
-  # Auto-scale arrows to be visible relative to gene score spread
-  # Calculate the range of gene scores to determine appropriate arrow scaling
-  gene_range <- max(
-    diff(range(gene_scores$Dim1, na.rm = TRUE)),
-    diff(range(gene_scores$Dim2, na.rm = TRUE))
-  )
-  codon_range <- max(
-    diff(range(codon_loadings$Dim1, na.rm = TRUE)),
-    diff(range(codon_loadings$Dim2, na.rm = TRUE))
-  )
-  
-  # Scale so arrows span ~40% of the gene score range
-  auto_scale <- (gene_range * 0.4) / codon_range
-  effective_scale <- arrow_scale * auto_scale
-  
-  # Scale arrows
-  codon_loadings <- codon_loadings |>
-    dplyr::mutate(
-      Dim1_scaled = Dim1 * effective_scale,
-      Dim2_scaled = Dim2 * effective_scale
-    )
-  
-  # Define colors - Preferred = red (matches high expression/selection)
-  preference_colors <- c("Preferred" = "#E41A1C", "Non-preferred" = "#377EB8")
-  
-  # Build axis labels
-  if (!is.na(var_explained[1])) {
-    x_label <- sprintf("Dim %d (%.1f%%)", dims[1], var_explained[1])
-    y_label <- sprintf("Dim %d (%.1f%%)", dims[2], var_explained[2])
-  } else {
-    x_label <- sprintf("Dim %d", dims[1])
-    y_label <- sprintf("Dim %d", dims[2])
-  }
-  
-  # Define ellipse colors (stronger for visibility)
-  ellipse_colors <- c(
-    "Top 5%" = "#E41A1C",
-    "Bottom 5%" = "#377EB8",
-    "High Selection (Top 5%)" = "#E41A1C",
-    "Low Selection (Bottom 5%)" = "#377EB8"
+  # 5. Define Unified Color Palette
+  # This map handles Points, Ellipses, and Arrows in one scale
+  unified_colors <- c(
+    "Top 5%" = "#E41A1C", 
+    "Bottom 5%" = "#377EB8", 
+    "Middle 90%" = "gray85",
+    "Preferred" = "#E41A1C",
+    "Non-preferred" = "#377EB8"
   )
   
-  # Create the plot
+  # 6. Build the Plot
   p <- ggplot() +
-    # Gene points with expression group colors (light, transparent)
+    # Reference Lines
+    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.2) +
+    geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.2) +
+    
+    # Gene Points: Using color instead of fill to avoid scale conflicts
+    # Alpha is low (0.05) because 25k points will overlap heavily
     geom_point(
-      data = gene_scores,
-      aes(x = Dim1, y = Dim2, fill = expression_group),
-      alpha = 0.25,
-      size = 1.5,
-      shape = 21,
-      color = NA
+      data = gene_scores, 
+      aes(x = DimX, y = DimY, color = expression_group),
+      alpha = 0.05, 
+      size = 0.8
     ) +
-    scale_fill_manual(
-      name = "Gene Group",
-      values = c("Top 5%" = "#FCBBA1", "Bottom 5%" = "#9ECAE1",
-                 "High Selection (Top 5%)" = "#FCBBA1", 
-                 "Low Selection (Bottom 5%)" = "#9ECAE1")
-    ) +
-    # Add new fill scale for points
-    ggnewscale::new_scale_fill() +
-    # Add confidence ellipses for each group (strong colors)
+    
+    # Confidence Ellipses
     stat_ellipse(
-      data = gene_scores,
-      aes(x = Dim1, y = Dim2, color = expression_group),
-      level = 0.95,
-      linewidth = 1.2,
-      linetype = "solid"
+      data = gene_scores, 
+      aes(x = DimX, y = DimY, color = expression_group),
+      level = 0.95, 
+      linewidth = 0.8
     ) +
-    # Codon arrows colored by preference (thicker, more visible)
+    
+    # Codon Arrows
     geom_segment(
-      data = codon_loadings,
-      aes(x = 0, y = 0, xend = Dim1_scaled, yend = Dim2_scaled, 
-          color = Preference),
-      arrow = arrow(length = unit(0.2, "cm")),
-      linewidth = 1.0,
-      alpha = 1.0
+      data = codon_loadings, 
+      aes(x = 0, y = 0, xend = DimX_scaled, yend = DimY_scaled, color = Preference),
+      arrow = arrow(length = unit(0.2, "cm")), 
+      linewidth = 0.8
     ) +
-    # Codon labels (larger)
+    
+    # Codon Labels
     geom_text(
-      data = codon_loadings,
-      aes(x = Dim1_scaled * 1.08, y = Dim2_scaled * 1.08, 
-          label = Codon, color = Preference),
-      size = 3.0,
+      data = codon_loadings, 
+      aes(x = DimX_scaled * 1.1, y = DimY_scaled * 1.1, label = Codon, color = Preference), 
+      size = 2.8, 
       fontface = "bold",
       show.legend = FALSE
     ) +
-    # Combined color scale for ellipses and arrows
-    scale_color_manual(
-      name = "",
-      values = c(preference_colors, ellipse_colors),
-      breaks = c("Preferred", "Non-preferred", 
-                 names(ellipse_colors)[names(ellipse_colors) %in% unique(gene_scores$expression_group)])
-    ) +
-    # Axis labels
+    
+    # Unified Color Scale
+    scale_color_manual(name = "Group / Preference", values = unified_colors) +
+    
+    # Formatting
+    theme_custom() +
     labs(
       title = title,
       subtitle = subtitle,
-      x = x_label,
-      y = y_label
+      x = paste("Dimension", dims[1]),
+      y = paste("Dimension", dims[2])
     ) +
-    # Reference lines
-    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.3) +
-    geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.3) +
-    # Apply custom theme
-    theme_custom() +
     theme(
-      axis.text.x = element_text(angle = 0, hjust = 0.5),
-      legend.position = "right"
+      legend.position = "right",
+      panel.grid.minor = element_blank()
     )
   
-  # Save if output file specified
+  # 7. Save and Return
   if (!is.null(output_file)) {
-    ggsave(output_file, p, width = 10, height = 8, dpi = 300)
+    ggsave(output_file, p, width = 10, height = 8, bg = "white")
     cat(sprintf("✓ Saved: %s\n", output_file))
   }
   
