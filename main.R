@@ -128,6 +128,11 @@ exp_complete$Geom_Mean_CPM <- 10^(exp_complete$Mean_Log10_Exp) - 1
 head(exp_complete[, c("Gene_name", "Mean_Log10_Exp", "Max_Log10_Exp", 
                       "Geom_Mean_CPM", "Exp_breadth")])
 
+# Saving the data for future usage
+
+write.csv(exp_complete, file = "./results/Expression_Profiles_Summary.csv", 
+          row.names = FALSE)
+
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
 ## _____________________________________________________________________________
