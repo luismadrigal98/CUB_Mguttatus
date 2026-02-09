@@ -1788,6 +1788,18 @@ write.csv(x = detailed_annotation,
           file = "./results/Top20_genes_strong_selection_load.csv", 
           quote = T, row.names = F)
 
+# 8.6) Goodness-of-fit test based on Anacoda predictions ----
+
+gof_results <- run_gof_analysis(
+  mutation_file  = "./results/MCMC_results_backup/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Mutation.csv",
+  selection_file = "./results/MCMC_results_backup/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv",
+  phi_file       = "./results/MCMC_results_backup/results_dM_fixed_with_phi_final/run_1/Parameter_est/gene_expression.txt",
+  codon_counts_long = codon_freq_long,
+  test           = "chisq",
+  min_aa_total   = 5,
+  output_prefix  = "./results/ROC_model_goodness_of_fit"
+)
+
 ## 9) Comparing preferred codon of Mimulus guttatus to other plants ----
 
 # Use w_table from CAI analysis (already calculated preferred codons)
