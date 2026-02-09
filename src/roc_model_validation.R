@@ -836,7 +836,8 @@ plot_gof_diagnostics <- function(gene_gof, expected_counts, output_prefix = NULL
               100 * mean(gene_gof$p_adj_sum < 0.05, na.rm = TRUE)))
   
   # Spearman correlation between phi and reduced chi-sq
-  cor_test <- cor.test(gene_gof$Phi, gene_gof$reduced_chisq, method = "spearman")
+  cor_test <- cor.test(gene_gof$Phi, gene_gof$reduced_chisq, method = "spearman",
+                       exact = F)
   cat(sprintf("Spearman rho (phi vs reduced chi-sq): %.3f (p = %.2e)\n",
               cor_test$estimate, cor_test$p.value))
   

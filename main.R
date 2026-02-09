@@ -96,7 +96,7 @@ codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long),
 
 exp_complete <- read.table(file = "./data/compiled_expression_IM767.txt", 
                            header = T, sep = '\t') |>
-  dplyr::rename(Gene_name = Remapped_Gene) |>
+  dplyr::rename(Gene_name = GeneID) |>
   dplyr::distinct(Gene_name, .keep_all = TRUE)
 
 # Isolate the numeric data (Everything except Gene_name)

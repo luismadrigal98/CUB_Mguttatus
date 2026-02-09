@@ -5,7 +5,7 @@ IM62 and IM767 samples. It filters for relevant columns (IM samples) and transla
 IM62 gene names to the IM767 reference genome.
 
 @author: Luis Javier Madrigal-Roca
-@date: 2024-06-10 (Updated 2026-01-14 by Co-pilot)
+@date: 2024-06-10
 '''
 
 import pandas as pd
@@ -230,6 +230,10 @@ def main():
     # Pivot to Wide Format (Genes x Samples)
     print("Pivoting to wide format (Matrix)...")
     df_matrix = df_grouped.pivot(index='Remapped_Gene', columns='Sample', values='CPM')
+
+    # Change name of the columns to match expectations of AnaCoda (GeneID, Sample1, Sample2...)
+    df_matrix.index.name = 'GeneID'
+    df_matrix.columns.name = None
     
     # Fill NaN with 0 (missing gene in a sample = 0 expression)
     df_matrix = df_matrix.fillna(0)
@@ -244,7 +248,7 @@ def main():
 
     # --- 5. Save Output ---
     print(f"\n--- Saving to {args.output_file} ---")
-    df_matrix.to_csv(args.output_file, sep='\t')
+    df_matrix.to_csv(args.output_file, sep=',')
     print("Done successfully.")
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ Output:
     - pi_by_compartment.txt: Summary statistics per compartment
     - pi_by_window.txt: Per-window/region statistics
 
-Author: Luis Javier Madrigal-Roca & GitHub Copilot
+Author: Luis Javier Madrigal-Roca
 Date: 2026-01-22
 """
 
