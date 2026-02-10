@@ -382,9 +382,7 @@ plot_codon_trajectories <- function(csp_df, obs_binned,
   return(list(combined = combined_plot, individual = plot_list))
 }
 
-# ==============================================================================
 # CONVENIENCE WRAPPER
-# ==============================================================================
 
 #' Run complete codon trajectory analysis
 #'
@@ -423,9 +421,7 @@ run_trajectory_analysis <- function(mutation_file, selection_file,
   ))
 }
 
-# ==============================================================================
 # LOAD PHI ESTIMATES
-# ==============================================================================
 
 #' Load per-gene phi estimates from AnaCoDa gene_expression.txt
 #'
@@ -452,9 +448,7 @@ load_phi_estimates <- function(phi_file) {
   return(out)
 }
 
-# ==============================================================================
 # PREDICT PER-GENE EXPECTED CODON COUNTS
-# ==============================================================================
 
 #' Calculate ROC-predicted codon probabilities for a single phi value
 #'
@@ -587,9 +581,7 @@ calculate_expected_counts <- function(codon_counts_long, phi_df, csp_df,
   return(result)
 }
 
-# ==============================================================================
 # GOODNESS-OF-FIT TESTS
-# ==============================================================================
 
 #' Perform per-gene goodness-of-fit test (chi-squared or G-test)
 #'
@@ -733,9 +725,7 @@ aggregate_gof_by_gene <- function(gof_results, method = c("both", "sum", "fisher
   return(gene_summary)
 }
 
-# ==============================================================================
 # DIAGNOSTICS & VISUALIZATION
-# ==============================================================================
 
 #' Summarize goodness-of-fit results with diagnostic plots
 #'
@@ -844,9 +834,7 @@ plot_gof_diagnostics <- function(gene_gof, expected_counts, output_prefix = NULL
   return(list(plots = plots, summary = gene_gof))
 }
 
-# ==============================================================================
 # COMPLETE GoF ANALYSIS WRAPPER
-# ==============================================================================
 
 #' Run complete goodness-of-fit analysis for the ROC model
 #'
