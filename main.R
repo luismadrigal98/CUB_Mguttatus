@@ -33,7 +33,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'FSA', 'matrixStats', 'ggpubr',
                         'boot', 'gratia', 'marginaleffects',
                         'corrr', 'nortest', 'patchwork',
-                        'betareg')
+                        'betareg', 'brms')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -3593,3 +3593,13 @@ t_test_result <- stats::t.test(boost_comparison$GC_Segregating,
 
 print("=== Paired Test: Does Selection Boost GC Diversity More than AT? ===")
 print(t_test_result)
+
+# ******************************************************************************
+# 15) Testing the translational ramp hypothesis ----
+# ______________________________________________________________________________
+
+# 15.1) Reference based analysis (historic) ----
+binary_preferred <- codons_to_preferred_state_bernoulli(trans, 
+                                                        as.character(preferred_codons$Codon))
+
+# 15.2) Polymorphism based (contemporaneous) ----
