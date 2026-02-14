@@ -3625,37 +3625,52 @@ clean_data <- binary_preferred |>
 target_genes <- sample(unique(clean_data$GeneID), 3000)
 model_data <- clean_data |> dplyr::filter(GeneID %in% target_genes)
 
+model_data$GeneID <- droplevels(model_data$GeneID)
+
 priors <- c(
   prior(normal(0, 1.5), class = "Intercept"), # Baseline prob between 0.1 and 0.9
   prior(normal(0, 0.5), class = "b"),         # Linear effects
   prior(exponential(1), class = "sd")         # Random effects / Spline wiggle
 )
 
+# Aggregate to 10-codon windows
+window_size <- 10
+model_data_agg <- model_data |>
+  dplyr::mutate(Window = ceiling(Position / window_size)) |>
+  dplyr::group_by(GeneID, Window, Exp_Z, Breadth_Z) |>
+  dplyr::summarize(
+    Position_mid = mean(Position),  # Midpoint of window for spline
+    n_preferred = sum(Is_Preferred),
+    n_total = n(),
+    .groups = "drop"
+  ) |>
+  dplyr::filter(n_total > 0)
+
 # Run the Model
 fit_ramp_bayes <- brm(
-  formula = Is_Preferred ~ 
+  formula = n_preferred | trials(n_total) ~ 
     # A: The Ramp (Global Shape)
-    s(Position, k = 20, bs = "tp") + 
+    s(Position_mid, k = 10, bs = "tp") + 
     
-    # B: Ramp x Intensity Interaction (Does high exp have a steeper ramp?)
-    s(Position, by = Exp_Z, k = 20, bs = "tp") +
+    # B: Ramp x Intensity Interaction
+    s(Position_mid, by = Exp_Z, k = 10, bs = "tp") +
     
-    # C: Baseline Bias (Interaction of Intensity + Breadth)
+    # C: Baseline Bias
     t2(Exp_Z, Breadth_Z) +
     
     # D: Gene-specific random intercept
     (1 | GeneID),
   
-  data = model_data,
-  family = bernoulli(link = "logit"),
+  data = model_data_agg,
+  family = binomial(link = "logit"),
   prior = priors,
-  chains = 4, cores = (parallel::detectCores() - 1), 
+  chains = 4, cores = 4,
   iter = 2000, warmup = 1000,
-  backend = "cmdstanr", # Requires cmdstanr installed, much faster
-  control = list(adapt_delta = 0.95) # Helps with complex hierarchical models
+  backend = "rstan",
+  control = list(adapt_delta = 0.95)
 )
 
-saveRDS(fit_ramp_bayes, "./results/Bayesian_Ramp_Bernoulli.rds")
+saveRDS(fit_ramp_bayes, "./results/Bayesian_Ramp.rds")
 
 # Visualization
 # Define specific scenarios to visualize
