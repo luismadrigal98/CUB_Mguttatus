@@ -33,7 +33,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'FSA', 'matrixStats', 'ggpubr',
                         'boot', 'gratia', 'marginaleffects',
                         'corrr', 'nortest', 'patchwork',
-                        'betareg', 'brms')
+                        'betareg', 'brms', 'cmdstanr')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -3601,5 +3601,92 @@ print(t_test_result)
 # 15.1) Reference based analysis (historic) ----
 binary_preferred <- codons_to_preferred_state_bernoulli(trans, 
                                                         as.character(preferred_codons$Codon))
+
+binary_preferred <- binary_preferred |>
+  left_join(integrated_data |> dplyr::select(Gene_name, Max_Log10_Exp, 
+                                             Exp_breadth), 
+            by = join_by("GeneID" == "Gene_name")) |>
+  na.exclude()
+
+clean_data <- binary_preferred |>
+  dplyr::filter(!is.na(Max_Log10_Exp), !is.na(Exp_breadth)) %>%
+  # Focus on the Translational Ramp region (first 200 codons)
+  dplyr::filter(Position <= 200) |> 
+  dplyr::mutate(
+    # Standardize predictors (Mean=0, SD=1) for faster MCMC
+    Exp_Z = as.numeric(scale(Max_Log10_Exp)),
+    Breadth_Z = as.numeric(scale(Exp_breadth)),
+    GeneID = factor(GeneID),
+    Is_Preferred = as.integer(Is_Preferred)
+  )
+
+# Subsampling genes to make MCMC manageable
+
+target_genes <- sample(unique(clean_data$GeneID), 3000)
+model_data <- clean_data |> dplyr::filter(GeneID %in% target_genes)
+
+priors <- c(
+  prior(normal(0, 1.5), class = "Intercept"), # Baseline prob between 0.1 and 0.9
+  prior(normal(0, 0.5), class = "b"),         # Linear effects
+  prior(exponential(1), class = "sd")         # Random effects / Spline wiggle
+)
+
+# Run the Model
+fit_ramp_bayes <- brm(
+  formula = Is_Preferred ~ 
+    # A: The Ramp (Global Shape)
+    s(Position, k = 20, bs = "tp") + 
+    
+    # B: Ramp x Intensity Interaction (Does high exp have a steeper ramp?)
+    s(Position, by = Exp_Z, k = 20, bs = "tp") +
+    
+    # C: Baseline Bias (Interaction of Intensity + Breadth)
+    t2(Exp_Z, Breadth_Z) +
+    
+    # D: Gene-specific random intercept
+    (1 | GeneID),
+  
+  data = model_data,
+  family = bernoulli(link = "logit"),
+  prior = priors,
+  chains = 4, cores = (parallel::detectCores() - 1), 
+  iter = 2000, warmup = 1000,
+  backend = "cmdstanr", # Requires cmdstanr installed, much faster
+  control = list(adapt_delta = 0.95) # Helps with complex hierarchical models
+)
+
+saveRDS(fit_ramp_bayes, "./results/Bayesian_Ramp_Bernoulli.rds")
+
+# Visualization
+# Define specific scenarios to visualize
+
+conditions <- expand.grid(
+  Exp_Z = c(-1, 1),      # Low (-1 SD) vs High (+1 SD) Intensity
+  Breadth_Z = c(-1, 1)   # Narrow (-1 SD) vs Broad (+1 SD) Breadth
+)
+# Give them nice names for the plot
+row.names(conditions) <- c("Low Exp / Narrow", "High Exp / Narrow", 
+                           "Low Exp / Broad", "High Exp / Broad")
+
+# Calculate conditional effects of Position
+p_ramp <- conditional_effects(
+  fit_ramp_bayes, 
+  effects = "Position", 
+  conditions = conditions,
+  re_formula = NA # Exclude random gene effects (show population average)
+)
+
+# Plot
+plot(p_ramp, plot = FALSE)[[1]] + 
+  facet_grid(Breadth_Z ~ Exp_Z, labeller = label_both) +
+  scale_fill_viridis_d(alpha = 0.2) +
+  scale_color_viridis_d() +
+  labs(
+    title = "Translational Ramp Dynamics",
+    subtitle = "Posterior Probability of Preferred Codon vs Position",
+    y = "P(Preferred Codon)",
+    x = "Codon Position (from Start)"
+  ) +
+  theme_custom()
 
 # 15.2) Polymorphism based (contemporaneous) ----
