@@ -4016,7 +4016,15 @@ poly_agg <- poly_with_exp |>
     n_codons = n(),
     .groups = "drop"
   ) |>
-  dplyr::filter(Position_mid <= 200)
+  dplyr::filter(Position_mid <= 200) |>
+  dplyr::mutate(
+    # Simple boundary adjustment - just avoid exact 0 and 1
+    Preferred_Freq_beta = case_when(
+      Preferred_Freq_mean <= 0.001 ~ 0.001,
+      Preferred_Freq_mean >= 0.999 ~ 0.999,
+      TRUE ~ Preferred_Freq_mean
+    )
+  )
 
 # MODEL 1: Null (no position effect) ----
 fit_null_poly <- bam(
@@ -4025,7 +4033,7 @@ fit_null_poly <- bam(
     s(Gene_clean, bs = "re"),
   
   data = poly_agg,
-  family = gaussian(),  # Can also use Beta regression if needed
+  family = betar(),  # Can also use Beta regression if needed
   method = "fREML",
   discrete = TRUE,
   nthreads = 1
@@ -4039,7 +4047,7 @@ fit_ramp_poly <- bam(
     s(Gene_clean, bs = "re"),
   
   data = poly_agg,
-  family = gaussian(),
+  family = betar(),
   method = "fREML",
   discrete = TRUE,
   nthreads = 1
@@ -4054,7 +4062,7 @@ fit_ramp_int_poly <- bam(
     s(Gene_clean, bs = "re"),
   
   data = poly_agg,
-  family = gaussian(),
+  family = betar(),
   method = "fREML",
   discrete = TRUE,
   nthreads = 1
@@ -4164,7 +4172,7 @@ fit_contrast_poly <- bam(
     s(Gene_clean, bs = "re"),
   
   data = contrast_data,
-  family = gaussian(),
+  family = betar(),
   method = "fREML",
   discrete = TRUE,
   nthreads = 4
