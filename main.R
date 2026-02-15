@@ -4026,9 +4026,14 @@ poly_agg <- poly_with_exp |>
     )
   )
 
+# Verify no exact 0s or 1s
+if(any(poly_agg$Preferred_Freq_beta <= 0 | poly_agg$Preferred_Freq_beta >= 1)) {
+  stop("ERROR: Beta regression requires values strictly between 0 and 1")
+}
+
 # MODEL 1: Null (no position effect) ----
 fit_null_poly <- bam(
-  Preferred_Freq_mean ~ 
+  Preferred_Freq_beta ~ 
     Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
     s(Gene_clean, bs = "re"),
   
@@ -4041,7 +4046,7 @@ fit_null_poly <- bam(
 
 # MODEL 2: Global ramp ----
 fit_ramp_poly <- bam(
-  Preferred_Freq_mean ~ 
+  Preferred_Freq_beta ~ 
     s(Position_mid, k = 10, bs = "tp") +
     Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
     s(Gene_clean, bs = "re"),
@@ -4055,7 +4060,7 @@ fit_ramp_poly <- bam(
 
 # MODEL 3: Ramp × Expression interaction ----
 fit_ramp_int_poly <- bam(
-  Preferred_Freq_mean ~ 
+  Preferred_Freq_beta ~ 
     s(Position_mid, k = 10, bs = "tp") +
     s(Position_mid, by = Exp_Z, k = 10, bs = "tp") +
     Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
