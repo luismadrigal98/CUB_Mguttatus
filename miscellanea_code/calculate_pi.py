@@ -34,7 +34,7 @@ def load_annotated_sites(annotation_file, chrom):
     gsites = {}
     
     with open(annotation_file, 'r') as f:
-        header = f.readline()  # Skip header: Chr Gene Position Base Codon_Position Degeneracy Ref_Codon Amino_Acid [Strand]
+        _ = f.readline()  # Skip header: Chr Gene Position Base Codon_Position Degeneracy Ref_Codon Amino_Acid [Strand]
         
         for line in f:
             cols = line.strip().split('\t')

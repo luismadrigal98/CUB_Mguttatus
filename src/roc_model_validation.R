@@ -10,9 +10,7 @@
 #' @author Luis Javier Madrigal-Roca
 #' @date 2024-12-04
 
-# ==============================================================================
 # AnaCoDa COLOR SCHEME
-# ==============================================================================
 
 # Exact colors from AnaCoDa's colorSchemes.R for each codon
 .codonColors <- list(
@@ -41,9 +39,7 @@
   TGG = "blue"
 )
 
-# ==============================================================================
 # LOAD CSP PARAMETERS
-# ==============================================================================
 
 #' Load CSP parameters from AnaCoDa output files
 #'
@@ -83,9 +79,7 @@ load_csp_parameters <- function(mutation_file, selection_file) {
   return(csp)
 }
 
-# ==============================================================================
 # PREDICT CODON PROBABILITIES
-# ==============================================================================
 
 #' Calculate predicted codon probabilities for a range of phi values
 #'
@@ -131,9 +125,7 @@ predict_across_phi_range <- function(phi_log10_values, csp_df) {
   return(out)
 }
 
-# ==============================================================================
 # MAP AMINO ACIDS TO ANACODA CONVENTION
-# ==============================================================================
 
 #' Map observed codon data to AnaCoDa AA convention and recalculate frequencies
 #' 
@@ -172,9 +164,7 @@ map_aa_to_anacoda <- function(codon_df) {
   return(codon_df)
 }
 
-# ==============================================================================
 # CALCULATE OBSERVED FREQUENCIES BY EXPRESSION BIN
-# ==============================================================================
 
 #' Calculate observed codon frequencies in expression bins
 #'
@@ -209,9 +199,7 @@ calculate_observed_by_bin <- function(obs_data, n_bins = 10) {
   return(obs_summary)
 }
 
-# ==============================================================================
 # MAIN PLOTTING FUNCTION - AnaCoDa Style
-# ==============================================================================
 
 #' Plot codon frequency trajectories for a single amino acid
 #'

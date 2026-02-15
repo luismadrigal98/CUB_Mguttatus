@@ -133,6 +133,10 @@ head(exp_complete[, c("Gene_name", "Mean_Log10_Exp", "Max_Log10_Exp",
 write.csv(exp_complete, file = "./results/Expression_Profiles_Summary.csv", 
           row.names = FALSE)
 
+# --- Memory cleanup: expression intermediates ---
+rm(numeric_data, CPM_thr)
+gc()
+
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
 ## _____________________________________________________________________________
@@ -175,6 +179,10 @@ integrated_data <- integrated_data |>
 integrated_data <- integrated_data |>
   left_join(cub_results$gc_results, by = "Gene_name") |>
   data.frame() # Strip attributes
+
+# Memory cleanup: gene length intermediates ---
+rm(gene_lengths, codon_columns)
+gc()
 
 ## *****************************************************************************
 ## 5) CDC-based analysis ----
@@ -681,6 +689,21 @@ if (length(middle_cdc_de) > 0 && length(bottom5_cdc_de) > 0) {
 
 cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
+# Memory cleanup: Section 5-6 plots and intermediate objects ---
+# Keeping: selection_table, test_broad_vs_narrow, test_medium_vs_narrow,
+#          kw_detrended, cdc_position_summary, slopes, contrasts
+rm(m_null, m_additive, m_complex, m_interaction, model_list,
+   justification_list, justification_table, plot_list, combined_plot,
+   p_effects, p_slopes,
+   m_noise, confounder_model_gam, p_detrended,
+   p_boxplot_detrended, p_medians, p_constraint, p_enc_cdc,
+   expected_curve, gc3s_range, enc_expected,
+   plot_data, my_comparisons,
+   top5_cdc_de, middle_cdc_de, bottom5_cdc_de,
+   n_sig, n_total, pct_sig,
+   top_5_cutoff, bottom_5_cutoff)
+gc()
+
 ## *****************************************************************************
 ## 7) Calculate Codon Adaptation Index (CAI) ----
 ## _____________________________________________________________________________
@@ -1026,6 +1049,16 @@ p_comparison <- ggplot(comparison_table,
 ggsave("./results/preferred_codon_usage_comparison.pdf", p_comparison,
        width = 10, height = 6)
 
+# Memory cleanup: Section 7 CAI intermediates ---
+# Keeping: cai_results, w_table, cai_by_group, kw_test, comparison_table, wilcox_test
+rm(p_cai_boxplot, p_cai_median, plot_data_cai,
+   top_cai, middle_cai, bottom_cai, reference_genes,
+   freq_top5, freq_rest, freq_comparison, freq_long, p_freq_comparison,
+   codon_usage_with_groups, enriched_codons_vec, enriched_aa, rest_aa,
+   p_comparison, top5_genes, rest_genes,
+   codon_cols)
+gc()
+
 ## *****************************************************************************
 ## 8) AnaCoDa-based analysis ----
 ## _____________________________________________________________________________
@@ -1083,6 +1116,13 @@ if (!is.null(dM_results$intermediates$introns$nuc_filtered) &
   clusters_localM_introns <- make_clusters(data = window_data_introns[, -1], G = 1:10)
   clusters_localM_intergenic <- make_clusters(data = window_data_intergenic[, -1], G = 1:10)
 }
+
+# Memory cleanup: dM estimation intermediates ---
+# Keeping: dM_results (mutation rate estimates)
+if (exists("window_data_introns")) rm(window_data_introns, window_data_intergenic,
+                                       pca_introns, pca_intergenic,
+                                       clusters_localM_introns, clusters_localM_intergenic)
+gc()
 
 # No evidence for more than one cluster (genome-wide mutational pressure)
 
@@ -1213,6 +1253,13 @@ write.table(
   quote = FALSE 
 )
 
+# Memory cleanup: phi estimation intermediates ---
+# Keeping: phi_hat_dM_fixed, Naive_conv, dM_fixed_conv
+rm(phi_dM_fixed, multi_tissue_phi,
+   log_means, sphi_init, num_tissues, sepsilon_init,
+   sphi_str, sepsilon_str)
+gc()
+
 # 8.1.3.1) dM-fixed-with_phi ----
 
 # Setup paths for the 3 runs
@@ -1298,6 +1345,11 @@ trajectory_results <- run_trajectory_analysis(
   output_file = "./results/ROC_codon_trajectories.pdf",
   n_bins = 10
 )
+
+# Memory cleanup: trajectory analysis intermediates ---
+# Keeping: trajectory_results
+rm(expr_data, codon_to_aa, codon_to_aa_df)
+gc()
 
 # 8.1.4) dM-fixed-intergenic ----
 
@@ -1419,6 +1471,15 @@ ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", co
        plot = p2, width = 8, height = 4)
 ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", codon_index, "_acf.pdf"),
        plot = p3, width = 6, height = 4)
+
+# Memory cleanup: convergence diagnostics, phi comparisons, trace objects ---
+# Keeping: dM_fixed_with_phi_conv, dM_fixed_intergenic, dM_fixed_with_phi_intergenic,
+#          phi_hat_dM_fixed_intergenic, phi_hat_dM_fixed_with_phi_intergenic, exp_complete
+rm(phi_dM_fixed_with_phi, phi_dM_fixed_intergenic,
+   phi_dM_fixed_with_phi_intergenic,
+   parameters_objects, plot_data, p1, p2, p3, acf_val, acf_df,
+   codon_index, run_dirs)
+gc()
 
 # 8.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
 
@@ -1568,6 +1629,12 @@ selection_metrics <- selection_metrics |>
   left_join(phi_hat_dM_fixed_with_phi |> dplyr::select(GeneID, Mean.log10.Phi, MeanPhi),
             by = join_by(Gene_name == GeneID))
 
+# Memory cleanup: AnaCoDa genome/parameter objects and selection matrices ---
+rm(genome, parameter_object, selection_coeff,
+   counts_df, sel_mat, counts_aligned, sel_aligned,
+   common_genes, common_codons, phi_hat_dM_fixed_with_phi, p)
+gc()
+
 # 8.3.1) Relationship between L' and phi ----
 
 final_analysis_data <- selection_metrics |>
@@ -1621,6 +1688,11 @@ cor_selection <- cor.test(selection_genes$Mean.log10.Phi,
                           selection_genes$Intrinsic_Inefficiency, method = "spearman",
                           exact = F)
 
+# Memory cleanup: section 8.3.1 plot objects ---
+# Keeping: final_analysis_data, cor_load, cor_eff, cor_selection
+rm(p_load, p_optim, selection_genes)
+gc()
+
 # 8.3.2) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
 integrated_data <- integrated_data |>
@@ -1673,19 +1745,19 @@ y_max_anno <- 10000
 
 p1 <- ggplot(plot_data, aes(x = Log_S_ROC)) +
   
-  # --- Background Shading ---
+  # Background Shading ---
   annotate("rect", xmin = -Inf, xmax = drift_thresh, 
            ymin = 0, ymax = Inf, fill = "gray95", alpha = 0.8) +
   annotate("rect", xmin = drift_thresh, xmax = Inf, 
            ymin = 0, ymax = Inf, fill = "#ffe5e5", alpha = 0.5) +
   
-  # --- Histogram ---
+  # Histogram ---
   geom_histogram(bins = 100, fill = "#69b3a2", color = "white", linewidth = 0.05) +
   
-  # --- Vertical Threshold Lines ---
+  # Vertical Threshold Lines ---
   geom_vline(xintercept = drift_thresh, linetype = "dotted", color = "red") +
   
-  # --- Vertical Text Annotations (No Ne*s text) ---
+  # Vertical Text Annotations (No Ne*s text) ---
   # Drift Label (Left side, Vertical)
   annotate("text", x = log10(0.05), y = y_max_anno/12, 
            label = "Drift Dominated", 
@@ -1698,13 +1770,13 @@ p1 <- ggplot(plot_data, aes(x = Log_S_ROC)) +
            color = "red", fontface = "bold", size = 4, 
            angle = 0) +
   
-  # --- Custom "Separated" Rug ---
+  # Custom "Separated" Rug ---
   # We draw segments explicitly at y = -0.5 (below axis) to create the gap
   geom_segment(aes(x = Log_S_ROC, xend = Log_S_ROC, 
                    y = -0.05, yend = -0.2), # Adjust these values for tick length/position
                alpha = 0.3, color = "darkgreen") +
   
-  # --- Scales & Coordinates ---
+  # Scales & Coordinates ---
   scale_y_continuous(
     trans = "log1p", 
     breaks = c(0, 10, 100, 1000, 10000), 
@@ -1799,6 +1871,11 @@ gof_results <- run_gof_analysis(
   min_aa_total   = 5,
   output_prefix  = "./results/ROC_model_goodness_of_fit"
 )
+
+# Memory cleanup: large codon frequency data ---
+# Keeping: gof_results
+rm(codon_freq_long)
+gc()
 
 ## 9) Comparing preferred codon of Mimulus guttatus to other plants ----
 
@@ -2051,11 +2128,19 @@ p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon
 ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
        width = 12, height = 16)
 
+# Memory cleanup: Section 9 comparative analysis intermediates ---
+# Keeping: eta_data, similarity_matrix, hc, tree
+rm(preferred_codons_comparative, preferred_codons_mg, mg_prefs,
+   plant_codons_extended, codon_matrix,
+   distance_matrix, plot_data, p_comparison,
+   all_codons_rna, species)
+gc()
+
 ## *****************************************************************************
 ## 10) Correspondence analysis over counts and PCA over RSCU ----
 ## _____________________________________________________________________________
 
-# 10.1) CA Analysis ---- 
+# 10.1) CA Analysis -
 
 codon_usage_m <- as.matrix(codon_usage[, -1])
 rownames(codon_usage_m) <- codon_usage[[1]]
@@ -2079,7 +2164,7 @@ gene_data_ca <- codon_usage_CA_coord |>
   dplyr::select(Gene_name, expression_group = Expression_Group)
 
 # Create single enhanced biplot: preferred vs non-preferred codons
-cat("\n--- CA Analysis: Preferred vs Non-preferred Codons ---\n")
+cat("\nCA Analysis: Preferred vs Non-preferred Codons ---\n")
 p_ca <- create_preference_biplot(
   ordination_result = codon_usage_CA,
   gene_data = gene_data_ca,
@@ -2158,7 +2243,7 @@ gene_data_pca <- rscu_PCA_coord |>
   dplyr::select(Gene_name, expression_group = Expression_Group)
 
 # Create single enhanced biplot: preferred vs non-preferred codons
-cat("\n--- PCA Analysis: Preferred vs Non-preferred Codons ---\n")
+cat("\nPCA Analysis: Preferred vs Non-preferred Codons ---\n")
 p_pca <- create_preference_biplot(
   ordination_result = rscu_PCA,
   gene_data = gene_data_pca,
@@ -2220,7 +2305,7 @@ for (i in seq_len(nrow(pca_wilcox_results))) {
 
 if (exists("selection_metrics") && "S_ROC" %in% names(selection_metrics)) {
   
-  cat("\n--- CA/PCA Analysis by Selection Load ---\n")
+  cat("\nCA/PCA Analysis by Selection Load ---\n")
   
   # Create S_load-based groups
   s_quantiles <- quantile(selection_metrics$S_ROC, 
@@ -2359,6 +2444,17 @@ if (exists("selection_metrics") && "S_ROC" %in% names(selection_metrics)) {
 cat("\n✓ CA/PCA ordination analysis complete\n")
 cat("  Key outputs: CA_preference_biplot.pdf, PCA_preference_biplot.pdf\n\n")
 
+# Memory cleanup: Section 10 large matrices and plot objects ---
+# Keeping: cub_results, codon_usage_CA, rscu_PCA, ca_loading_test, pca_loading_test,
+#          ca_manova, pca_manova, ca_wilcox_results, pca_wilcox_results
+rm(codon_usage_m, codon_usage_CA_coord,
+   rscu_m, rscu_PCA_coord,
+   gene_data_ca, gene_data_pca, p_ca, p_pca)
+if (exists("selection_groups")) rm(selection_groups, codon_usage_CA_coord_S,
+                                   rscu_PCA_coord_S, gene_data_ca_S, gene_data_pca_S,
+                                   p_ca_S, p_pca_S)
+gc()
+
 ## *****************************************************************************
 ## 11) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
@@ -2436,6 +2532,13 @@ pairing_analysis <- classify_codon_anticodon_pairing(
   save_results = TRUE
 )
 
+# Memory cleanup: Section 11 tRNA intermediate objects ---
+# Keeping: tRNA_copynumber_results, aa_trna_check, pairing_analysis, preferred_codons_roc
+rm(tRNA_data, codon_supply,
+   all_sense_codons, roc_codon_status, roc_preferred,
+   n_preferred, n_total)
+gc()
+
 ## *****************************************************************************
 ## 12) Polymorphism data integration ----
 ## _____________________________________________________________________________
@@ -2455,6 +2558,9 @@ pi_data <- pi_data |>
 integrated_data <- integrated_data |>
   dplyr::left_join(pi_data, by = "Gene_name") |>
   na.exclude()
+
+# Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
+rm(pi_data)
 
 # Is the relationship between pi and predictors of interest linear?
 
@@ -2541,6 +2647,9 @@ preferred_data <- preferred_data |>
 integrated_data <- integrated_data |>
   left_join(preferred_data) |>
   na.exclude()
+
+# Memory cleanup: preferred frequency data (now joined into integrated_data) ---
+rm(preferred_data)
 
 # GAM wrappers
 
@@ -2704,6 +2813,18 @@ p_surface_pref <- plot_selection_surface(
   response_name = "Mean_preferred_freq"
 )
 
+# Memory cleanup: Section 12 plot objects and temporary subsets ---
+# Keeping: pi_nonlinearity_results, pi_models, pi_selection,
+#          pi_nonlinearity_results_s, pi_models_s, pi_selection_s,
+#          preferred_nonlinearity_results, preferred_models, preferred_selection,
+#          confounding_results, kw_preferred_freq
+rm(pi_selection_winner, pi_secection_winner_s,
+   preferred_selection_winner, confounder_model_gam,
+   predictors, predictors_s, predictors_p,
+   top5_preferred, middle_preferred, bottom5_preferred,
+   p_boxplot_preferred, p_preferred_median, p_surface_pref, plot_data_pref)
+gc()
+
 ## *****************************************************************************
 ## 13) Intronic Polymorphism-Based Selection Validation ----
 ## _____________________________________________________________________________
@@ -2789,7 +2910,7 @@ ggsave("./results/diversity_modeling/Expected_SFS_C_G.pdf",
 
 # STEP 4: Calculate the observed SFS for C and G at third positions ----
 
-# --- 1. Define Gene Sets ---
+# 1. Define Gene Sets ---
 target_n <- 90  # Define the projection size (must match your intron analysis)
 
 # Split the by quantiles in 20 intervals (to match with average S_roc per quantile and
@@ -2857,7 +2978,7 @@ empirical_SFS <- future_lapply(X = 1:(length(cutoffs_exp) - 1),
 
 names(empirical_SFS) <- interval_names
 
-# --- 7. Estimate Gamma for G and C in all groups ---
+# 7. Estimate Gamma for G and C in all groups ---
 cat("\n=== Estimating Gamma (Selection Coefficient) ===\n")
 
 gamma_estimates <- future_lapply(X = 1:length(empirical_SFS), 
@@ -3413,6 +3534,23 @@ mi_summary <- data.frame(
 
 write.csv(mi_summary, "./results/MI_analysis_summary.csv", row.names = FALSE)
 
+# Memory cleanup: Section 13 SFS intermediates and plot objects ---
+# Keeping: gamma_estimates, gamma_summary_df, scaling_df, neutral_params,
+#          mi_summary, mi_optimal, spearman_cor, pearson_cor,
+#          selection_summary, selection_summary_full
+rm(empirical_SFS,
+   sfs_C, sfs_G, obs_sfs_G, obs_sfs_C, observed_list, expected_sfs,
+   sfs_contrast, sfs_expected_counts,
+   sfs_plot_bottom5, sfs_plot_top5, sfs_plot_combined,
+   sfs_long, sfs_all, sfs_poly, sfs_summary, gamma_labels,
+   p_sfs_comparison, p_sfs_poly,
+   neutral_params_df,
+   mi_results, permuted_mi, permutation_df,
+   mi_p_value, mi_zscore, observed_mi,
+   p_mi_heatmap, p_permutation,
+   cutoffs_exp, target_n)
+gc()
+
 ## *****************************************************************************
 ## 14) Diversity across different genomic compartment ----
 ## _____________________________________________________________________________
@@ -3594,6 +3732,13 @@ t_test_result <- stats::t.test(boost_comparison$GC_Segregating,
 print("=== Paired Test: Does Selection Boost GC Diversity More than AT? ===")
 print(t_test_result)
 
+# Memory cleanup: Section 14 plot objects and raw data ---
+# Keeping: overall_pi_stats, t_test_result, boost_comparison, hump_test_data
+rm(pi_compartment, compartment_order, pi_compart,
+   plot_data_hump, p_hump,
+   paired_test_data, plot_data)
+gc()
+
 # ******************************************************************************
 # 15) Testing the translational ramp hypothesis ----
 # ______________________________________________________________________________
@@ -3627,81 +3772,430 @@ model_data <- clean_data |> dplyr::filter(GeneID %in% target_genes)
 
 model_data$GeneID <- droplevels(model_data$GeneID)
 
-priors <- c(
-  prior(normal(0, 1.5), class = "Intercept"), # Baseline prob between 0.1 and 0.9
-  prior(normal(0, 0.5), class = "b"),         # Linear effects
-  prior(exponential(1), class = "sd")         # Random effects / Spline wiggle
-)
-
-# Aggregate to 10-codon windows
-window_size <- 10
+# Aggregate data
+window_size <- 5
 model_data_agg <- model_data |>
   dplyr::mutate(Window = ceiling(Position / window_size)) |>
   dplyr::group_by(GeneID, Window, Exp_Z, Breadth_Z) |>
   dplyr::summarize(
-    Position_mid = mean(Position),  # Midpoint of window for spline
+    Position_mid = mean(Position),
     n_preferred = sum(Is_Preferred),
     n_total = n(),
     .groups = "drop"
   ) |>
-  dplyr::filter(n_total > 0)
+  dplyr::filter(n_total > 0, Position_mid <= 200)
 
-# Run the Model
-fit_ramp_bayes <- brm(
-  formula = n_preferred | trials(n_total) ~ 
-    # A: The Ramp (Global Shape)
-    s(Position_mid, k = 10, bs = "tp") + 
-    
-    # B: Ramp x Intensity Interaction
-    s(Position_mid, by = Exp_Z, k = 10, bs = "tp") +
-    
-    # C: Baseline Bias
-    t2(Exp_Z, Breadth_Z) +
-    
-    # D: Gene-specific random intercept
-    (1 | GeneID),
+# Model 1: Null (no ramp) ----
+
+fit_null_ml <- bam(
+  cbind(n_preferred, n_total - n_preferred) ~ 
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(GeneID, bs = "re"),  # Random effect
   
   data = model_data_agg,
   family = binomial(link = "logit"),
-  prior = priors,
-  chains = 4, cores = 4,
-  iter = 2000, warmup = 1000,
-  backend = "rstan",
-  control = list(adapt_delta = 0.95)
+  method = "fREML",  # Fast REML
+  discrete = TRUE,   # Faster for large datasets
+  nthreads = 1      # Parallel
 )
 
-saveRDS(fit_ramp_bayes, "./results/Bayesian_Ramp.rds")
+# Model 2: Global Ramp (Position Effect Only) ----
+
+fit_ramp_ml <- bam(
+  cbind(n_preferred, n_total - n_preferred) ~ 
+    s(Position_mid, k = 10, bs = "tp") +  # The ramp
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(GeneID, bs = "re"),
+  
+  data = model_data_agg,
+  family = binomial(link = "logit"),
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 1
+)
+
+# Model 3: Ramp x Expression interaction ----
+
+fit_ramp_int_ml <- bam(
+  cbind(n_preferred, n_total - n_preferred) ~ 
+    s(Position_mid, k = 10, bs = "tp") +
+    s(Position_mid, by = Exp_Z, k = 10, bs = "tp") +
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(GeneID, bs = "re"),
+  
+  data = model_data_agg,
+  family = binomial(link = "logit"),
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 1
+)
+
+# Model comparison (Likelihood ratio test) ----
+
+# Test 1: Does position matter? (Ramp vs Null)
+anova(fit_null_ml, fit_ramp_ml, test = "Chisq")
+
+# Test 2: Does ramp vary by expression?
+anova(fit_ramp_ml, fit_ramp_int_ml, test = "Chisq")
+
+# AIC comparison
+AIC(fit_null_ml, fit_ramp_ml, fit_ramp_int_ml)
 
 # Visualization
-# Define specific scenarios to visualize
 
-conditions <- expand.grid(
-  Exp_Z = c(-1, 1),      # Low (-1 SD) vs High (+1 SD) Intensity
-  Breadth_Z = c(-1, 1)   # Narrow (-1 SD) vs Broad (+1 SD) Breadth
-)
-# Give them nice names for the plot
-row.names(conditions) <- c("Low Exp / Narrow", "High Exp / Narrow", 
-                           "Low Exp / Broad", "High Exp / Broad")
-
-# Calculate conditional effects of Position
-p_ramp <- conditional_effects(
-  fit_ramp_bayes, 
-  effects = "Position", 
-  conditions = conditions,
-  re_formula = NA # Exclude random gene effects (show population average)
+pred_positions <- data.frame(
+  Position_mid = seq(5, 200, by = 2),
+  Exp_Z = 0,
+  Breadth_Z = 0,
+  GeneID = model_data_agg$GeneID[1],  # Reference gene for RE
+  n_total = 5
 )
 
-# Plot
-plot(p_ramp, plot = FALSE)[[1]] + 
-  facet_grid(Breadth_Z ~ Exp_Z, labeller = label_both) +
-  scale_fill_viridis_d(alpha = 0.2) +
-  scale_color_viridis_d() +
+pred_ramp <- predict(fit_ramp_ml, newdata = pred_positions, 
+                     type = "link", se.fit = TRUE, exclude = "s(GeneID)")
+
+pred_positions$fit <- plogis(pred_ramp$fit)
+pred_positions$lower <- plogis(pred_ramp$fit - 1.96 * pred_ramp$se.fit)
+pred_positions$upper <- plogis(pred_ramp$fit + 1.96 * pred_ramp$se.fit)
+
+plot_ramp_ml <- ggplot(pred_positions, aes(x = Position_mid)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, fill = "steelblue") +
+  geom_line(aes(y = fit), color = "steelblue", linewidth = 1.2) +
+  geom_vline(xintercept = 50, linetype = "dashed", color = "red", alpha = 0.5) +
   labs(
-    title = "Translational Ramp Dynamics",
-    subtitle = "Posterior Probability of Preferred Codon vs Position",
+    title = "Translational Ramp: ML Estimate",
+    subtitle = "Does preferred codon usage increase with position?",
+    x = "Codon Position",
     y = "P(Preferred Codon)",
-    x = "Codon Position (from Start)"
+    caption = "Ribbon = ±1.96 SE (approx 95% CI)"
   ) +
   theme_custom()
 
+ggsave("./results/translational_ramp_ml.pdf", plot_ramp_ml, width = 10, 
+       height = 6)
+
+pred_grid_exp <- expand.grid(
+  Position_mid = seq(5, 200, by = 5),
+  Exp_Z = c(-1.5, 0, 1.5),
+  Breadth_Z = 0,
+  n_total = 5
+) |>
+  dplyr::mutate(
+    GeneID = model_data_agg$GeneID[1],
+    Exp_level = factor(
+      Exp_Z,
+      levels = c(-1.5, 0, 1.5),
+      labels = c("Low", "Medium", "High")
+    )
+  )
+
+pred_exp <- predict(fit_ramp_int_ml, newdata = pred_grid_exp, 
+                    type = "link", se.fit = TRUE, 
+                    exclude = "s(GeneID)",
+                    unconditional = TRUE)
+
+pred_grid_exp$fit <- plogis(pred_exp$fit)
+pred_grid_exp$lower <- plogis(pred_exp$fit - 1.96 * pred_exp$se.fit)
+pred_grid_exp$upper <- plogis(pred_exp$fit + 1.96 * pred_exp$se.fit)
+
+plot_ramp_exp_ml <- ggplot(pred_grid_exp, 
+                           aes(x = Position_mid, color = Exp_level, fill = Exp_level)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_line(aes(y = fit), linewidth = 1.2) +
+  geom_vline(xintercept = 50, linetype = "dashed", alpha = 0.3) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Ramp Shape by Expression Level (ML)",
+    x = "Codon Position",
+    y = "P(Preferred Codon)",
+    color = "Expression",
+    fill = "Expression"
+  ) +
+  theme_custom() +
+  theme(legend.position = "top")
+
+ggsave("./results/ramp_by_expression_ml.pdf", plot_ramp_exp_ml, width = 10, 
+       height = 6)
+
+# POST-HOC: Contrast Test (Positions 1-50 vs 51-200) ----
+
+contrast_data <- model_data_agg |>
+  dplyr::mutate(Region = ifelse(Position_mid <= 50, "Ramp", "Body")) |>
+  dplyr::group_by(GeneID, Region, Exp_Z, Breadth_Z) |>
+  dplyr::summarize(
+    n_preferred = sum(n_preferred),
+    n_total = sum(n_total),
+    .groups = "drop"
+  )
+
+fit_contrast_ml <- bam(
+  cbind(n_preferred, n_total - n_preferred) ~ 
+    Region + Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(GeneID, bs = "re"),
+  
+  data = contrast_data,
+  family = binomial(link = "logit"),
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 4
+)
+
+summary(fit_contrast_ml)
+
+# Extract coefficient for Region
+region_coef <- coef(fit_contrast_ml)["RegionRamp"]
+region_se <- summary(fit_contrast_ml)$se[names(coef(fit_contrast_ml)) == "RegionRamp"]
+
+cat("\n=== Ramp vs Body Contrast ===\n")
+cat(sprintf("Log-odds difference (Ramp - Body): %.3f ± %.3f\n", 
+            region_coef, region_se))
+cat(sprintf("Z-score: %.2f\n", region_coef / region_se))
+cat(sprintf("P-value: %.2e\n", 2 * pnorm(-abs(region_coef / region_se))))
+
+# Interpret on probability scale
+baseline <- coef(fit_contrast_ml)["(Intercept)"]
+prob_body <- plogis(baseline)
+prob_ramp <- plogis(baseline + region_coef)
+
+cat(sprintf("\nP(Preferred | Body): %.3f\n", prob_body))
+cat(sprintf("P(Preferred | Ramp): %.3f\n", prob_ramp))
+cat(sprintf("Difference: %.3f (%.1f%% change)\n", 
+            prob_ramp - prob_body, 
+            100 * (prob_ramp - prob_body) / prob_body))
+
+# Memory cleanup: Section 15.1 large binary matrix and plot objects ---
+# Keeping: fit_null_ml, fit_ramp_ml, fit_ramp_int_ml, fit_contrast_ml
+rm(binary_preferred, clean_data, model_data, model_data_agg, target_genes,
+   contrast_data, pred_positions, pred_ramp,
+   plot_ramp_ml, pred_grid_exp, pred_exp, plot_ramp_exp_ml,
+   region_coef, region_se, baseline, prob_body, prob_ramp)
+gc()
+
 # 15.2) Polymorphism based (contemporaneous) ----
+
+poly_data <- fread(
+  "data/all_chromosomes.codon_frequencies_preferred.txt",
+  select = c("Gene", "Codon_Pos", "Preferred_Freq", "Non_Preferred_Freq"),
+  showProgress = TRUE
+)
+
+poly_data <- poly_data |>
+  dplyr::mutate(
+    Gene_clean = paste0("MgIM767.", Gene)  # Add prefix
+  ) |>
+  dplyr::rename(Position = Codon_Pos) |>
+  dplyr::filter(Position <= 200)  # Focus on first 200 codons
+
+poly_with_exp <- poly_data |>
+  dplyr::left_join(
+    integrated_data |> 
+      dplyr::select(Gene_name, Max_Log10_Exp, Exp_breadth),
+    by = c("Gene_clean" = "Gene_name")
+  ) |>
+  dplyr::filter(!is.na(Max_Log10_Exp), !is.na(Exp_breadth)) |>
+  dplyr::mutate(
+    Exp_Z = as.numeric(scale(Max_Log10_Exp)),
+    Breadth_Z = as.numeric(scale(Exp_breadth)),
+    Gene_clean = factor(Gene_clean)
+  )
+
+cat(sprintf("Loaded %d codon positions from %d genes\n", 
+            nrow(poly_with_exp), 
+            length(unique(poly_with_exp$Gene_clean))))
+
+# Aggregate using same window_size
+
+poly_agg <- poly_with_exp |>
+  dplyr::mutate(Window = ceiling(Position / window_size)) |>
+  dplyr::group_by(Gene_clean, Window, Exp_Z, Breadth_Z) |>
+  dplyr::summarize(
+    Position_mid = mean(Position),
+    # Weighted average of preferred frequency
+    Preferred_Freq_mean = mean(Preferred_Freq, na.rm = TRUE),
+    n_codons = n(),
+    .groups = "drop"
+  ) |>
+  dplyr::filter(Position_mid <= 200)
+
+# MODEL 1: Null (no position effect) ----
+fit_null_poly <- bam(
+  Preferred_Freq_mean ~ 
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(Gene_clean, bs = "re"),
+  
+  data = poly_agg,
+  family = gaussian(),  # Can also use Beta regression if needed
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 1
+)
+
+# MODEL 2: Global ramp ----
+fit_ramp_poly <- bam(
+  Preferred_Freq_mean ~ 
+    s(Position_mid, k = 10, bs = "tp") +
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(Gene_clean, bs = "re"),
+  
+  data = poly_agg,
+  family = gaussian(),
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 1
+)
+
+# MODEL 3: Ramp × Expression interaction ----
+fit_ramp_int_poly <- bam(
+  Preferred_Freq_mean ~ 
+    s(Position_mid, k = 10, bs = "tp") +
+    s(Position_mid, by = Exp_Z, k = 10, bs = "tp") +
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(Gene_clean, bs = "re"),
+  
+  data = poly_agg,
+  family = gaussian(),
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 1
+)
+
+# Model comparison ----
+
+cat("\n=== Model Comparison: Polymorphism Data ===\n")
+anova(fit_null_poly, fit_ramp_poly, test = "Chisq")
+anova(fit_ramp_poly, fit_ramp_int_poly, test = "Chisq")
+
+aic_comparison <- AIC(fit_null_poly, fit_ramp_poly, fit_ramp_int_poly)
+print(aic_comparison)
+
+# Visualizations ----
+
+# PLOT 1: Ramp shape from polymorphism data
+pred_positions <- data.frame(
+  Position_mid = seq(5, 200, by = 2),
+  Exp_Z = 0,
+  Breadth_Z = 0,
+  Gene_clean = poly_agg$Gene_clean[1]
+)
+
+pred_ramp <- predict(fit_ramp_poly, newdata = pred_positions, 
+                     type = "response", se.fit = TRUE, 
+                     exclude = "s(Gene_clean)",
+                     unconditional = TRUE)
+
+pred_positions$fit <- pred_ramp$fit
+pred_positions$lower <- pred_ramp$fit - 1.96 * pred_ramp$se.fit
+pred_positions$upper <- pred_ramp$fit + 1.96 * pred_ramp$se.fit
+
+plot_ramp_poly <- ggplot(pred_positions, aes(x = Position_mid)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3, fill = "steelblue") +
+  geom_line(aes(y = fit), color = "steelblue", linewidth = 1.2) +
+  geom_vline(xintercept = 50, linetype = "dashed", color = "red", alpha = 0.5) +
+  labs(
+    title = "Translational Ramp: Population Polymorphism Data",
+    subtitle = "Frequency of preferred codons across positions",
+    x = "Codon Position",
+    y = "Mean Preferred Codon Frequency",
+    caption = "Ribbon = ±1.96 SE | Data from population genomics"
+  ) +
+  theme_bw(base_size = 12)
+
+ggsave("./results/translational_ramp_polymorphism.pdf", 
+       plot_ramp_poly, width = 10, height = 6)
+
+# PLOT 2: Ramp by expression level
+pred_grid_exp <- expand.grid(
+  Position_mid = seq(5, 200, by = 5),
+  Exp_Z = c(-1.5, 0, 1.5),
+  Breadth_Z = 0
+) |>
+  dplyr::mutate(
+    Gene_clean = poly_agg$Gene_clean[1],
+    Exp_level = factor(
+      Exp_Z,
+      levels = c(-1.5, 0, 1.5),
+      labels = c("Low Expression", "Medium Expression", "High Expression")
+    )
+  )
+
+pred_exp <- predict(fit_ramp_int_poly, newdata = pred_grid_exp, 
+                    type = "response", se.fit = TRUE, 
+                    exclude = "s(Gene_clean)")
+
+pred_grid_exp$fit <- pred_exp$fit
+pred_grid_exp$lower <- pred_exp$fit - 1.96 * pred_exp$se.fit
+pred_grid_exp$upper <- pred_exp$fit + 1.96 * pred_exp$se.fit
+
+plot_ramp_exp_poly <- ggplot(pred_grid_exp, 
+                             aes(x = Position_mid, color = Exp_level, fill = Exp_level)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_line(aes(y = fit), linewidth = 1.2) +
+  geom_vline(xintercept = 50, linetype = "dashed", alpha = 0.3) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Ramp Shape by Expression: Population Data",
+    subtitle = "Does selection for preferred codons vary by expression level?",
+    x = "Codon Position",
+    y = "Mean Preferred Codon Frequency",
+    color = NULL,
+    fill = NULL
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "top")
+
+ggsave("./results/ramp_by_expression_polymorphism.pdf", 
+       plot_ramp_exp_poly, width = 10, height = 6)
+
+# Contrast the ramp vs the body
+
+contrast_data <- poly_agg |>
+  dplyr::mutate(Region = ifelse(Position_mid <= 50, "Ramp", "Body")) |>
+  dplyr::group_by(Gene_clean, Region, Exp_Z, Breadth_Z) |>
+  dplyr::summarize(
+    Preferred_Freq_mean = mean(Preferred_Freq_mean, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+fit_contrast_poly <- bam(
+  Preferred_Freq_mean ~ 
+    Region + Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(Gene_clean, bs = "re"),
+  
+  data = contrast_data,
+  family = gaussian(),
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 4
+)
+
+summary(fit_contrast_poly)
+
+# Extract statistics
+region_coef <- coef(fit_contrast_poly)["RegionRamp"]
+region_se <- summary(fit_contrast_poly)$se[names(coef(fit_contrast_poly)) == "RegionRamp"]
+
+cat("\n=== Polymorphism Data: Ramp vs Body Contrast ===\n")
+cat(sprintf("Difference (Ramp - Body): %.4f ± %.4f\n", region_coef, region_se))
+cat(sprintf("t-statistic: %.2f\n", region_coef / region_se))
+cat(sprintf("P-value: %.2e\n", 2 * pt(-abs(region_coef / region_se), 
+                                      df = fit_contrast_poly$df.residual)))
+
+baseline <- coef(fit_contrast_poly)["(Intercept)"]
+cat(sprintf("\nMean Preferred Freq (Body): %.4f\n", baseline))
+cat(sprintf("Mean Preferred Freq (Ramp): %.4f\n", baseline + region_coef))
+cat(sprintf("Relative difference: %.1f%%\n", 
+            100 * region_coef / baseline))
+
+# Final memory cleanup: Section 15.2 large intermediates ---
+# Keeping: trans, codon_usage, selection_metrics,
+#          fit_null_poly, fit_ramp_poly, fit_ramp_int_poly, fit_contrast_poly
+rm(poly_data, poly_with_exp, poly_agg, window_size,
+   contrast_data,
+   pred_positions, pred_ramp, plot_ramp_poly,
+   pred_grid_exp, pred_exp, plot_ramp_exp_poly,
+   region_coef, region_se, baseline)
+gc()
+
+message("=== Analysis complete. Memory cleaned. ===")
