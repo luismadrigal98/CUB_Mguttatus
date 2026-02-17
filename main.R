@@ -1366,7 +1366,7 @@ run_dirs <- c(
 dM_fixed_intergenic <- GR_convergence(run_dirs, 
                                        parameter = 'selection') # Mutation is fixed
 
-# Convergence: TRUE
+# Convergence: FALSE
 
 # Checking correlation with empirical values
 
@@ -1398,7 +1398,7 @@ run_dirs <- c(
 dM_fixed_with_phi_intergenic <- GR_convergence(run_dirs, 
                                        parameter = 'selection') # Mutation is fixed
 
-# Convergence: TRUE (intergenic-based mutation bias is not adequate)
+# Convergence: TRUE
 
 # Checking the correlation between phi and empirical values
 
@@ -1413,65 +1413,6 @@ phi_dM_fixed_with_phi_intergenic <- exp_complete |>
 cor.test(phi_dM_fixed_with_phi_intergenic$Mean.log10.Phi, 
          phi_dM_fixed_with_phi_intergenic$Mean_Log10_Exp)
 
-# Exploring and overlapping traces to rule out bad mixing ----
-
-parameters_objects <- list(run1 = loadParameterObject(file = paste(run_dirs[1], "R_objects/parameter.Rda", sep = '/')),
-                           run2 = loadParameterObject(file = paste(run_dirs[2], "R_objects/parameter.Rda", sep = '/')),
-                           run3 = loadParameterObject(file = paste(run_dirs[3], "R_objects/parameter.Rda", sep = '/')))
-
-parameters_objects <- list(run1 = listRDA(paste(run_dirs[1], "R_objects/parameter.Rda", sep = '/')),
-                           run2 = listRDA(paste(run_dirs[2], "R_objects/parameter.Rda", sep = '/')),
-                           run3 = listRDA(paste(run_dirs[3], "R_objects/parameter.Rda", sep = '/')))
-
-# 1. Select one of the high deviants codons
-codon_index <- 36  
-
-# 2. Create the Master Data Frame
-plot_data <- extract_traces(parameters_objects, codon_index)
-plot_data <- subset(plot_data, Iteration > max(plot_data$Iteration) * 0.5)
-
-# 3. PLOT 1: The Trace Overlay (The "Are we mixing?" Plot)
-p1 <- ggplot(plot_data, aes(x = Iteration, y = Value, color = Run)) +
-  geom_line(alpha = 0.7, linewidth = 0.3) +
-  theme_custom() +
-  labs(title = paste("Trace Overlay: Codon Index", codon_index),
-       subtitle = "Flat lines at different levels = Good Mixing + Multimodality",
-       y = "Selection Cost (Delta Eta)",
-       x = "MCMC Sample") +
-  theme(legend.position = "top")
-
-# 4. PLOT 2: Density Overlay (The "Distinct Realities" Plot)
-p2 <- ggplot(plot_data, aes(x = Value, fill = Run)) +
-  geom_density(alpha = 0.5) +
-  theme_custom() +
-  labs(title = paste("Posterior Density: Codon Index", codon_index),
-       subtitle = "Non-overlapping peaks = Model Misspecification / Broken Energy Landscape",
-       x = "Selection Cost (Delta Eta)",
-       y = "Density") +
-  theme(legend.position = "top")
-
-# 5. PLOT 3: Autocorrelation (The "Stickiness" Check)
-# We calculate ACF for just Run 1 to prove it's not "sticky"
-acf_val <- acf(subset(plot_data, Run == "run1")$Value, plot = FALSE, lag.max = 40)
-acf_df <- data.frame(Lag = acf_val$lag, ACF = acf_val$acf)
-
-p3 <- ggplot(acf_df, aes(x = Lag, y = ACF)) +
-  geom_bar(stat = "identity", fill = "steelblue") +
-  geom_hline(yintercept = 0.05, linetype = "dashed", color = "red") +
-  geom_hline(yintercept = -0.05, linetype = "dashed", color = "red") +
-  theme_custom() +
-  labs(title = "Autocorrelation (Run 1)",
-       subtitle = "Rapid drop to 0 = Efficient Sampling (Not Bad Mixing)",
-       y = "Autocorrelation")
-
-# Display Plots
-ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", codon_index, "_trace_overlay.pdf"),
-       plot = p1, width = 10, height = 4)
-ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", codon_index, "_density_overlay.pdf"),
-       plot = p2, width = 8, height = 4)
-ggsave(filename = paste0("./results/ROC_dM_fixed_with_phi_intergenic_codon_", codon_index, "_acf.pdf"),
-       plot = p3, width = 6, height = 4)
-
 # Memory cleanup: convergence diagnostics, phi comparisons, trace objects ---
 # Keeping: dM_fixed_with_phi_conv, dM_fixed_intergenic, dM_fixed_with_phi_intergenic,
 #          phi_hat_dM_fixed_intergenic, phi_hat_dM_fixed_with_phi_intergenic, exp_complete
@@ -1482,6 +1423,8 @@ rm(phi_dM_fixed_with_phi, phi_dM_fixed_intergenic,
 gc()
 
 # 8.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
+# We chose intron-based models because introns are more appropriate neutral
+# baselines
 
 # Using chain 1 results (independent chains are indistinguishable)
 
@@ -1519,7 +1462,7 @@ message(sprintf("✓ Preferred codons from ROC model: %d amino acids\n", nrow(pr
 
 genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa',
                                  match.expression.by.id = TRUE,
-                                 observed.expression.file = 'data/observed_expression_multitissue.csv') 
+                                 observed.expression.file = 'data/compiled_expression_IM767.txt') 
 
 parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/R_objects/parameter.Rda")
 
@@ -1596,6 +1539,33 @@ common_codons <- intersect(colnames(counts_df), colnames(sel_mat))
 
 counts_aligned <- as.matrix(counts_df[common_genes, common_codons])
 sel_aligned <- sel_mat[common_genes, common_codons]
+
+# Identify synonymous codons (AA families with >1 codon, i.e. excluding Met, Trp, STOP)
+synonymous_aa <- names(which(table(genetic_code_dna_long) > 1))
+synonymous_aa <- setdiff(synonymous_aa, c("Met", "Trp", "STOP"))
+synonymous_codons <- names(genetic_code_dna_long)[genetic_code_dna_long %in% synonymous_aa]
+synonymous_codons_aligned <- intersect(synonymous_codons, common_codons)
+
+# n_synonymous_codons: per-gene count of synonymous codon sites
+n_synonymous_codons <- rowSums(counts_aligned[, synonymous_codons_aligned], na.rm = TRUE)
+
+# Build per-codon load matrix: load = max(sel within AA family) - sel for each codon
+# For each gene, the "optimal" codon per AA has the highest selection coefficient;
+# load measures how each codon deviates from the optimum (always >= 0).
+aa_for_aligned <- genetic_code_dna_long[common_codons]
+load_matrix_per_codon <- matrix(0, nrow = nrow(sel_aligned), ncol = ncol(sel_aligned),
+                                dimnames = dimnames(sel_aligned))
+for (aa in unique(aa_for_aligned)) {
+  aa_cols <- which(aa_for_aligned == aa)
+  if (length(aa_cols) <= 1) next
+  # Per gene, optimal = max selection coefficient within this AA family
+  aa_sel <- sel_aligned[, aa_cols, drop = FALSE]
+  optimal_sel <- apply(aa_sel, 1, max, na.rm = TRUE)
+  # Load = reduction in fitness: L = 1 - exp(S_obs - S_opt)
+  # relative_S = S_obs - S_opt <= 0, so load >= 0
+  relative_S <- aa_sel - optimal_sel
+  load_matrix_per_codon[, aa_cols] <- 1 - exp(relative_S)
+}
 
 # Total selection intensity
 total_selection_intensity <- rowSums(counts_aligned * abs(sel_aligned), na.rm = TRUE)
@@ -1680,8 +1650,13 @@ p_optim <- ggplot(final_analysis_data,
 ggsave("./results/Intrinsic_Inefficiency_vs_Expression_Plot.pdf", 
        p_optim, width = 6, height = 5)
 
-cor_load <- cor.test(final_analysis_data$Mean.log10.Phi, final_analysis_data$Lprime_ROC, method = "spearman")
-cor_eff <- cor.test(final_analysis_data$Mean.log10.Phi, final_analysis_data$Intrinsic_Inefficiency, method = "spearman")
+cor_load <- cor.test(final_analysis_data$Mean.log10.Phi, 
+                     final_analysis_data$Lprime_ROC, method = "spearman",
+                     exact = F)
+cor_eff <- cor.test(final_analysis_data$Mean.log10.Phi, 
+                    final_analysis_data$Intrinsic_Inefficiency, 
+                    method = "spearman",
+                    exact = F)
 # Only in tail
 selection_genes <- final_analysis_data |> dplyr::filter(Mean.log10.Phi >= 1.5)
 cor_selection <- cor.test(selection_genes$Mean.log10.Phi, 
