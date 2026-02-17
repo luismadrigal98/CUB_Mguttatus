@@ -1338,8 +1338,8 @@ cat(sprintf("Expression data: %d genes\n", nrow(expr_data)))
 
 # 3. Run the trajectory analysis using the convenience wrapper
 trajectory_results <- run_trajectory_analysis(
-  mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Mutation.csv",
-  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi/run_1/Parameter_est/Cluster_1_Selection.csv",
+  mutation_file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Mutation.csv",
+  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv",
   codon_freq_df = codon_freq_long,
   expression_df = expr_data,
   output_file = "./results/ROC_codon_trajectories.pdf",
@@ -1366,7 +1366,7 @@ run_dirs <- c(
 dM_fixed_intergenic <- GR_convergence(run_dirs, 
                                        parameter = 'selection') # Mutation is fixed
 
-# Convergence achieved.
+# Convergence: TRUE
 
 # Checking correlation with empirical values
 
