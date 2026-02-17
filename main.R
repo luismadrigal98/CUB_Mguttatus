@@ -4376,4 +4376,576 @@ rm(poly_data, poly_with_exp, poly_agg, window_size,
    region_coef, region_se, baseline)
 gc()
 
+
+## *****************************************************************************
+## 16) Logistic regression: P(polymorphic) at 4-fold degenerate sites ----
+## _____________________________________________________________________________
+## Predicts whether each 4-fold site is polymorphic (1) or monomorphic (0) as
+## a function of normalized position within the gene and normalized expression,
+## with quadratic terms and their interaction.
+##
+## Model: logit(P(poly)) = B0 + B1*dist + B2*exp + B3*dist^2 + B4*exp^2 + B5*dist*exp
+##   dist = Codon_Pos / (Total_Codons - 1)  in [0, 1]
+##   exp  = min-max scaled Mean_Log10_Exp    in [0, 1]
+## *****************************************************************************
+
+cat("\n\n=== Section 16: Logistic Regression — P(Polymorphic) at 4-fold Sites ===\n")
+
+# 16.1: Load per-codon data and filter to 4-fold degenerate sites ----
+
+cat("Loading codon frequency data...\n")
+codon_data_raw <- fread("data/all_chromosomes.codon_frequencies_preferred.txt",
+                        showProgress = FALSE)
+
+# Identify 4-fold degenerate amino acid families by AA code + codon prefix:
+#   Simple 4-fold: Ala (A), Gly (G), Pro (P), Thr (T), Val (V)
+#   Split-family 4-fold: Leu_4 (L,CT*), Ser_4 (S,TC*), Arg_4 (R,CG*)
+fourfold_simple <- c("A", "G", "P", "T", "V")
+codon_data_raw[, codon_prefix := substr(Ref_Codon, 1, 2)]
+
+codon_4fold <- codon_data_raw[
+  (AA %in% fourfold_simple) |
+  (AA == "L" & codon_prefix == "CT") |
+  (AA == "S" & codon_prefix == "TC") |
+  (AA == "R" & codon_prefix == "CG")
+]
+rm(codon_data_raw)
+gc()
+
+cat(sprintf("  %s 4-fold codon positions retained\n",
+            format(nrow(codon_4fold), big.mark = ",")))
+
+# 16.2: Determine polymorphism status at each 4-fold site ----
+# A site is polymorphic if >1 codon (differing at 3rd position) has freq > 0.
+# Strategy: remove zero-freq entries from the Frequencies string;
+# if a semicolon remains, >= 2 codons are segregating -> polymorphic.
+
+cat("Classifying poly / mono at each site...\n")
+
+freq_clean <- codon_4fold$Frequencies
+# Remove zero-frequency entries: ";XXX:0.000" (middle or end positions)
+freq_clean <- gsub(";[ACGT]{3}:0\\.000", "", freq_clean)
+# Remove zero-frequency entries: "XXX:0.000;" (beginning position)
+freq_clean <- gsub("[ACGT]{3}:0\\.000;", "", freq_clean)
+# Remove zero-frequency entries: "XXX:0.000" (standalone / last remaining)
+freq_clean <- gsub("[ACGT]{3}:0\\.000",  "", freq_clean)
+
+codon_4fold[, is_poly := as.integer(grepl(";", freq_clean, fixed = TRUE))]
+
+cat(sprintf("  Polymorphic: %s / %s (%.2f%%)\n",
+            format(sum(codon_4fold$is_poly), big.mark = ","),
+            format(nrow(codon_4fold), big.mark = ","),
+            100 * mean(codon_4fold$is_poly)))
+
+# 16.3: Merge expression data and compute normalised predictors ----
+
+# Amino acid full names for reporting
+aa_name_map <- c(A = "Ala", G = "Gly", L = "Leu", P = "Pro",
+                 R = "Arg", S = "Ser", T = "Thr", V = "Val")
+codon_4fold[, AA_name := aa_name_map[AA]]
+
+# Gene name matching — codon data uses e.g. "01G000100",
+# integrated_data uses "MgIM767.01G000100"
+codon_4fold[, Gene_clean := paste0("MgIM767.", Gene)]
+
+gene_info_16 <- integrated_data[, c("Gene_name", "Mean_Log10_Exp", "Total_Codons")]
+
+codon_4fold <- merge(codon_4fold, gene_info_16,
+                     by.x = "Gene_clean", by.y = "Gene_name",
+                     all.x = FALSE)
+
+# Normalised distance: Codon_Pos / (Total_Codons - 1) -> [0, 1]
+codon_4fold[, dist_norm := Codon_Pos / pmax(Total_Codons - 1L, 1L)]
+codon_4fold[dist_norm > 1, dist_norm := 1]                      # safety cap
+
+# Normalised expression: min-max scaled -> [0, 1]
+exp_range_16 <- range(codon_4fold$Mean_Log10_Exp, na.rm = TRUE)
+codon_4fold[, exp_norm := (Mean_Log10_Exp - exp_range_16[1]) /
+                          (exp_range_16[2] - exp_range_16[1])]
+
+cat(sprintf("  After expression merge: %s sites in %s genes\n",
+            format(nrow(codon_4fold), big.mark = ","),
+            format(length(unique(codon_4fold$Gene_clean)), big.mark = ",")))
+
+# 16.4: Fit logistic regressions ----
+
+fit_logistic_4fold <- function(data, label) {
+  n_sites <- nrow(data)
+  if (n_sites < 100) {
+    return(data.frame(Category     = label,
+                      Number_Sites = n_sites,
+                      coefficient  = NA, dist = NA, exp = NA,
+                      Dist2 = NA, Exp2 = NA, dist_exp = NA))
+  }
+  model <- glm(is_poly ~ dist_norm + exp_norm +
+                  I(dist_norm^2) + I(exp_norm^2) +
+                  dist_norm:exp_norm,
+                data = data, family = binomial(link = "logit"))
+  cc <- coef(model)
+  data.frame(
+    Category     = label,
+    Number_Sites = format(n_sites, big.mark = ","),
+    coefficient  = round(cc["(Intercept)"], 3),
+    dist         = round(cc["dist_norm"], 2),
+    exp          = round(cc["exp_norm"], 2),
+    Dist2        = round(cc["I(dist_norm^2)"], 2),
+    Exp2         = round(cc["I(exp_norm^2)"], 2),
+    dist_exp     = round(cc["dist_norm:exp_norm"], 2),
+    row.names    = NULL
+  )
+}
+
+cat("\nFitting logistic regressions...\n")
+
+# All 4-fold combined
+result_all <- fit_logistic_4fold(codon_4fold, "All 4-fold")
+
+# Per amino acid
+aa_levels_16 <- sort(unique(codon_4fold$AA_name))
+results_aa <- lapply(aa_levels_16, function(aa) {
+  cat(sprintf("  %s: %s sites\n", aa,
+              format(nrow(codon_4fold[AA_name == aa]), big.mark = ",")))
+  fit_logistic_4fold(codon_4fold[AA_name == aa], aa)
+})
+
+logistic_table <- rbind(result_all, do.call(rbind, results_aa))
+
+cat("\n=== Logistic Regression: P(Polymorphic) at 4-fold Sites ===\n")
+cat("logit(P) = B0 + B1*dist + B2*exp + B3*dist^2 + B4*exp^2 + B5*dist*exp\n")
+cat("dist in [0,1] (position / gene length), exp in [0,1] (min-max scaled)\n\n")
+print(logistic_table, row.names = FALSE)
+
+write.csv(logistic_table, "./results/logistic_4fold_polymorphism.csv",
+          row.names = FALSE)
+cat("\nTable saved: ./results/logistic_4fold_polymorphism.csv\n")
+
+
+# 16.5: Contour plot — predicted probability surface (All 4-fold) ----
+
+cat("\nGenerating contour plots...\n")
+
+# Re-fit full model for prediction (same as above but keep the object)
+model_all_4fold <- glm(
+  is_poly ~ dist_norm + exp_norm +
+    I(dist_norm^2) + I(exp_norm^2) +
+    dist_norm:exp_norm,
+  data = codon_4fold, family = binomial(link = "logit")
+)
+cat("Full model summary:\n")
+print(summary(model_all_4fold))
+
+# Prediction grid
+pred_grid_16 <- expand.grid(
+  dist_norm = seq(0, 1, length.out = 200),
+  exp_norm  = seq(0, 1, length.out = 200)
+)
+pred_grid_16$prob <- predict(model_all_4fold, newdata = pred_grid_16,
+                             type = "response")
+
+# Filled contour plot (warm->cool palette: high P = warm, low P = cool)
+p_contour_filled <- ggplot(pred_grid_16,
+                           aes(x = dist_norm, y = exp_norm)) +
+  geom_raster(aes(fill = prob), interpolate = TRUE) +
+  geom_contour(aes(z = prob), colour = "grey30",
+               linewidth = 0.4, bins = 12) +
+  scale_fill_gradientn(
+    colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                "#FEE8C8", "#FDBB84", "#E34A33"),
+    name = "P(poly)"
+  ) +
+  labs(
+    title = "Probability of Polymorphism at 4-fold Degenerate Sites",
+    subtitle = "Logistic regression: all 4-fold sites",
+    x = "Normalised distance from gene start",
+    y = "Normalised expression level"
+  ) +
+  coord_fixed() +
+  theme_custom() +
+  theme(legend.position = "right",
+        panel.grid      = element_blank())
+
+ggsave("./results/logistic_4fold_contour_filled.pdf",
+       p_contour_filled, width = 8, height = 7)
+cat("  Saved: ./results/logistic_4fold_contour_filled.pdf\n")
+
+# Line-contour variant
+p_contour_lines <- ggplot(pred_grid_16,
+                          aes(x = dist_norm, y = exp_norm, z = prob)) +
+  geom_contour(aes(colour = after_stat(level)),
+               linewidth = 0.8, bins = 15) +
+  scale_colour_viridis_c(option = "inferno", name = "P(poly)") +
+  labs(
+    title = "Probability of Polymorphism at 4-fold Degenerate Sites",
+    subtitle = "Contour lines: iso-probability curves",
+    x = "Normalised distance from gene start",
+    y = "Normalised expression level"
+  ) +
+  coord_fixed() +
+  theme_custom()
+
+ggsave("./results/logistic_4fold_contour_lines.pdf",
+       p_contour_lines, width = 8, height = 7)
+cat("  Saved: ./results/logistic_4fold_contour_lines.pdf\n")
+
+
+# 16.6: Per-amino-acid contour plots ----
+
+for (aa in aa_levels_16) {
+  sub_data <- codon_4fold[AA_name == aa]
+  if (nrow(sub_data) < 100) next
+
+  model_aa <- glm(
+    is_poly ~ dist_norm + exp_norm +
+      I(dist_norm^2) + I(exp_norm^2) +
+      dist_norm:exp_norm,
+    data = sub_data, family = binomial(link = "logit")
+  )
+
+  pred_aa <- expand.grid(
+    dist_norm = seq(0, 1, length.out = 200),
+    exp_norm  = seq(0, 1, length.out = 200)
+  )
+  pred_aa$prob <- predict(model_aa, newdata = pred_aa, type = "response")
+
+  p_aa <- ggplot(pred_aa, aes(x = dist_norm, y = exp_norm)) +
+    geom_raster(aes(fill = prob), interpolate = TRUE) +
+    geom_contour(aes(z = prob), colour = "grey30",
+                 linewidth = 0.4, bins = 10) +
+    scale_fill_gradientn(
+      colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                  "#FEE8C8", "#FDBB84", "#E34A33"),
+      name = "P(poly)"
+    ) +
+    labs(
+      title = sprintf("P(Polymorphism) at 4-fold Sites: %s", aa),
+      x = "Normalised distance from start",
+      y = "Normalised expression"
+    ) +
+    coord_fixed() +
+    theme_custom() +
+    theme(legend.position = "right",
+          panel.grid      = element_blank())
+
+  ggsave(sprintf("./results/logistic_4fold_contour_%s.pdf", tolower(aa)),
+         p_aa, width = 8, height = 7)
+}
+cat("  Per-amino-acid contour plots saved\n")
+
+
+# 16.7: Compute per-site π at the 3rd codon position ----
+## For 4-fold degenerate sites, only the 3rd position is degenerate.
+## π = n/(n-1) * (1 - Σ p_i²)  where p_i are nucleotide frequencies
+## at the 3rd position, n = total number of alleles sampled.
+## We extract the 3rd nucleotide from each codon in the Frequencies string,
+## aggregate frequencies by nucleotide, then compute heterozygosity.
+
+cat("\n\n=== Computing per-site π at 3rd codon position ===\n")
+
+# Parse the Frequencies column into long format for efficient computation
+codon_4fold[, site_id := .I]
+
+# Fast vectorised parsing: split Frequencies by ";", then by ":"
+freq_entries <- strsplit(codon_4fold$Frequencies, ";", fixed = TRUE)
+freq_long_16 <- data.table(
+  site_id = rep(codon_4fold$site_id, lengths(freq_entries)),
+  entry   = unlist(freq_entries)
+)
+freq_long_16[, codon := sub(":.*", "", entry)]
+freq_long_16[, freq  := as.numeric(sub(".*:", "", entry))]
+freq_long_16[, nuc3  := substr(codon, 3, 3)]
+
+# Aggregate frequency by 3rd-position nucleotide within each site
+nuc_agg <- freq_long_16[, .(nuc_freq = sum(freq)), by = .(site_id, nuc3)]
+
+# Determine sample size from Codon_Variants (sum of counts)
+variant_entries <- strsplit(codon_4fold$Codon_Variants, ";", fixed = TRUE)
+var_long_16 <- data.table(
+  site_id = rep(codon_4fold$site_id, lengths(variant_entries)),
+  entry   = unlist(variant_entries)
+)
+var_long_16[, count := as.integer(sub(".*:", "", entry))]
+site_n <- var_long_16[, .(n_alleles = sum(count)), by = site_id]
+
+# Per-site π = n/(n-1) * (1 - Σ p_i²)
+site_pi_16 <- nuc_agg[, .(sum_p2 = sum(nuc_freq^2)), by = site_id]
+site_pi_16 <- merge(site_pi_16, site_n, by = "site_id")
+site_pi_16[, pi_site := ifelse(n_alleles > 1,
+                               (n_alleles / (n_alleles - 1)) * (1 - sum_p2),
+                               0)]
+
+codon_4fold <- merge(codon_4fold, site_pi_16[, .(site_id, pi_site)],
+                     by = "site_id", all.x = TRUE)
+
+# Clean up large intermediates
+rm(freq_entries, freq_long_16, nuc_agg, variant_entries, var_long_16,
+   site_n, site_pi_16)
+gc()
+
+cat(sprintf("  Mean π at 4-fold sites: %.5f\n", mean(codon_4fold$pi_site)))
+cat(sprintf("  Sites with π > 0: %s / %s (%.2f%%)\n",
+            format(sum(codon_4fold$pi_site > 0), big.mark = ","),
+            format(nrow(codon_4fold), big.mark = ","),
+            100 * mean(codon_4fold$pi_site > 0)))
+cat(sprintf("  Mean Preferred_Freq: %.4f\n",
+            mean(codon_4fold$Preferred_Freq, na.rm = TRUE)))
+
+
+# 16.8: Linear regression — π at 4-fold sites ----
+## Model: π_site ~ dist_norm + exp_norm + dist_norm² + exp_norm² + dist_norm:exp_norm
+## Uses Gaussian GLM (OLS) for interpretability and comparability.
+
+cat("\n=== Section 16.8: Linear Regression — π at 4-fold Sites ===\n")
+
+fit_linear_4fold <- function(data, label, response_col) {
+  n_sites <- nrow(data)
+  if (n_sites < 100) {
+    return(data.frame(Category     = label,
+                      Number_Sites = n_sites,
+                      coefficient  = NA, dist = NA, exp = NA,
+                      Dist2 = NA, Exp2 = NA, dist_exp = NA))
+  }
+  formula_str <- paste0(response_col,
+    " ~ dist_norm + exp_norm + I(dist_norm^2) + I(exp_norm^2) + dist_norm:exp_norm")
+  model <- lm(as.formula(formula_str), data = data)
+  cc <- coef(model)
+  # Use scientific notation for small coefficients (π values)
+  fmt <- function(x, d = 6) formatC(x, format = "g", digits = d)
+  data.frame(
+    Category     = label,
+    Number_Sites = format(n_sites, big.mark = ","),
+    coefficient  = fmt(cc["(Intercept)"]),
+    dist         = fmt(cc["dist_norm"]),
+    exp          = fmt(cc["exp_norm"]),
+    Dist2        = fmt(cc["I(dist_norm^2)"]),
+    Exp2         = fmt(cc["I(exp_norm^2)"]),
+    dist_exp     = fmt(cc["dist_norm:exp_norm"]),
+    row.names    = NULL
+  )
+}
+
+cat("\nFitting linear regressions for π...\n")
+
+# All 4-fold combined
+result_pi_all <- fit_linear_4fold(codon_4fold, "All 4-fold", "pi_site")
+
+# Per amino acid
+results_pi_aa <- lapply(aa_levels_16, function(aa) {
+  cat(sprintf("  π model — %s: %s sites\n", aa,
+              format(nrow(codon_4fold[AA_name == aa]), big.mark = ",")))
+  fit_linear_4fold(codon_4fold[AA_name == aa], aa, "pi_site")
+})
+
+pi_table <- rbind(result_pi_all, do.call(rbind, results_pi_aa))
+
+cat("\n=== Linear Regression: π at 4-fold Sites ===\n")
+cat("π = B0 + B1*dist + B2*exp + B3*dist² + B4*exp² + B5*dist*exp\n\n")
+print(pi_table, row.names = FALSE)
+
+write.csv(pi_table, "./results/linear_4fold_pi.csv", row.names = FALSE)
+cat("\nTable saved: ./results/linear_4fold_pi.csv\n")
+
+# Full model summary (all 4-fold)
+model_pi_all <- lm(pi_site ~ dist_norm + exp_norm +
+                     I(dist_norm^2) + I(exp_norm^2) +
+                     dist_norm:exp_norm,
+                   data = codon_4fold)
+cat("\nFull model summary (All 4-fold, π):\n")
+print(summary(model_pi_all))
+
+
+# 16.8b: Contour plots for π ----
+
+pred_grid_pi <- expand.grid(
+  dist_norm = seq(0, 1, length.out = 200),
+  exp_norm  = seq(0, 1, length.out = 200)
+)
+pred_grid_pi$pi_pred <- predict(model_pi_all, newdata = pred_grid_pi)
+
+# Filled contour — π
+p_pi_contour <- ggplot(pred_grid_pi,
+                       aes(x = dist_norm, y = exp_norm)) +
+  geom_raster(aes(fill = pi_pred), interpolate = TRUE) +
+  geom_contour(aes(z = pi_pred), colour = "grey30",
+               linewidth = 0.4, bins = 12) +
+  scale_fill_gradientn(
+    colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                "#FEE8C8", "#FDBB84", "#E34A33"),
+    name = expression(pi)
+  ) +
+  labs(
+    title = expression("Nucleotide Diversity (" * pi * ") at 4-fold Degenerate Sites"),
+    subtitle = "Linear regression: all 4-fold sites",
+    x = "Normalised distance from gene start",
+    y = "Normalised expression level"
+  ) +
+  coord_fixed() +
+  theme_custom() +
+  theme(legend.position = "right",
+        panel.grid      = element_blank())
+
+ggsave("./results/linear_4fold_pi_contour.pdf",
+       p_pi_contour, width = 8, height = 7)
+cat("  Saved: ./results/linear_4fold_pi_contour.pdf\n")
+
+# Per-amino-acid π contour plots
+for (aa in aa_levels_16) {
+  sub_data <- codon_4fold[AA_name == aa]
+  if (nrow(sub_data) < 100) next
+
+  model_pi_aa <- lm(pi_site ~ dist_norm + exp_norm +
+                       I(dist_norm^2) + I(exp_norm^2) +
+                       dist_norm:exp_norm,
+                     data = sub_data)
+
+  pred_pi_aa <- expand.grid(
+    dist_norm = seq(0, 1, length.out = 200),
+    exp_norm  = seq(0, 1, length.out = 200)
+  )
+  pred_pi_aa$pi_pred <- predict(model_pi_aa, newdata = pred_pi_aa)
+
+  p_pi_aa <- ggplot(pred_pi_aa, aes(x = dist_norm, y = exp_norm)) +
+    geom_raster(aes(fill = pi_pred), interpolate = TRUE) +
+    geom_contour(aes(z = pi_pred), colour = "grey30",
+                 linewidth = 0.4, bins = 10) +
+    scale_fill_gradientn(
+      colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                  "#FEE8C8", "#FDBB84", "#E34A33"),
+      name = expression(pi)
+    ) +
+    labs(
+      title = bquote(pi ~ "at 4-fold Sites:" ~ .(aa)),
+      x = "Normalised distance from start",
+      y = "Normalised expression"
+    ) +
+    coord_fixed() +
+    theme_custom() +
+    theme(legend.position = "right",
+          panel.grid      = element_blank())
+
+  ggsave(sprintf("./results/linear_4fold_pi_contour_%s.pdf", tolower(aa)),
+         p_pi_aa, width = 8, height = 7)
+}
+cat("  Per-amino-acid π contour plots saved\n")
+
+
+# 16.9: Linear regression — Preferred Codon Frequency at 4-fold sites ----
+## Response: Preferred_Freq (already in data, range [0, 1])
+## Model: Preferred_Freq ~ dist_norm + exp_norm + dist² + exp² + dist:exp
+
+cat("\n=== Section 16.9: Linear Regression — Preferred Codon Frequency ===\n")
+
+cat("\nFitting linear regressions for Preferred_Freq...\n")
+
+# All 4-fold combined
+result_pf_all <- fit_linear_4fold(codon_4fold, "All 4-fold", "Preferred_Freq")
+
+# Per amino acid
+results_pf_aa <- lapply(aa_levels_16, function(aa) {
+  cat(sprintf("  Pref freq model — %s: %s sites\n", aa,
+              format(nrow(codon_4fold[AA_name == aa]), big.mark = ",")))
+  fit_linear_4fold(codon_4fold[AA_name == aa], aa, "Preferred_Freq")
+})
+
+pf_table <- rbind(result_pf_all, do.call(rbind, results_pf_aa))
+
+cat("\n=== Linear Regression: Preferred Codon Frequency at 4-fold Sites ===\n")
+cat("Pref_Freq = B0 + B1*dist + B2*exp + B3*dist² + B4*exp² + B5*dist*exp\n\n")
+print(pf_table, row.names = FALSE)
+
+write.csv(pf_table, "./results/linear_4fold_preferred_freq.csv", row.names = FALSE)
+cat("\nTable saved: ./results/linear_4fold_preferred_freq.csv\n")
+
+# Full model summary
+model_pf_all <- lm(Preferred_Freq ~ dist_norm + exp_norm +
+                     I(dist_norm^2) + I(exp_norm^2) +
+                     dist_norm:exp_norm,
+                   data = codon_4fold)
+cat("\nFull model summary (All 4-fold, Preferred_Freq):\n")
+print(summary(model_pf_all))
+
+
+# 16.9b: Contour plots for Preferred Codon Frequency ----
+
+pred_grid_pf <- expand.grid(
+  dist_norm = seq(0, 1, length.out = 200),
+  exp_norm  = seq(0, 1, length.out = 200)
+)
+pred_grid_pf$pf_pred <- predict(model_pf_all, newdata = pred_grid_pf)
+
+# Filled contour — Preferred Freq
+p_pf_contour <- ggplot(pred_grid_pf,
+                        aes(x = dist_norm, y = exp_norm)) +
+  geom_raster(aes(fill = pf_pred), interpolate = TRUE) +
+  geom_contour(aes(z = pf_pred), colour = "grey30",
+               linewidth = 0.4, bins = 12) +
+  scale_fill_gradientn(
+    colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                "#FEE8C8", "#FDBB84", "#E34A33"),
+    name = "Pref Freq"
+  ) +
+  labs(
+    title = "Preferred Codon Frequency at 4-fold Degenerate Sites",
+    subtitle = "Linear regression: all 4-fold sites",
+    x = "Normalised distance from gene start",
+    y = "Normalised expression level"
+  ) +
+  coord_fixed() +
+  theme_custom() +
+  theme(legend.position = "right",
+        panel.grid      = element_blank())
+
+ggsave("./results/linear_4fold_pref_freq_contour.pdf",
+       p_pf_contour, width = 8, height = 7)
+cat("  Saved: ./results/linear_4fold_pref_freq_contour.pdf\n")
+
+# Per-amino-acid Preferred Freq contour plots
+for (aa in aa_levels_16) {
+  sub_data <- codon_4fold[AA_name == aa]
+  if (nrow(sub_data) < 100) next
+
+  model_pf_aa <- lm(Preferred_Freq ~ dist_norm + exp_norm +
+                       I(dist_norm^2) + I(exp_norm^2) +
+                       dist_norm:exp_norm,
+                     data = sub_data)
+
+  pred_pf_aa <- expand.grid(
+    dist_norm = seq(0, 1, length.out = 200),
+    exp_norm  = seq(0, 1, length.out = 200)
+  )
+  pred_pf_aa$pf_pred <- predict(model_pf_aa, newdata = pred_pf_aa)
+
+  p_pf_aa <- ggplot(pred_pf_aa, aes(x = dist_norm, y = exp_norm)) +
+    geom_raster(aes(fill = pf_pred), interpolate = TRUE) +
+    geom_contour(aes(z = pf_pred), colour = "grey30",
+                 linewidth = 0.4, bins = 10) +
+    scale_fill_gradientn(
+      colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                  "#FEE8C8", "#FDBB84", "#E34A33"),
+      name = "Pref Freq"
+    ) +
+    labs(
+      title = sprintf("Preferred Codon Freq at 4-fold Sites: %s", aa),
+      x = "Normalised distance from start",
+      y = "Normalised expression"
+    ) +
+    coord_fixed() +
+    theme_custom() +
+    theme(legend.position = "right",
+          panel.grid      = element_blank())
+
+  ggsave(sprintf("./results/linear_4fold_pref_freq_contour_%s.pdf", tolower(aa)),
+         p_pf_aa, width = 8, height = 7)
+}
+cat("  Per-amino-acid Preferred_Freq contour plots saved\n")
+
+
+# Section 16 cleanup ----
+rm(codon_4fold, gene_info_16, freq_clean, fourfold_simple, aa_name_map,
+   model_all_4fold, pred_grid_16, p_contour_filled, p_contour_lines,
+   logistic_table, result_all, results_aa, aa_levels_16, exp_range_16,
+   model_pi_all, pred_grid_pi, p_pi_contour, pi_table, result_pi_all, results_pi_aa,
+   model_pf_all, pred_grid_pf, p_pf_contour, pf_table, result_pf_all, results_pf_aa)
+gc()
+
+
 message("=== Analysis complete. Memory cleaned. ===")
