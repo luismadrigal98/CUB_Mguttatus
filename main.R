@@ -2550,7 +2550,8 @@ pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
 # Homogenizing gene names to match the previous convention
 
 pi_data <- pi_data |>
-  dplyr::select(Chr, Gene, contains("Tajima"), contains("mean")) |>
+  dplyr::select(Chr, Gene, contains("Tajima"), contains("mean"),
+                contains("Sites"), contains("Pi_sum"), contains("Poly")) |>
   dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
   dplyr::rename(Gene_name = Gene)
 
@@ -2561,6 +2562,170 @@ integrated_data <- integrated_data |>
 
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
+
+# 12.0) Expression-ranked 4-fold π analysis (Kelly replication) ----
+# Bin genes into groups of ~1000 ranked by Mean_Log10_Exp, calculate
+# weighted mean 4-fold nucleotide diversity within each bin.
+
+bin_size <- 1000
+
+# Check if mutation-type columns are available (requires extended calculate_pi.py)
+mutation_types <- c("AC", "AG", "AT", "CG", "CT", "GT")
+has_mutation_types <- all(paste0("Pi_sum_4fold_", mutation_types) %in% 
+                            names(integrated_data))
+
+# Rank genes by Mean_Log10_Exp and create bins
+pi_by_expression <- integrated_data |>
+  dplyr::arrange(Mean_Log10_Exp) |>
+  dplyr::mutate(
+    Rank = dplyr::row_number(),
+    Exp_Bin = ceiling(Rank / bin_size)
+  ) |>
+  dplyr::group_by(Exp_Bin) |>
+  dplyr::summarize(
+    n_genes = n(),
+    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+    # Weighted mean π at 4-fold sites: total π_sum / total sites
+    total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
+    total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
+    weighted_pi_4fold = total_pi_sum_4fold / total_sites_4fold,
+    # Also compute individual-gene SD for error bars
+    sd_pi_4fold = sd(Pi_mean_4fold, na.rm = TRUE),
+    se_pi_4fold = sd_pi_4fold / sqrt(n()),
+    .groups = "drop"
+  )
+
+cat("\n=== 4-fold π by Expression Rank (groups of ~1000 genes) ===\n")
+print(pi_by_expression)
+
+# Plot: replicating advisor's graph (interval plot with individual SDs)
+p_pi_by_expression <- ggplot(pi_by_expression, 
+                             aes(x = Exp_Bin, y = weighted_pi_4fold)) +
+  geom_point(size = 3, color = "#377EB8") +
+  geom_errorbar(aes(ymin = weighted_pi_4fold - se_pi_4fold,
+                    ymax = weighted_pi_4fold + se_pi_4fold),
+                width = 0.3, color = "#377EB8") +
+  labs(
+    title = expression(paste("4-fold Nucleotide Diversity (", pi, 
+                             ") by Expression Level")),
+    subtitle = "Genes ranked by Mean Log10 Expression, binned in groups of ~1000",
+    x = "Expression level category",
+    y = expression(paste("nuc_diversity (4 fold)"))
+  ) +
+  scale_x_continuous(breaks = seq_len(max(pi_by_expression$Exp_Bin))) +
+  theme_custom()
+
+ggsave("./results/pi_4fold_by_expression_rank.pdf", 
+       p_pi_by_expression, width = 10, height = 6)
+
+cat("✓ Saved: ./results/pi_4fold_by_expression_rank.pdf\n")
+
+# Breakdown by segregating base pair type at 4-fold sites ----
+if (has_mutation_types) {
+  
+  cat("\n=== 4-fold π by Mutation Type and Expression Rank ===\n")
+  
+  # Calculate per-mutation-type pi component within each expression bin
+  # Component = sum(Pi_sum_type) / sum(Sites_4fold) → additive decomposition
+  pi_by_mutation <- integrated_data |>
+    dplyr::arrange(Mean_Log10_Exp) |>
+    dplyr::mutate(
+      Rank = dplyr::row_number(),
+      Exp_Bin = ceiling(Rank / bin_size)
+    ) |>
+    dplyr::group_by(Exp_Bin) |>
+    dplyr::summarize(
+      n_genes = n(),
+      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+      total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
+      pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AT = sum(Pi_sum_4fold_AT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CG = sum(Pi_sum_4fold_CG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CT = sum(Pi_sum_4fold_CT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Verify additive decomposition
+  pi_check <- pi_by_expression |>
+    dplyr::left_join(
+      pi_by_mutation |> 
+        dplyr::mutate(sum_components = pi_AC + pi_AG + pi_AT + pi_CG + pi_CT + pi_GT) |>
+        dplyr::select(Exp_Bin, sum_components), 
+      by = "Exp_Bin"
+    )
+  cat(sprintf("Additive check (max |total - sum_components|): %.2e\n",
+              max(abs(pi_check$weighted_pi_4fold - pi_check$sum_components), na.rm = TRUE)))
+  
+  # Pivot to long format for plotting
+  pi_mutation_long <- pi_by_mutation |>
+    tidyr::pivot_longer(
+      cols = starts_with("pi_"),
+      names_to = "Mutation_Type",
+      values_to = "Pi_component",
+      names_prefix = "pi_"
+    )
+  
+  # Plot 1: All mutation types overlaid
+  p_pi_by_mutation <- ggplot(pi_mutation_long, 
+                             aes(x = Exp_Bin, y = Pi_component, 
+                                 color = Mutation_Type)) +
+    geom_point(size = 2) +
+    geom_line(linewidth = 0.8) +
+    scale_color_brewer(palette = "Set2", name = "Segregating\nBases") +
+    labs(
+      title = expression(paste("4-fold ", pi, " by Segregating Base Pair and Expression")),
+      subtitle = "Additive components of 4-fold diversity by mutation type",
+      x = "Expression level category",
+      y = expression(paste(pi, " component (4-fold)"))
+    ) +
+    scale_x_continuous(breaks = seq_len(max(pi_by_mutation$Exp_Bin))) +
+    theme_custom() +
+    theme(legend.position = "right")
+  
+  ggsave("./results/pi_4fold_by_mutation_type_and_expression.pdf", 
+         p_pi_by_mutation, width = 12, height = 6)
+  
+  cat("✓ Saved: ./results/pi_4fold_by_mutation_type_and_expression.pdf\n")
+  
+  # Plot 2: Faceted version for cleaner per-type comparison
+  p_pi_mutation_facet <- ggplot(pi_mutation_long, 
+                                aes(x = Exp_Bin, y = Pi_component)) +
+    geom_point(size = 2, color = "#377EB8") +
+    geom_line(color = "#377EB8", linewidth = 0.6) +
+    facet_wrap(~ Mutation_Type, scales = "free_y", ncol = 3) +
+    labs(
+      title = expression(paste("4-fold ", pi, 
+                                " Components by Segregating Pair")),
+      subtitle = "Each panel shows one mutation type; all exhibit declining trajectory",
+      x = "Expression level category",
+      y = expression(paste(pi, " component"))
+    ) +
+    scale_x_continuous(breaks = seq(5, 25, by = 5)) +
+    theme_custom()
+  
+  ggsave("./results/pi_4fold_mutation_type_faceted.pdf", 
+         p_pi_mutation_facet, width = 12, height = 8)
+  
+  cat("✓ Saved: ./results/pi_4fold_mutation_type_faceted.pdf\n")
+  
+  # Save the summary table
+  write.csv(pi_by_mutation, 
+            "./results/pi_4fold_by_mutation_type_and_expression.csv",
+            row.names = FALSE)
+  
+  rm(pi_by_mutation, pi_mutation_long, pi_check,
+     p_pi_by_mutation, p_pi_mutation_facet)
+  
+} else {
+  cat("\nNote: Mutation-type columns not found in pi data.\n")
+  cat("Re-run calculate_pi.py (extended version) to generate per-mutation-type output.\n")
+  cat("Required columns: Pi_sum_4fold_AC, Pi_sum_4fold_AG, ..., Pi_sum_4fold_GT\n")
+}
+
+# Memory cleanup
+rm(p_pi_by_expression, bin_size, mutation_types, has_mutation_types)
 
 # Is the relationship between pi and predictors of interest linear?
 

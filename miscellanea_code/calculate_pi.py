@@ -24,6 +24,21 @@ Author: Luis Javier Madrigal-Roca & John K. Kelly
 import sys
 import math
 
+# Mutation type categories for 4-fold degenerate sites (alphabetically sorted pairs)
+MUTATION_TYPES = ['AC', 'AG', 'AT', 'CG', 'CT', 'GT']
+
+def get_mutation_type(ref, alt):
+    """Get normalized mutation type (alphabetically sorted allele pair).
+    
+    Returns the pair as a 2-char string (e.g., 'AC', 'GT') or None
+    if the alleles are not single nucleotides.
+    """
+    if len(ref) != 1 or len(alt) != 1:
+        return None
+    pair = ''.join(sorted([ref.upper(), alt.upper()]))
+    return pair if pair in MUTATION_TYPES else None
+
+
 def load_annotated_sites(annotation_file, chrom):
     """
     Load position annotations from describe_gene_positions_by_degeneracy.py output.
@@ -184,7 +199,7 @@ def process_vcf(vcf_file, gsites, chrom):
             if not parsed:
                 continue
             
-            vcf_chrom, pos, _, alt, genotypes = parsed
+            vcf_chrom, pos, ref, alt, genotypes = parsed
             
             if vcf_chrom != chrom:
                 continue
@@ -203,6 +218,9 @@ def process_vcf(vcf_file, gsites, chrom):
                     "3-fold": [0, 0, 0.0],
                     "4-fold": [0, 0, 0.0]
                 }
+                # Per-mutation-type tracking at 4-fold sites: [poly_count, pi_sum]
+                for mt in MUTATION_TYPES:
+                    counts[gene_id]["4fold_" + mt] = [0, 0.0]
             
             # Check if site is polymorphic
             if alt == '.':
@@ -215,6 +233,14 @@ def process_vcf(vcf_file, gsites, chrom):
                 if is_poly:
                     counts[gene_id][degeneracy][1] += 1
                     counts[gene_id][degeneracy][2] += pi_value
+                    
+                    # Track mutation type for 4-fold degenerate sites
+                    if degeneracy == "4-fold":
+                        mut_type = get_mutation_type(ref, alt)
+                        if mut_type:
+                            key = "4fold_" + mut_type
+                            counts[gene_id][key][0] += 1
+                            counts[gene_id][key][1] += pi_value
                 else:
                     # Not really polymorphic by our criteria
                     counts[gene_id][degeneracy][0] += 1
@@ -240,12 +266,21 @@ def calculate_theta_w(n_poly, n_total, n_samples):
 
     return theta_w_per_site
 
-def calculate_tajimas_d(pi, theta_w, n_poly, n_samples):
+def calculate_tajimas_d(pi_sum, n_poly, n_samples):
     """
     Calculate Tajima's D statistic.
-    D = (π - θ_W) / sqrt(Var(π - θ_W))
+    D = (pi_hat - theta_W) / sqrt(Var(pi_hat - theta_W))
+    
+    Uses per-locus estimators (Tajima 1989):
+        pi_hat   = pi_sum (sum of per-site pairwise differences across locus)
+        theta_W  = S / a_n (Watterson's per-locus estimator)
+    
+    Args:
+        pi_sum: Sum of per-site pi values across the locus (per-locus pi_hat)
+        n_poly: Number of segregating sites (S)
+        n_samples: Sample size (n)
     """
-    if n_samples < 4 or theta_w == 0:
+    if n_samples < 4 or n_poly == 0:
         return float('nan')
     
     n = float(n_samples)
@@ -254,6 +289,9 @@ def calculate_tajimas_d(pi, theta_w, n_poly, n_samples):
     # Calculate variance terms (Tajima 1989)
     a1 = sum(1.0 / i for i in range(1, int(n)))
     a2 = sum(1.0 / (i * i) for i in range(1, int(n)))
+    
+    # Watterson's per-locus estimate
+    theta_w = S / a1
     
     b1 = (n + 1.0) / (3.0 * (n - 1.0))
     b2 = 2.0 * (n * n + n + 3.0) / (9.0 * n * (n - 1.0))
@@ -269,7 +307,7 @@ def calculate_tajimas_d(pi, theta_w, n_poly, n_samples):
     if var_d <= 0:
         return float('nan')
     
-    D = (pi - theta_w) / math.sqrt(var_d)
+    D = (pi_sum - theta_w) / math.sqrt(var_d)
     
     return D
 
@@ -283,7 +321,11 @@ def write_output(counts, chrom, output_file, n_samples):
         out.write("Sites_2fold\tPoly_2fold\tPi_sum_2fold\tPi_mean_2fold\tThetaW_2fold\tTajimaD_2fold\t")
         out.write("Sites_3fold\tPoly_3fold\tPi_sum_3fold\tPi_mean_3fold\tThetaW_3fold\tTajimaD_3fold\t")
         out.write("Sites_4fold\tPoly_4fold\tPi_sum_4fold\tPi_mean_4fold\tThetaW_4fold\tTajimaD_4fold\t")
-        out.write("Sites_all\tPoly_all\tPi_sum_all\tPi_mean_all\tThetaW_all\tTajimaD_all\n")
+        out.write("Sites_all\tPoly_all\tPi_sum_all\tPi_mean_all\tThetaW_all\tTajimaD_all")
+        # 4-fold mutation type columns
+        for mt in MUTATION_TYPES:
+            out.write(f"\tPoly_4fold_{mt}\tPi_sum_4fold_{mt}")
+        out.write("\n")
         
         for gene_id in sorted(counts.keys()):
             gene_counts = counts[gene_id]
@@ -303,7 +345,7 @@ def write_output(counts, chrom, output_file, n_samples):
             
             # Calculate overall neutrality stats
             theta_w_all = calculate_theta_w(total_poly, total_sites, n_samples)
-            tajima_d_all = calculate_tajimas_d(total_pi_mean, theta_w_all, total_poly, n_samples)
+            tajima_d_all = calculate_tajimas_d(total_pi_sum, total_poly, n_samples)
             
             # Write output row
             out.write(f"{chrom}\t{gene_id}\t")
@@ -317,12 +359,18 @@ def write_output(counts, chrom, output_file, n_samples):
                 
                 # Calculate neutrality statistics for this degeneracy class
                 theta_w = calculate_theta_w(n_poly, n_sites, n_samples)
-                tajima_d = calculate_tajimas_d(pi_mean, theta_w, n_poly, n_samples)
+                tajima_d = calculate_tajimas_d(pi_sum, n_poly, n_samples)
                 
                 out.write(f"{n_sites}\t{n_poly}\t{pi_sum:.6f}\t{pi_mean:.6f}\t{theta_w:.6f}\t{tajima_d:.4f}\t")
             
             # Overall metrics (like proc2.py total)
-            out.write(f"{total_sites}\t{total_poly}\t{total_pi_sum:.6f}\t{total_pi_mean:.6f}\t{theta_w_all:.6f}\t{tajima_d_all:.4f}\n")
+            out.write(f"{total_sites}\t{total_poly}\t{total_pi_sum:.6f}\t{total_pi_mean:.6f}\t{theta_w_all:.6f}\t{tajima_d_all:.4f}")
+            
+            # Per-mutation-type data for 4-fold sites
+            for mt in MUTATION_TYPES:
+                key = "4fold_" + mt
+                out.write(f"\t{gene_counts[key][0]}\t{gene_counts[key][1]:.6f}")
+            out.write("\n")
 
 def main():
     if len(sys.argv) not in [4, 5]:
