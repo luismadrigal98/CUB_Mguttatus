@@ -4144,6 +4144,26 @@ cat(sprintf("Loaded %d codon positions from %d genes\n",
             nrow(poly_with_exp), 
             length(unique(poly_with_exp$Gene_clean))))
 
+# Subsample genes to make GAM with gene random effects tractable ----
+# The full dataset (~20K genes) makes s(Gene_clean, bs="re") extremely slow.
+# We randomly sample 3,000 genes (seed = 1998 for reproducibility) —
+# sufficient for stable estimation of population-level fixed + smooth effects.
+
+n_subsample_genes <- 3000
+all_genes_15 <- unique(poly_with_exp$Gene_clean)
+cat(sprintf("Subsampling %d / %d genes for GAM fitting (seed = 1998)...\n",
+            n_subsample_genes, length(all_genes_15)))
+
+set.seed(1998)
+sampled_genes_15 <- sample(all_genes_15, size = min(n_subsample_genes, length(all_genes_15)))
+poly_with_exp <- poly_with_exp |>
+  dplyr::filter(Gene_clean %in% sampled_genes_15) |>
+  dplyr::mutate(Gene_clean = droplevels(Gene_clean))
+
+cat(sprintf("After subsampling: %d codon positions from %d genes\n",
+            nrow(poly_with_exp),
+            length(unique(poly_with_exp$Gene_clean))))
+
 # Aggregate using same window_size
 
 poly_agg <- poly_with_exp |>
@@ -4178,7 +4198,7 @@ fit_null_poly <- bam(
     s(Gene_clean, bs = "re"),
   
   data = poly_agg,
-  family = betar(),  # Can also use Beta regression if needed
+  family = betar(),
   method = "fREML",
   discrete = TRUE,
   nthreads = 1
@@ -4348,7 +4368,8 @@ rm(poly_data, poly_with_exp, poly_agg, window_size,
    contrast_data,
    pred_positions, pred_ramp, plot_ramp_poly,
    pred_grid_exp, pred_exp, plot_ramp_exp_poly,
-   region_coef, region_se, baseline)
+   region_coef, region_se, baseline,
+   all_genes_15, sampled_genes_15, n_subsample_genes, n_threads_15)
 gc()
 
 
@@ -4412,7 +4433,7 @@ cat(sprintf("  Polymorphic: %s / %s (%.2f%%)\n",
             format(nrow(codon_4fold), big.mark = ","),
             100 * mean(codon_4fold$is_poly)))
 
-# 16.3: Merge expression data and compute normalised predictors ----
+# 16.3: Merge expression data and compute normalized predictors ----
 
 # Amino acid full names for reporting
 aa_name_map <- c(A = "Ala", G = "Gly", L = "Leu", P = "Pro",
@@ -4423,7 +4444,8 @@ codon_4fold[, AA_name := aa_name_map[AA]]
 # integrated_data uses "MgIM767.01G000100"
 codon_4fold[, Gene_clean := paste0("MgIM767.", Gene)]
 
-gene_info_16 <- integrated_data[, c("Gene_name", "Mean_Log10_Exp", "Total_Codons")]
+gene_info_16 <- integrated_data[, c("Gene_name", 
+                                    "Mean_Log10_Exp", "Total_Codons")]
 
 codon_4fold <- merge(codon_4fold, gene_info_16,
                      by.x = "Gene_clean", by.y = "Gene_name",
@@ -4433,10 +4455,10 @@ codon_4fold <- merge(codon_4fold, gene_info_16,
 codon_4fold[, dist_norm := Codon_Pos / pmax(Total_Codons - 1L, 1L)]
 codon_4fold[dist_norm > 1, dist_norm := 1]                      # safety cap
 
-# Normalised expression: min-max scaled -> [0, 1]
-exp_range_16 <- range(codon_4fold$Mean_Log10_Exp, na.rm = TRUE)
-codon_4fold[, exp_norm := (Mean_Log10_Exp - exp_range_16[1]) /
-                          (exp_range_16[2] - exp_range_16[1])]
+codon_4fold[, exp_norm := Mean_Log10_Exp]
+
+# Store expression range for prediction grids (contour plots)
+exp_range_16 <- range(codon_4fold$exp_norm, na.rm = TRUE)
 
 cat(sprintf("  After expression merge: %s sites in %s genes\n",
             format(nrow(codon_4fold), big.mark = ","),
@@ -4494,7 +4516,6 @@ write.csv(logistic_table, "./results/logistic_4fold_polymorphism.csv",
           row.names = FALSE)
 cat("\nTable saved: ./results/logistic_4fold_polymorphism.csv\n")
 
-
 # 16.5: Contour plot — predicted probability surface (All 4-fold) ----
 
 cat("\nGenerating contour plots...\n")
@@ -4512,7 +4533,7 @@ print(summary(model_all_4fold))
 # Prediction grid
 pred_grid_16 <- expand.grid(
   dist_norm = seq(0, 1, length.out = 200),
-  exp_norm  = seq(0, 1, length.out = 200)
+  exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
 )
 pred_grid_16$prob <- predict(model_all_4fold, newdata = pred_grid_16,
                              type = "response")
@@ -4532,9 +4553,8 @@ p_contour_filled <- ggplot(pred_grid_16,
     title = "Probability of Polymorphism at 4-fold Degenerate Sites",
     subtitle = "Logistic regression: all 4-fold sites",
     x = "Normalised distance from gene start",
-    y = "Normalised expression level"
+    y = expression(log[10](Expression))
   ) +
-  coord_fixed() +
   theme_custom() +
   theme(legend.position = "right",
         panel.grid      = element_blank())
@@ -4553,9 +4573,8 @@ p_contour_lines <- ggplot(pred_grid_16,
     title = "Probability of Polymorphism at 4-fold Degenerate Sites",
     subtitle = "Contour lines: iso-probability curves",
     x = "Normalised distance from gene start",
-    y = "Normalised expression level"
+    y = expression(log[10](Expression))
   ) +
-  coord_fixed() +
   theme_custom()
 
 ggsave("./results/logistic_4fold_contour_lines.pdf",
@@ -4578,7 +4597,7 @@ for (aa in aa_levels_16) {
 
   pred_aa <- expand.grid(
     dist_norm = seq(0, 1, length.out = 200),
-    exp_norm  = seq(0, 1, length.out = 200)
+    exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
   )
   pred_aa$prob <- predict(model_aa, newdata = pred_aa, type = "response")
 
@@ -4594,9 +4613,8 @@ for (aa in aa_levels_16) {
     labs(
       title = sprintf("P(Polymorphism) at 4-fold Sites: %s", aa),
       x = "Normalised distance from start",
-      y = "Normalised expression"
+      y = expression(log[10](Expression))
     ) +
-    coord_fixed() +
     theme_custom() +
     theme(legend.position = "right",
           panel.grid      = element_blank())
@@ -4732,7 +4750,7 @@ print(summary(model_pi_all))
 
 pred_grid_pi <- expand.grid(
   dist_norm = seq(0, 1, length.out = 200),
-  exp_norm  = seq(0, 1, length.out = 200)
+  exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
 )
 pred_grid_pi$pi_pred <- predict(model_pi_all, newdata = pred_grid_pi)
 
@@ -4751,9 +4769,8 @@ p_pi_contour <- ggplot(pred_grid_pi,
     title = expression("Nucleotide Diversity (" * pi * ") at 4-fold Degenerate Sites"),
     subtitle = "Linear regression: all 4-fold sites",
     x = "Normalised distance from gene start",
-    y = "Normalised expression level"
+    y = expression(log[10](Expression))
   ) +
-  coord_fixed() +
   theme_custom() +
   theme(legend.position = "right",
         panel.grid      = element_blank())
@@ -4774,7 +4791,7 @@ for (aa in aa_levels_16) {
 
   pred_pi_aa <- expand.grid(
     dist_norm = seq(0, 1, length.out = 200),
-    exp_norm  = seq(0, 1, length.out = 200)
+    exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
   )
   pred_pi_aa$pi_pred <- predict(model_pi_aa, newdata = pred_pi_aa)
 
@@ -4790,9 +4807,8 @@ for (aa in aa_levels_16) {
     labs(
       title = bquote(pi ~ "at 4-fold Sites:" ~ .(aa)),
       x = "Normalised distance from start",
-      y = "Normalised expression"
+      y = expression(log[10](Expression))
     ) +
-    coord_fixed() +
     theme_custom() +
     theme(legend.position = "right",
           panel.grid      = element_blank())
@@ -4843,7 +4859,7 @@ print(summary(model_pf_all))
 
 pred_grid_pf <- expand.grid(
   dist_norm = seq(0, 1, length.out = 200),
-  exp_norm  = seq(0, 1, length.out = 200)
+  exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
 )
 pred_grid_pf$pf_pred <- predict(model_pf_all, newdata = pred_grid_pf)
 
@@ -4862,9 +4878,8 @@ p_pf_contour <- ggplot(pred_grid_pf,
     title = "Preferred Codon Frequency at 4-fold Degenerate Sites",
     subtitle = "Linear regression: all 4-fold sites",
     x = "Normalised distance from gene start",
-    y = "Normalised expression level"
+    y = expression(log[10](Expression))
   ) +
-  coord_fixed() +
   theme_custom() +
   theme(legend.position = "right",
         panel.grid      = element_blank())
@@ -4885,7 +4900,7 @@ for (aa in aa_levels_16) {
 
   pred_pf_aa <- expand.grid(
     dist_norm = seq(0, 1, length.out = 200),
-    exp_norm  = seq(0, 1, length.out = 200)
+    exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
   )
   pred_pf_aa$pf_pred <- predict(model_pf_aa, newdata = pred_pf_aa)
 
@@ -4901,9 +4916,8 @@ for (aa in aa_levels_16) {
     labs(
       title = sprintf("Preferred Codon Freq at 4-fold Sites: %s", aa),
       x = "Normalised distance from start",
-      y = "Normalised expression"
+      y = expression(log[10](Expression))
     ) +
-    coord_fixed() +
     theme_custom() +
     theme(legend.position = "right",
           panel.grid      = element_blank())
