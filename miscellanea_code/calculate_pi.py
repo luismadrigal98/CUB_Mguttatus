@@ -184,7 +184,7 @@ def process_vcf(vcf_file, gsites, chrom):
             if not parsed:
                 continue
             
-            vcf_chrom, pos, ref, alt, genotypes = parsed
+            vcf_chrom, pos, _, alt, genotypes = parsed
             
             if vcf_chrom != chrom:
                 continue
@@ -193,7 +193,7 @@ def process_vcf(vcf_file, gsites, chrom):
             if pos not in gsites:
                 continue
             
-            gene_id, expected_base, degeneracy, ref_codon, amino_acid = gsites[pos]
+            gene_id, _, degeneracy, _, _ = gsites[pos]
             
             # Initialize gene if not seen
             if gene_id not in counts:
@@ -210,7 +210,7 @@ def process_vcf(vcf_file, gsites, chrom):
                 counts[gene_id][degeneracy][0] += 1
             else:
                 # Potentially polymorphic
-                is_poly, pi_value, n_samples = calculate_pi_site(genotypes)
+                is_poly, pi_value, _ = calculate_pi_site(genotypes)
                 
                 if is_poly:
                     counts[gene_id][degeneracy][1] += 1
