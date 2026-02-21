@@ -200,7 +200,7 @@ integrated_data <- integrate_cdc_analysis(codon_usage,
 # Merge ENC, GC3s, and CDC results
 integrated_data <- integrated_data |>
   dplyr::mutate(
-    CDC_significant = !is.na(p_value) & p_value < 0.05,
+    CDC_significant = !is.na(p_adj) & p_adj < 0.05,
     CDC_category = dplyr::case_when(
       is.na(p_value) ~ "No CDC data",
       p_adj < 0.001 ~ "p < 0.001",
@@ -425,7 +425,7 @@ selection_table <- do.call(rbind, lapply(names(model_list), function(n) {
 p_effects <- plot_predictions(m_interaction, 
                               condition = c("Max_Log10_Exp", "Exp_breadth"), 
                               newdata = datagrid(
-                                CDS_length_nt = mean(clean_data$CDS_length_nt)),
+                                CDS_length_nt = mean((integrated_data |> dplyr::filter(Exp_breadth > 0))$CDS_length_nt)),
                               type = "response") + 
   geom_rug(data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
            aes(x = Max_Log10_Exp), 
@@ -446,7 +446,7 @@ p_slopes <- plot_slopes(m_interaction,
                         variables = "Max_Log10_Exp",
                         condition = c("Max_Log10_Exp", "Exp_breadth"), 
                         newdata = datagrid(
-                          CDS_length_nt = mean(clean_data$CDS_length_nt)),
+                          CDS_length_nt = mean((integrated_data |> dplyr::filter(Exp_breadth > 0))$CDS_length_nt)),
                         type = "response") +
   # RED LINE = Zero Slope (Where the relationship flattens/saturates)
   geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
@@ -507,7 +507,7 @@ ggsave("./results/Evolutionary_Constraint_Plot.pdf",
 # Statistical Test of Constraint
 # Gamma regression is ideal for modeling variance (always positive)
 m_noise <- gam(bias_deviation ~ s(Exp_breadth), 
-               data = clean_data, 
+               data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
                family = Gamma(link = "log"))
 
 print(summary(m_noise))
@@ -660,7 +660,7 @@ p_medians <- ggplot(plot_data, aes(x = Exp_Group, y = CDC_detrended)) +
   theme_custom() +
   theme(legend.position = "none",
         axis.text.x = element_text(size = 11, face = "bold", color = "black"),
-        axis.title.y = element_text(size = 11),,
+        axis.title.y = element_text(size = 11),
         plot.subtitle = element_text(size = 10, color = "gray30"))
 
 # Save
@@ -2134,6 +2134,10 @@ codon_usage_CA_coord <- integrated_data |>
   dplyr::left_join(codon_usage_CA_coord, by = "Gene_name") |>
   dplyr::mutate(Expression_Group = as.character(Expression_Group))
 
+# Filter to extreme expression groups for MANOVA
+codon_usage_CA_coord_extremes <- codon_usage_CA_coord |>
+  dplyr::filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
+
 # Prepare gene data for biplot
 gene_data_ca <- codon_usage_CA_coord |>
   dplyr::select(Gene_name, expression_group = Expression_Group)
@@ -2212,6 +2216,10 @@ rscu_PCA_coord <- as.data.frame(rscu_PCA$ind$coord) |>
 rscu_PCA_coord <- integrated_data |>
   dplyr::left_join(rscu_PCA_coord, by = "Gene_name") |>
   dplyr::mutate(Expression_Group = as.character(Expression_Group))
+
+# Filter to extreme expression groups for MANOVA
+rscu_PCA_coord_extremes <- rscu_PCA_coord |>
+  dplyr::filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
 
 # Prepare gene data for biplot
 gene_data_pca <- rscu_PCA_coord |>
@@ -2434,7 +2442,18 @@ gc()
 ## 11) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
 
-# Analysis 1: By tRNA gene copy number (traditional approach)
+# NOTE: The genome-wide analysis (Analysis 1) correlates raw codon frequencies
+# with tRNA supply. Because this genome has AT-rich mutational bias, the most
+# frequent codons genome-wide are AT-ending (due to mutation, not selection).
+# The within-family analysis corrects for this by examining proportions within
+# each amino acid family. The top-expression tier analysis (Analysis 2) further
+# isolates the selection signal by focusing on genes under strongest selection.
+
+# ===========================================================================
+# Analysis 1: Genome-wide (baseline, with proper wobble rules)
+# ===========================================================================
+
+cat("\n=== Analysis 1: Genome-wide tRNA-Codon Correlation (Baseline) ===\n")
 
 tRNA_copynumber_results <- tRNA_codon_correlation(
   codon_counts = codon_usage,
@@ -2442,7 +2461,8 @@ tRNA_copynumber_results <- tRNA_codon_correlation(
   genetic_code = genetic_code_dna_long,
   output_dir = "./results/tRNA_analysis_copynumber",
   test_method = "spearman",
-  mode = "by.copy.number"
+  mode = "by.copy.number",
+  wobble_mode = "conservative"  # eukaryotic rules: A34→I34 modification
 )
 
 aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
@@ -2452,7 +2472,122 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
   output_dir = "./results/aa_trna_sanity_check"
 )
 
-# Analysis 2: Translational Accuracy Hypothesis ----
+# ===========================================================================
+# Analysis 2: Top expression tier (isolating selection signal)
+# ===========================================================================
+
+cat("\n=== Analysis 2: Top 5% Expressed Genes - tRNA Correlation ===\n")
+cat("Rationale: If selection shapes codon usage to match tRNA supply,\n")
+cat("the signal should be STRONGEST in highly expressed genes.\n\n")
+
+# Subset codon usage to top 5% expressed genes
+top_expressed_genes <- integrated_data |>
+  dplyr::filter(Expression_Group == "Top 5%") |>
+  dplyr::pull(Gene_name)
+
+codon_usage_top <- codon_usage |>
+  dplyr::filter(Gene_name %in% top_expressed_genes)
+
+cat(sprintf("Top expression tier: %d genes (5%% cutoff = %.2f log10 CPM)\n",
+            nrow(codon_usage_top), top_5_cutoff))
+
+tRNA_top_results <- tRNA_codon_correlation(
+  codon_counts = codon_usage_top,
+  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
+  genetic_code = genetic_code_dna_long,
+  output_dir = "./results/tRNA_analysis_top_expressed",
+  test_method = "spearman",
+  mode = "by.copy.number",
+  wobble_mode = "conservative",
+  is_genome_wide = FALSE
+)
+
+# Background comparison: rest of genes
+rest_expressed_genes <- integrated_data |>
+  dplyr::filter(Expression_Group != "Top 5%") |>
+  dplyr::pull(Gene_name)
+
+codon_usage_rest <- codon_usage |>
+  dplyr::filter(Gene_name %in% rest_expressed_genes)
+
+tRNA_rest_results <- tRNA_codon_correlation(
+  codon_counts = codon_usage_rest,
+  tRNA_file = "./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
+  genetic_code = genetic_code_dna_long,
+  output_dir = "./results/tRNA_analysis_rest_genes",
+  test_method = "spearman",
+  mode = "by.copy.number",
+  wobble_mode = "conservative",
+  is_genome_wide = FALSE
+)
+
+# ===========================================================================
+# Comparison: Top 5% vs Rest within-family correlations
+# ===========================================================================
+
+cat("\n=== Expression Tier Comparison: Within-Family tRNA-Codon Correlations ===\n")
+cat("Testing whether top-expressed genes show stronger tRNA co-adaptation.\n\n")
+
+top_cors <- sapply(tRNA_top_results$correlation_results$per_amino_acid,
+                   function(x) x$estimate)
+rest_cors <- sapply(tRNA_rest_results$correlation_results$per_amino_acid,
+                    function(x) x$estimate)
+
+common_aas <- intersect(names(top_cors), names(rest_cors))
+
+if (length(common_aas) >= 3) {
+  tier_comparison <- data.frame(
+    AA = common_aas,
+    Top5_r = top_cors[common_aas],
+    Rest_r = rest_cors[common_aas],
+    Delta_r = top_cors[common_aas] - rest_cors[common_aas],
+    row.names = NULL
+  )
+  tier_comparison <- tier_comparison[order(-tier_comparison$Delta_r), ]
+
+  cat("Within-family correlation comparison (sorted by Delta):\n")
+  print(tier_comparison, row.names = FALSE)
+
+  # Paired Wilcoxon: are top-gene correlations systematically stronger?
+  paired_test <- wilcox.test(tier_comparison$Top5_r, tier_comparison$Rest_r,
+                             paired = TRUE, alternative = "greater")
+  cat(sprintf("\nPaired Wilcoxon test (Top 5%% > Rest): V = %.0f, p = %.4f\n",
+              paired_test$statistic, paired_test$p.value))
+  cat(sprintf("Mean Delta_r (top - rest): %.3f\n", mean(tier_comparison$Delta_r, na.rm = TRUE)))
+
+  # Visualization: comparison plot
+  p_tier_compare <- ggplot(tier_comparison, aes(x = Rest_r, y = Top5_r)) +
+    geom_point(size = 3, alpha = 0.7) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    ggrepel::geom_text_repel(aes(label = AA), size = 3, max.overlaps = 20) +
+    labs(
+      title = "tRNA-Codon Correlation: Top 5% vs Rest (Within-Family)",
+      subtitle = sprintf(
+        "Paired Wilcoxon p = %.4f | Mean Delta_r = %.3f\nAbove diagonal = stronger correlation in top-expressed genes",
+        paired_test$p.value, mean(tier_comparison$Delta_r, na.rm = TRUE)
+      ),
+      x = "Within-family Spearman r (Rest 95%)",
+      y = "Within-family Spearman r (Top 5%)"
+    ) +
+    theme_custom() +
+    coord_equal()
+
+  ggsave("./results/tRNA_correlation_tier_comparison.pdf",
+         p_tier_compare, width = 8, height = 8)
+
+  # Save comparison data
+  write.csv(tier_comparison,
+            "./results/tRNA_correlation_tier_comparison.csv",
+            row.names = FALSE)
+  cat("Saved: ./results/tRNA_correlation_tier_comparison.pdf\n")
+  cat("Saved: ./results/tRNA_correlation_tier_comparison.csv\n")
+} else {
+  cat("Not enough common amino acid families for tier comparison.\n")
+}
+
+# ===========================================================================
+# Translational Accuracy Hypothesis
+# ===========================================================================
 
 # Load tRNA data for the pairing analysis
 tRNA_data <- fread("./data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt")
@@ -2508,10 +2643,14 @@ pairing_analysis <- classify_codon_anticodon_pairing(
 )
 
 # Memory cleanup: Section 11 tRNA intermediate objects ---
-# Keeping: tRNA_copynumber_results, aa_trna_check, pairing_analysis, preferred_codons_roc
+# Keeping: tRNA_copynumber_results, tRNA_top_results, tRNA_rest_results, 
+#          aa_trna_check, pairing_analysis, preferred_codons_roc, tier_comparison
 rm(tRNA_data, codon_supply,
    all_sense_codons, roc_codon_status, roc_preferred,
-   n_preferred, n_total)
+   n_preferred, n_total, top_expressed_genes, rest_expressed_genes,
+   codon_usage_top, codon_usage_rest)
+if (exists("top_cors")) rm(top_cors, rest_cors, common_aas)
+if (exists("p_tier_compare")) rm(p_tier_compare, paired_test)
 gc()
 
 ## *****************************************************************************
@@ -2538,7 +2677,7 @@ integrated_data <- integrated_data |>
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
 
-# 12.0) Expression-ranked 4-fold π analysis (Kelly replication) ----
+# 12.1) Expression-ranked 4-fold π analysis (Kelly replication) ----
 # Bin genes into groups of ~1000 ranked by Mean_Log10_Exp, calculate
 # weighted mean 4-fold nucleotide diversity within each bin.
 
@@ -2704,6 +2843,8 @@ rm(p_pi_by_expression, bin_size, mutation_types, has_mutation_types)
 
 # Is the relationship between pi and predictors of interest linear?
 
+# 12.2) GAM models ----
+
 predictors <- c('Max_Log10_Exp', 'Exp_breadth', 'CDS_length_nt')
 
 # Analysis based on expression
@@ -2769,7 +2910,7 @@ run_posteriori_gam_analysis(model = pi_models_s[["S_Length"]],
                             response_name = "Pi_mean_4fold",
                             prefix = "SelectionPi")
 
-# 12.1) Tracking frequency of preferred allele as a function of expression ----
+# 12.3) Tracking frequency of preferred allele as a function of expression ----
 
 preferred_data <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt", 
                              stringsAsFactors = FALSE) |>
@@ -2846,7 +2987,7 @@ kw_preferred_freq <- kruskal.test(Mean_preferred_freq_detrended ~ Expression_Gro
 # Plotting and assessing significance using Dunn
 
 print(kw_preferred_freq)
-if (kw_detrended$p.value < 0.05) {
+if (kw_preferred_freq$p.value < 0.05) {
   cat("\nSignificant difference detected! Performing post-hoc pairwise comparisons...\n")
   cat("\n=== Dunn's Test: Pairwise Comparisons with FDR Correction ===\n")
   
@@ -2968,6 +3109,16 @@ gc()
 ## *****************************************************************************
 ## 13) Intronic Polymorphism-Based Selection Validation ----
 ## _____________________________________________________________________________
+#
+# ASSUMPTION NOTE: The neutral mutation parameters (alpha, beta) are estimated
+# from intronic C and G sites respectively, then applied globally to all amino
+# acid families. This assumes context-independent mutation rates, which may not
+# hold perfectly. The nucleotide-specific estimation (separate alpha/beta for C
+# vs G) partially addresses this, but flanking-sequence effects within each
+# nucleotide class are not modeled.
+#
+# A complementary approach is the 4-fold degenerate site composition analysis
+# (Section 13b), which tests for selection without relying on SFS modeling.
 
 # STEP 1: Check for pre-computed intronic SFS files ----
 sfs_G_file <- "./data/sfs_introns_G.csv"
@@ -3692,6 +3843,162 @@ rm(empirical_SFS,
 gc()
 
 ## *****************************************************************************
+## 13b) Nucleotide composition at 4-fold degenerate sites ----
+## _____________________________________________________________________________
+#
+# This analysis provides a SFS-independent test for selection on codon usage.
+# If selection favors GC-ending codons (as indicated by ROC model), then GC
+# content at 4-fold degenerate sites should INCREASE with expression level,
+# opposing the AT-rich mutational bias.
+#
+# 4-fold degenerate sites: all four nucleotides at the 3rd position are
+# synonymous (Ala, Gly, Pro, Thr, Val, Leu_4, Ser_4, Arg_4).
+
+cat("\n=== Nucleotide Composition at 4-Fold Degenerate Sites ===\n")
+
+# Identify 4-fold degenerate amino acid families
+fourfold_families <- c("Ala", "Gly", "Pro", "Thr", "Val", "Leu_4", "Ser_4", "Arg_4")
+fourfold_codons <- names(genetic_code_dna_long)[genetic_code_dna_long %in% fourfold_families]
+
+cat(sprintf("4-fold degenerate families: %s\n", paste(fourfold_families, collapse = ", ")))
+cat(sprintf("Codons included: %d\n", length(fourfold_codons)))
+
+# Calculate per-gene nucleotide composition at 4-fold sites
+fourfold_cols <- intersect(fourfold_codons, names(codon_usage))
+fourfold_usage <- codon_usage[, c("Gene_name", fourfold_cols), with = FALSE]
+
+fourfold_long <- fourfold_usage |>
+  tidyr::pivot_longer(-Gene_name, names_to = "Codon", values_to = "Count") |>
+  dplyr::mutate(Third_base = substr(Codon, 3, 3))
+
+fourfold_per_gene <- fourfold_long |>
+  dplyr::group_by(Gene_name) |>
+  dplyr::summarise(
+    Total_4fold = sum(Count),
+    N_A = sum(Count[Third_base == "A"]),
+    N_T = sum(Count[Third_base == "T"]),
+    N_C = sum(Count[Third_base == "C"]),
+    N_G = sum(Count[Third_base == "G"]),
+    GC3_4fold = (N_G + N_C) / Total_4fold,
+    Freq_A = N_A / Total_4fold,
+    Freq_T = N_T / Total_4fold,
+    Freq_C = N_C / Total_4fold,
+    Freq_G = N_G / Total_4fold,
+    .groups = "drop"
+  )
+
+# Merge with expression data
+fourfold_with_expr <- integrated_data |>
+  dplyr::select(Gene_name, Max_Log10_Exp, Expression_Group,
+                Geom_Mean_CPM, CDS_length_nt) |>
+  dplyr::inner_join(fourfold_per_gene, by = "Gene_name") |>
+  dplyr::filter(Total_4fold >= 20)  # Minimum for reliable composition estimates
+
+cat(sprintf("Genes with >= 20 4-fold codons: %d / %d (%.1f%%)\n",
+            nrow(fourfold_with_expr), nrow(integrated_data),
+            100 * nrow(fourfold_with_expr) / nrow(integrated_data)))
+
+# Summary by expression group
+fourfold_summary <- fourfold_with_expr |>
+  dplyr::group_by(Expression_Group) |>
+  dplyr::summarise(
+    N = dplyr::n(),
+    Mean_GC3 = mean(GC3_4fold, na.rm = TRUE),
+    SD_GC3 = sd(GC3_4fold, na.rm = TRUE),
+    Median_GC3 = median(GC3_4fold, na.rm = TRUE),
+    Mean_A = mean(Freq_A, na.rm = TRUE),
+    Mean_T = mean(Freq_T, na.rm = TRUE),
+    Mean_C = mean(Freq_C, na.rm = TRUE),
+    Mean_G = mean(Freq_G, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("\nGC3 at 4-fold degenerate sites by expression group:\n")
+print(as.data.frame(fourfold_summary))
+
+# Kruskal-Wallis test
+kw_gc3_4fold <- kruskal.test(GC3_4fold ~ Expression_Group, data = fourfold_with_expr)
+cat(sprintf("\nKruskal-Wallis test: chi^2 = %.2f, df = %d, p = %.2e\n",
+            kw_gc3_4fold$statistic, kw_gc3_4fold$parameter, kw_gc3_4fold$p.value))
+
+# GAM model: GC3 at 4-fold sites ~ expression + total 4-fold codons
+m_gc3_4fold <- gam(GC3_4fold ~ s(Max_Log10_Exp) + s(Total_4fold),
+                   data = fourfold_with_expr, family = betar(link = "logit"))
+
+cat("\n=== GAM: GC3 (4-fold) ~ s(Expression) + s(Total_4fold_codons) ===\n")
+print(summary(m_gc3_4fold))
+
+# Plot: GC3 at 4-fold sites vs expression
+p_gc3_4fold <- ggplot(fourfold_with_expr,
+                      aes(x = Max_Log10_Exp, y = GC3_4fold)) +
+  geom_hex(bins = 50) +
+  geom_smooth(method = "gam", formula = y ~ s(x),
+              method.args = list(family = betar(link = "logit")),
+              color = "red", linewidth = 1.5) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "gray50", alpha = 0.5) +
+  scale_fill_viridis_c(option = "plasma", name = "Gene\nCount") +
+  labs(
+    title = "GC Content at 4-fold Degenerate Sites vs Expression",
+    subtitle = paste0(
+      "If selection favors GC-ending codons, GC3 should increase with expression\n",
+      sprintf("KW p = %.2e | GAM s(Exp) p = %.2e",
+              kw_gc3_4fold$p.value,
+              summary(m_gc3_4fold)$s.table["s(Max_Log10_Exp)", "p-value"])
+    ),
+    x = "Max Expression (Log10 CPM)",
+    y = "GC3 at 4-fold Degenerate Sites"
+  ) +
+  theme_custom()
+
+ggsave("./results/GC3_4fold_vs_expression.pdf", p_gc3_4fold, width = 10, height = 8)
+
+# Per-nucleotide composition vs expression
+nuc_long <- fourfold_with_expr |>
+  tidyr::pivot_longer(
+    cols = c(Freq_A, Freq_T, Freq_C, Freq_G),
+    names_to = "Nucleotide",
+    values_to = "Frequency"
+  ) |>
+  dplyr::mutate(
+    Nucleotide = gsub("Freq_", "", Nucleotide),
+    Bias_direction = ifelse(Nucleotide %in% c("G", "C"),
+                            "GC (ROC-preferred)", "AT (mutation-favored)")
+  )
+
+p_nuc_4fold <- ggplot(nuc_long, aes(x = Max_Log10_Exp, y = Frequency,
+                                     color = Nucleotide)) +
+  geom_smooth(method = "gam", formula = y ~ s(x), se = TRUE, linewidth = 1.2) +
+  scale_color_manual(values = c("A" = "#E41A1C", "T" = "#FF7F00",
+                                "C" = "#377EB8", "G" = "#4DAF4A")) +
+  labs(
+    title = "Nucleotide Composition at 4-fold Sites vs Expression",
+    subtitle = "Opposing trends (GC up, AT down) indicate selection opposing mutational bias",
+    x = "Max Expression (Log10 CPM)",
+    y = "Nucleotide Frequency at 4-fold Sites"
+  ) +
+  theme_custom() +
+  theme(legend.position = "right")
+
+ggsave("./results/nucleotide_comp_4fold_vs_expression.pdf",
+       p_nuc_4fold, width = 10, height = 7)
+
+# Save 4-fold composition data
+write.csv(fourfold_with_expr,
+          "./results/fourfold_degenerate_composition.csv",
+          row.names = FALSE)
+
+cat("\nSaved: ./results/GC3_4fold_vs_expression.pdf\n")
+cat("Saved: ./results/nucleotide_comp_4fold_vs_expression.pdf\n")
+cat("Saved: ./results/fourfold_degenerate_composition.csv\n")
+
+# Cleanup Section 13b intermediates
+rm(fourfold_long, fourfold_per_gene, fourfold_summary,
+   fourfold_cols, fourfold_codons, fourfold_families,
+   nuc_long, kw_gc3_4fold, m_gc3_4fold, p_gc3_4fold, p_nuc_4fold)
+# Keep fourfold_with_expr for potential downstream use
+gc()
+
+## *****************************************************************************
 ## 14) Diversity across different genomic compartment ----
 ## _____________________________________________________________________________
 
@@ -3896,7 +4203,7 @@ binary_preferred <- binary_preferred |>
 clean_data <- binary_preferred |>
   dplyr::filter(!is.na(Max_Log10_Exp), !is.na(Exp_breadth)) %>%
   # Focus on the Translational Ramp region (first 200 codons)
-  dplyr::filter(Position <= 200) |> 
+  dplyr::filter(Position <= 400) |> 
   dplyr::mutate(
     # Standardize predictors (Mean=0, SD=1) for faster MCMC
     Exp_Z = as.numeric(scale(Max_Log10_Exp)),
@@ -3984,7 +4291,7 @@ AIC(fit_null_ml, fit_ramp_ml, fit_ramp_int_ml)
 # Visualization
 
 pred_positions <- data.frame(
-  Position_mid = seq(5, 200, by = 2),
+  Position_mid = seq(5, 400, by = 2),
   Exp_Z = 0,
   Breadth_Z = 0,
   GeneID = model_data_agg$GeneID[1],  # Reference gene for RE
@@ -4580,7 +4887,6 @@ p_contour_lines <- ggplot(pred_grid_16,
 ggsave("./results/logistic_4fold_contour_lines.pdf",
        p_contour_lines, width = 8, height = 7)
 cat("  Saved: ./results/logistic_4fold_contour_lines.pdf\n")
-
 
 # 16.6: Per-amino-acid contour plots ----
 

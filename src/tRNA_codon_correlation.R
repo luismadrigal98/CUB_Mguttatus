@@ -575,8 +575,13 @@ analyze_tAI_expression <- function(tAI_results, expression_data, output_dir = ".
 #'   - "by.expression": uses tRNA expression from RNA-seq (requires ann + expression_data)
 #' @param ann Path to GFF3 file (required if mode="by.expression") for mapping tRNA coordinates to gene IDs
 #' @param expression_data Data frame with Gene_name and Expression columns (required if mode="by.expression")
-#' @param wobble_mode Wobble pairing rules: "conservative" (A pairs only with U) or 
-#'   "permissive" (A assumed modified to I, pairs with U/C/A). Only used when mode="by.expression"
+#' @param wobble_mode Wobble pairing rules:
+#'   \describe{
+#'     \item{"strict"}{Original Crick (1966) rules. A pairs only with U.}
+#'     \item{"conservative"}{(default) Eukaryotic rules. A34→I34 assumed (pairs with U/C/A).}
+#'     \item{"permissive"}{Expanded rules. A34→I34 + modified U34 (pairs with A/G/U).}
+#'   }
+#'   Used in both "by.copy.number" and "by.expression" modes.
 #' @param is_genome_wide Logical: does codon_counts represent the full genome (TRUE) 
 #'   or a filtered subset (FALSE)? Used for proper interpretation of results.
 #' @param min_codons Minimum number of codons in an amino acid family to perform 
@@ -715,15 +720,29 @@ tRNA_codon_correlation <- function(codon_counts,
   } else {  # mode == "by.copy.number"
     cat("=== Using tRNA Gene Copy Numbers ===\n\n")
     
-    # Count tRNA genes per anticodon
+    # 1. Count tRNA genes per anticodon
     trna_counts <- trna_data[, .(tRNA_count = .N), by = Anticodon]
     cat(sprintf("Found %d unique anticodons\n", nrow(trna_counts)))
     
-    # Calculate codon supply based on wobble rules
-    codon_supply <- get_codon_supply_map(trna_counts)
+    # 2. Apply the specific wobble version chosen by the user
+    # Map wobble_mode to get_codon_supply_map version parameter:
+    #   "strict"       → "crick"      (original Crick 1966, no A→I)
+    #   "conservative" → "eukaryotic" (A34→I34, standard for eukaryotes)
+    #   "permissive"   → "modified"   (expanded U34 wobble + A34→I34)
+    logic_version <- switch(wobble_mode,
+      "strict"       = "crick",
+      "permissive"   = "modified",
+      "eukaryotic"   # default: conservative → eukaryotic
+    )
+    
+    cat(sprintf("Applying %s wobble rules (wobble_mode: %s)\n", logic_version, wobble_mode))
+    
+    codon_supply <- get_codon_supply_map(trna_counts, version = logic_version)
+    
+    # Ensure column names match the downstream analysis
     setnames(codon_supply, "tRNA_supply", "tRNA_abundance")
     
-    abundance_label <- "tRNA Gene Copy Number"
+    abundance_label <- sprintf("tRNA Gene Copy Number (%s wobble)", logic_version)
   }
   
   cat(sprintf("\nCodon supply calculated for %d codons\n", nrow(codon_supply)))
@@ -1337,4 +1356,102 @@ tRNA_codon_correlation <- function(codon_counts,
   }
   
   return(invisible(result_list))
+}
+
+#' Optimized Codon Supply Inference from tRNA Copy Numbers
+#'
+#' Maps tRNA gene copy numbers to codon supply using wobble base pairing rules.
+#' Each tRNA can decode multiple codons at the wobble position (codon position 3,
+#' anticodon position 34). The full tRNA count is assigned to each decodable codon
+#' (standard approach in tAI calculations; dos Reis et al. 2004).
+#'
+#' @param trna_counts data.table with columns: Anticodon (3-letter DNA, 5'→3'), tRNA_count
+#' @param version Character. Wobble rule version:
+#'   \describe{
+#'     \item{"crick"}{Original Crick (1966) rules. Most conservative.
+#'       G34→{U,C}, U34→{A,G}, C34→G, A34→U only.}
+#'     \item{"eukaryotic"}{Standard eukaryotic rules (default). Assumes near-universal
+#'       A34→I34 (adenosine-to-inosine) modification. A34→{U,C,A}.
+#'       Based on Agris et al. 2007.}
+#'     \item{"modified"}{Expanded rules including modified U34 (e.g., thiolated uridine).
+#'       U34→{A,G,U}. Use when tRNA modification data is available.}
+#'   }
+#' @return data.table with columns: Codon (DNA), tRNA_supply (summed over all
+#'   tRNAs that can decode each codon)
+#'
+#' @details
+#' Anticodon orientation: position 1 = wobble (34), position 2 = (35), position 3 = (36).
+#' Codon is the reverse complement: codon pos 1 = comp(ac pos 3), pos 2 = comp(ac pos 2),
+#' pos 3 pairs with ac pos 1 via wobble rules.
+#'
+#' @references
+#' Crick, F.H.C. (1966) J Mol Biol 19:548-555.
+#' Agris, P.F. et al. (2007) Nucleic Acids Res 35:1018-1033.
+#' dos Reis, M. et al. (2004) Nucleic Acids Res 32:5036-5044.
+get_codon_supply_map <- function(trna_counts, version = "eukaryotic") {
+  require(data.table)
+  
+  # Standard DNA complement (anticodon → codon mapping)
+  comp <- c("A" = "T", "T" = "A", "G" = "C", "C" = "G")
+  
+  # Rule Definitions based on Agris et al. 2007
+  # Key: anticodon wobble base (position 34) → codon bases it pairs with (position 3)
+  wobble_rules <- list(
+    crick = list(
+      "G" = c("T", "C"),   # G34 wobble: pairs with U and C
+      "T" = c("A", "G"),   # U34 wobble: pairs with A and G
+      "C" = c("G"),         # C34: Watson-Crick only
+      "A" = c("T")          # A34: Watson-Crick only (no I modification)
+    ),
+    eukaryotic = list(
+      "G" = c("T", "C"),   # G34 wobble: pairs with U and C
+      "T" = c("A", "G"),   # U34 standard wobble
+      "C" = c("G"),         # C34: Watson-Crick only
+      "A" = c("T", "C", "A") # A34→I34 modification (near-universal in eukaryotes)
+    ),
+    modified = list(
+      "G" = c("T", "C"),   # G34 wobble
+      "T" = c("A", "G", "T"), # Modified U34 (e.g., s2U, mcm5s2U): expanded pairing
+      "C" = c("G"),         # C34: Watson-Crick only
+      "A" = c("T", "C", "A") # A34→I34 modification
+    )
+  )
+  
+  if (!version %in% names(wobble_rules)) {
+    stop("version must be one of: ", paste(names(wobble_rules), collapse = ", "))
+  }
+  
+  rules <- wobble_rules[[version]]
+  
+  supply_list <- lapply(1:nrow(trna_counts), function(i) {
+    ac <- trna_counts$Anticodon[i]
+    count <- trna_counts$tRNA_count[i]
+    
+    # Validate anticodon
+    if (nchar(ac) != 3 || !all(strsplit(ac, "")[[1]] %in% names(comp))) {
+      warning(sprintf("Skipping invalid anticodon: %s", ac))
+      return(NULL)
+    }
+    
+    # Orientation: AC 5'→3' positions 34-35-36 pair with Codon 3'-5' positions 3-2-1
+    # Codon pos 1 = complement of AC pos 3 (36)
+    # Codon pos 2 = complement of AC pos 2 (35)
+    # Codon pos 3 = wobble-paired with AC pos 1 (34)
+    c1 <- comp[substr(ac, 3, 3)]
+    c2 <- comp[substr(ac, 2, 2)]
+    ac34 <- substr(ac, 1, 1)  # Wobble base
+    
+    c3_targets <- rules[[ac34]]
+    if (is.null(c3_targets)) {
+      warning(sprintf("No wobble rule for base '%s' in anticodon %s", ac34, ac))
+      c3_targets <- comp[ac34]  # Fall back to Watson-Crick complement
+    }
+    
+    data.table(Codon = paste0(c1, c2, c3_targets), tRNA_supply = count)
+  })
+  
+  # Remove NULL entries (from invalid anticodons)
+  supply_list <- supply_list[!sapply(supply_list, is.null)]
+  
+  return(rbindlist(supply_list)[, .(tRNA_supply = sum(tRNA_supply)), by = Codon])
 }
