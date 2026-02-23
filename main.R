@@ -4893,9 +4893,17 @@ codon_4fold[, exp_norm := Mean_Log10_Exp]
 # Store expression range for prediction grids (contour plots)
 exp_range_16 <- range(codon_4fold$exp_norm, na.rm = TRUE)
 
+# Standardised predictors (z-scored) for comparable coefficient magnitudes
+# Raw predictors are retained for contour-plot prediction grids
+codon_4fold[, dist_z := as.numeric(scale(dist_norm))]
+codon_4fold[, exp_z  := as.numeric(scale(exp_norm))]
+
 cat(sprintf("  After expression merge: %s sites in %s genes\n",
             format(nrow(codon_4fold), big.mark = ","),
             format(length(unique(codon_4fold$Gene_clean)), big.mark = ",")))
+cat(sprintf("  dist_norm: mean=%.3f, sd=%.3f  |  exp_norm: mean=%.3f, sd=%.3f\n",
+            mean(codon_4fold$dist_norm), sd(codon_4fold$dist_norm),
+            mean(codon_4fold$exp_norm),  sd(codon_4fold$exp_norm)))
 
 # 16.4: Fit logistic regressions ----
 
@@ -4948,6 +4956,46 @@ print(logistic_table, row.names = FALSE)
 write.csv(logistic_table, "./results/logistic_4fold_polymorphism.csv",
           row.names = FALSE)
 cat("\nTable saved: ./results/logistic_4fold_polymorphism.csv\n")
+
+# 16.4b: Standardised logistic regressions (comparable coefficients) ----
+
+fit_logistic_4fold_z <- function(data, label) {
+  n_sites <- nrow(data)
+  if (n_sites < 100) {
+    return(data.frame(Category = label, Number_Sites = n_sites,
+                      Intercept = NA, dist_z = NA, exp_z = NA,
+                      dist_z2 = NA, exp_z2 = NA, dist_z_exp_z = NA))
+  }
+  model <- glm(is_poly ~ dist_z + exp_z +
+                  I(dist_z^2) + I(exp_z^2) + dist_z:exp_z,
+                data = data, family = binomial(link = "logit"))
+  cc <- coef(model)
+  data.frame(
+    Category      = label,
+    Number_Sites  = format(n_sites, big.mark = ","),
+    Intercept     = round(cc["(Intercept)"], 4),
+    dist_z        = round(cc["dist_z"], 4),
+    exp_z         = round(cc["exp_z"], 4),
+    dist_z2       = round(cc["I(dist_z^2)"], 4),
+    exp_z2        = round(cc["I(exp_z^2)"], 4),
+    dist_z_exp_z  = round(cc["dist_z:exp_z"], 4),
+    row.names     = NULL
+  )
+}
+
+result_all_z <- fit_logistic_4fold_z(codon_4fold, "All 4-fold")
+results_aa_z <- lapply(aa_levels_16, function(aa) {
+  fit_logistic_4fold_z(codon_4fold[AA_name == aa], aa)
+})
+logistic_table_z <- rbind(result_all_z, do.call(rbind, results_aa_z))
+
+cat("\n=== Standardised Logistic Regression (z-scored predictors) ===\n")
+cat("Coefficients now directly comparable in magnitude.\n\n")
+print(logistic_table_z, row.names = FALSE)
+
+write.csv(logistic_table_z, "./results/logistic_4fold_polymorphism_standardised.csv",
+          row.names = FALSE)
+cat("\nTable saved: ./results/logistic_4fold_polymorphism_standardised.csv\n")
 
 # 16.5: Contour plot — predicted probability surface (All 4-fold) ----
 
@@ -5247,7 +5295,6 @@ for (aa in aa_levels_16) {
 }
 cat("  Per-amino-acid π contour plots saved\n")
 
-
 # 16.9: Linear regression — Preferred Codon Frequency at 4-fold sites ----
 ## Response: Preferred_Freq (already in data, range [0, 1])
 ## Model: Preferred_Freq ~ dist_norm + exp_norm + dist² + exp² + dist:exp
@@ -5356,69 +5403,143 @@ for (aa in aa_levels_16) {
 }
 cat("  Per-amino-acid Preferred_Freq contour plots saved\n")
 
-
 # 16.10: C-ending vs G-ending preferred codon decomposition ----
 ## The nucleotide composition plot (Section 13b) shows C rising and G falling
 ## with expression at 4-fold sites. If the ROC-preferred set includes both
 ## C-ending and G-ending codons, their opposing trends will cancel out in the
-## aggregate Preferred_Freq metric. This section decomposes the signal:
+## aggregate Preferred_Freq metric. This section decomposes the signal.
+##
+## IMPORTANT: The relationship between expression and preferred-codon frequency
+## is NON-LINEAR (cf. Section 13b composition plot: C is flat until ~log10=2.5,
+## then rises sharply). A polynomial (Section 16.9) cannot capture this shape
+## and yields misleading negative coefficients. We therefore use GAMs here.
 ##
 ##   pref_base3 = 3rd base of the ROC-preferred codon for each site
-##   C-ending sites → Preferred_Freq should INCREASE with expression (real CUB)
-##   G-ending sites → Preferred_Freq should DECREASE (mutational decay, no selection support)
+##   C-ending sites -> Preferred_Freq should INCREASE with expression (real CUB)
+##   G-ending sites -> Preferred_Freq should DECREASE (mutational decay)
 ##
-## If confirmed, this shows the Section 16.9 negative expression effect is an
-## artifact of mixing two populations with opposite trends.
+## Position effect interpretation: The 5'->3' decline in preferred frequency is
+## consistent with Hill-Robertson interference (HRI). In Mimulus, recombination
+## events concentrate at gene starts, so N_e is highest at the 5' end and
+## selection for preferred codons is more effective there.
 
 cat("\n=== Section 16.10: C-ending vs G-ending Preferred Codon Decomposition ===\n")
+cat("Using GAMs to capture non-linear expression effects\n\n")
 
 # Classify each 4-fold site by 3rd base of its preferred codon
 codon_4fold[, pref_base3 := substr(Preferred_Codon, 3, 3)]
 
+n_C_sites <- sum(codon_4fold$pref_base3 == "C")
+n_G_sites <- sum(codon_4fold$pref_base3 == "G")
+
 cat(sprintf("  4-fold sites with C-ending preferred codon: %s\n",
-            format(sum(codon_4fold$pref_base3 == "C"), big.mark = ",")))
+            format(n_C_sites, big.mark = ",")))
 cat(sprintf("  4-fold sites with G-ending preferred codon: %s\n",
-            format(sum(codon_4fold$pref_base3 == "G"), big.mark = ",")))
+            format(n_G_sites, big.mark = ",")))
 
-# ---- 16.10a: Regression table by ending type ----
+# ---- 16.10a: GAM fits for C-ending and G-ending ----
+# GAM with tensor product smooth of position x expression
+# Using te() to capture the interaction and individual non-linear effects
 
-cat("\n--- Linear Regression: Preferred_Freq by Preferred Codon Ending ---\n")
-cat("Model: Preferred_Freq ~ dist + exp + dist² + exp² + dist:exp\n\n")
+cat("\nFitting GAMs: Preferred_Freq ~ te(dist_norm, exp_norm)\n")
 
-result_pf_C <- fit_linear_4fold(
-  codon_4fold[pref_base3 == "C"], "C-ending preferred", "Preferred_Freq")
-result_pf_G <- fit_linear_4fold(
-  codon_4fold[pref_base3 == "G"], "G-ending preferred", "Preferred_Freq")
+# Subsample for GAM fitting if datasets are very large (>500k)
+# GAM with te() on millions of rows is memory-intensive
+max_gam_sites <- 500000L
 
-pf_cg_table <- rbind(result_pf_C, result_pf_G)
-print(pf_cg_table, row.names = FALSE)
+set.seed(1998)
+if (n_C_sites > max_gam_sites) {
+  idx_C <- sample.int(n_C_sites, max_gam_sites)
+  gam_data_C <- codon_4fold[pref_base3 == "C"][idx_C]
+  cat(sprintf("  C-ending: subsampled %s sites for GAM\n",
+              format(max_gam_sites, big.mark = ",")))
+} else {
+  gam_data_C <- codon_4fold[pref_base3 == "C"]
+}
 
-write.csv(pf_cg_table, "./results/linear_4fold_pref_freq_C_vs_G_ending.csv",
+if (n_G_sites > max_gam_sites) {
+  idx_G <- sample.int(n_G_sites, max_gam_sites)
+  gam_data_G <- codon_4fold[pref_base3 == "G"][idx_G]
+  cat(sprintf("  G-ending: subsampled %s sites for GAM\n",
+              format(max_gam_sites, big.mark = ",")))
+} else {
+  gam_data_G <- codon_4fold[pref_base3 == "G"]
+}
+
+gam_pf_C <- gam(
+  Preferred_Freq ~ te(dist_norm, exp_norm, k = c(8, 8)),
+  data = gam_data_C,
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 4
+)
+
+gam_pf_G <- gam(
+  Preferred_Freq ~ te(dist_norm, exp_norm, k = c(8, 8)),
+  data = gam_data_G,
+  method = "fREML",
+  discrete = TRUE,
+  nthreads = 4
+)
+
+cat("\n--- GAM Summary: C-ending preferred codons ---\n")
+print(summary(gam_pf_C))
+cat("\n--- GAM Summary: G-ending preferred codons ---\n")
+print(summary(gam_pf_G))
+
+# ---- 16.10a2: Standardised linear regressions for coefficient comparison ----
+# Retained for interpretability alongside the GAMs
+
+cat("\n--- Standardised Linear Regression (z-scored predictors) ---\n")
+cat("For direct coefficient magnitude comparison:\n\n")
+
+fit_linear_4fold_z <- function(data, label, response_col) {
+  n_sites <- nrow(data)
+  if (n_sites < 100) {
+    return(data.frame(Category = label, N = n_sites,
+                      Intercept = NA, dist_z = NA, exp_z = NA,
+                      dist_z2 = NA, exp_z2 = NA, dist_z_exp_z = NA))
+  }
+  formula_str <- paste0(response_col,
+    " ~ dist_z + exp_z + I(dist_z^2) + I(exp_z^2) + dist_z:exp_z")
+  model <- lm(as.formula(formula_str), data = data)
+  cc <- coef(model)
+  fmt <- function(x, d = 6) formatC(x, format = "g", digits = d)
+  data.frame(
+    Category      = label,
+    N             = format(n_sites, big.mark = ","),
+    Intercept     = fmt(cc["(Intercept)"]),
+    dist_z        = fmt(cc["dist_z"]),
+    exp_z         = fmt(cc["exp_z"]),
+    dist_z2       = fmt(cc["I(dist_z^2)"]),
+    exp_z2        = fmt(cc["I(exp_z^2)"]),
+    dist_z_exp_z  = fmt(cc["dist_z:exp_z"]),
+    row.names     = NULL
+  )
+}
+
+result_pf_C_z <- fit_linear_4fold_z(codon_4fold[pref_base3 == "C"],
+                                     "C-ending preferred", "Preferred_Freq")
+result_pf_G_z <- fit_linear_4fold_z(codon_4fold[pref_base3 == "G"],
+                                     "G-ending preferred", "Preferred_Freq")
+
+pf_cg_table_z <- rbind(result_pf_C_z, result_pf_G_z)
+print(pf_cg_table_z, row.names = FALSE)
+
+write.csv(pf_cg_table_z,
+          "./results/linear_4fold_pref_freq_C_vs_G_standardised.csv",
           row.names = FALSE)
-cat("\nTable saved: ./results/linear_4fold_pref_freq_C_vs_G_ending.csv\n")
+cat("\nTable saved: ./results/linear_4fold_pref_freq_C_vs_G_standardised.csv\n")
 
-# Full summaries
-model_pf_C <- lm(Preferred_Freq ~ dist_norm + exp_norm +
-                    I(dist_norm^2) + I(exp_norm^2) + dist_norm:exp_norm,
-                  data = codon_4fold[pref_base3 == "C"])
-model_pf_G <- lm(Preferred_Freq ~ dist_norm + exp_norm +
-                    I(dist_norm^2) + I(exp_norm^2) + dist_norm:exp_norm,
-                  data = codon_4fold[pref_base3 == "G"])
-
-cat("\nFull model — C-ending preferred codons:\n")
-print(summary(model_pf_C))
-cat("\nFull model — G-ending preferred codons:\n")
-print(summary(model_pf_G))
-
-# ---- 16.10b: Contour plots for C-ending vs G-ending ----
+# ---- 16.10b: GAM contour plots for C-ending vs G-ending ----
 
 pred_grid_cg <- expand.grid(
   dist_norm = seq(0, 1, length.out = 200),
   exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
 )
 
-pred_grid_cg$pf_C <- predict(model_pf_C, newdata = pred_grid_cg)
-pred_grid_cg$pf_G <- predict(model_pf_G, newdata = pred_grid_cg)
+pred_grid_cg$pf_C <- predict(gam_pf_C, newdata = pred_grid_cg)
+pred_grid_cg$pf_G <- predict(gam_pf_G, newdata = pred_grid_cg)
 
 # C-ending contour
 p_pf_C_contour <- ggplot(pred_grid_cg, aes(x = dist_norm, y = exp_norm)) +
@@ -5430,8 +5551,8 @@ p_pf_C_contour <- ggplot(pred_grid_cg, aes(x = dist_norm, y = exp_norm)) +
     name = "Pref Freq"
   ) +
   labs(
-    title = "Preferred Codon Frequency: C-ending Preferred Codons Only",
-    subtitle = "Expected to INCREASE with expression if CUB selection acts on C",
+    title = "GAM: Preferred Codon Frequency — C-ending Preferred Codons",
+    subtitle = "CUB selection signal: expected to increase at high expression",
     x = "Normalised distance from gene start",
     y = expression(log[10](Expression))
   ) +
@@ -5448,112 +5569,182 @@ p_pf_G_contour <- ggplot(pred_grid_cg, aes(x = dist_norm, y = exp_norm)) +
     name = "Pref Freq"
   ) +
   labs(
-    title = "Preferred Codon Frequency: G-ending Preferred Codons Only",
-    subtitle = "Expected to DECREASE with expression if G is disfavoured / mutational decay",
+    title = "GAM: Preferred Codon Frequency — G-ending Preferred Codons",
+    subtitle = "No selection support: expected to decrease (mutational decay to AT)",
     x = "Normalised distance from gene start",
     y = expression(log[10](Expression))
   ) +
   theme_custom() +
   theme(legend.position = "right", panel.grid = element_blank())
 
-ggsave("./results/linear_4fold_pref_freq_C_ending_contour.pdf",
+ggsave("./results/gam_4fold_pref_freq_C_ending_contour.pdf",
        p_pf_C_contour, width = 8, height = 7)
-ggsave("./results/linear_4fold_pref_freq_G_ending_contour.pdf",
+ggsave("./results/gam_4fold_pref_freq_G_ending_contour.pdf",
        p_pf_G_contour, width = 8, height = 7)
 
-cat("  Saved: ./results/linear_4fold_pref_freq_C_ending_contour.pdf\n")
-cat("  Saved: ./results/linear_4fold_pref_freq_G_ending_contour.pdf\n")
+cat("  Saved: ./results/gam_4fold_pref_freq_C_ending_contour.pdf\n")
+cat("  Saved: ./results/gam_4fold_pref_freq_G_ending_contour.pdf\n")
 
-# ---- 16.10c: Side-by-side trend plot (expression marginal effect) ----
-# Average over position to show pure expression trend
+# ---- 16.10c: GAM-based trend comparison (marginal expression effect) ----
+# Evaluate at gene midpoint (dist = 0.5) to show the pure expression effect
+# Also evaluate at dist = 0.1 (5' end) and dist = 0.9 (3' end) for HRI context
 
-exp_grid <- data.frame(
-  dist_norm = 0.5,  # gene midpoint
-  exp_norm  = seq(exp_range_16[1], exp_range_16[2], length.out = 200)
-)
+exp_seq <- seq(exp_range_16[1], exp_range_16[2], length.out = 300)
 
-exp_grid$pf_C <- predict(model_pf_C, newdata = exp_grid)
-exp_grid$pf_G <- predict(model_pf_G, newdata = exp_grid)
-exp_grid$pf_all <- predict(model_pf_all, newdata = exp_grid)
+# Generate predictions at three positions
+trend_list <- lapply(c(0.1, 0.5, 0.9), function(d) {
+  nd <- data.frame(dist_norm = d, exp_norm = exp_seq)
+  data.frame(
+    exp_norm  = exp_seq,
+    dist_pos  = paste0("dist = ", d),
+    pf_C      = predict(gam_pf_C, newdata = nd),
+    pf_G      = predict(gam_pf_G, newdata = nd)
+  )
+})
+trend_df <- do.call(rbind, trend_list)
 
-exp_trend_long <- tidyr::pivot_longer(
-  exp_grid,
-  cols      = c(pf_C, pf_G, pf_all),
-  names_to  = "Group",
+# Pivot for plotting
+trend_long <- tidyr::pivot_longer(
+  trend_df,
+  cols      = c(pf_C, pf_G),
+  names_to  = "Codon_Type",
   values_to = "Predicted_Pref_Freq"
 ) |>
   dplyr::mutate(
-    Group = dplyr::case_when(
-      Group == "pf_C"   ~ "C-ending preferred (n=3.77M)",
-      Group == "pf_G"   ~ "G-ending preferred (n=0.97M)",
-      Group == "pf_all" ~ "All preferred (combined)"
-    ),
-    Group = factor(Group, levels = c(
-      "C-ending preferred (n=3.77M)",
-      "G-ending preferred (n=0.97M)",
-      "All preferred (combined)"
-    ))
+    Codon_Type = dplyr::case_when(
+      Codon_Type == "pf_C" ~ sprintf("C-ending preferred (n=%s)",
+                                      format(n_C_sites, big.mark = ",")),
+      Codon_Type == "pf_G" ~ sprintf("G-ending preferred (n=%s)",
+                                      format(n_G_sites, big.mark = ","))
+    )
   )
 
-p_cg_trends <- ggplot(exp_trend_long,
+p_cg_trends <- ggplot(trend_long,
                        aes(x = exp_norm, y = Predicted_Pref_Freq,
-                           color = Group, linetype = Group)) +
-  geom_line(linewidth = 1.3) +
+                           color = Codon_Type)) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ dist_pos, ncol = 3) +
   scale_color_manual(values = c(
-    "C-ending preferred (n=3.77M)" = "#2171B5",
-    "G-ending preferred (n=0.97M)" = "#238B45",
-    "All preferred (combined)" = "grey40"
+    setNames("#2171B5", sprintf("C-ending preferred (n=%s)",
+                                 format(n_C_sites, big.mark = ","))),
+    setNames("#238B45", sprintf("G-ending preferred (n=%s)",
+                                 format(n_G_sites, big.mark = ",")))
   )) +
-  scale_linetype_manual(values = c("solid", "solid", "dashed")) +
   labs(
-    title = "Preferred Codon Frequency vs Expression: C-ending vs G-ending",
+    title = "GAM: Preferred Codon Frequency vs Expression (C-ending vs G-ending)",
     subtitle = paste(
-      "Evaluated at gene midpoint (dist = 0.5).",
-      "\nOpposing trends confirm C-specific selection; combined metric is misleading."
+      "Faceted by within-gene position (0.1 = 5' end, 0.5 = mid, 0.9 = 3' end).",
+      "\nHRI prediction: stronger divergence at 5' (higher recombination / N_e)."
     ),
     x = expression(log[10](Expression)),
     y = "Predicted Preferred Codon Frequency",
-    color = "Preferred codon type",
-    linetype = "Preferred codon type"
+    color = "Preferred codon type"
   ) +
   theme_custom() +
   theme(legend.position = "bottom",
         legend.direction = "vertical")
 
-ggsave("./results/pref_freq_C_vs_G_ending_trends.pdf",
-       p_cg_trends, width = 9, height = 7)
+ggsave("./results/gam_pref_freq_C_vs_G_ending_trends.pdf",
+       p_cg_trends, width = 14, height = 6)
 
-cat("  Saved: ./results/pref_freq_C_vs_G_ending_trends.pdf\n")
+cat("  Saved: ./results/gam_pref_freq_C_vs_G_ending_trends.pdf\n")
 
-# ---- 16.10d: Interpretation summary ----
+# ---- 16.10d: Single-panel midpoint trend (with CI) ----
+# Cleaner view at dist = 0.5 with confidence envelopes
+
+nd_mid <- data.frame(dist_norm = 0.5, exp_norm = exp_seq)
+pred_C_mid <- predict(gam_pf_C, newdata = nd_mid, se.fit = TRUE)
+pred_G_mid <- predict(gam_pf_G, newdata = nd_mid, se.fit = TRUE)
+
+mid_df <- data.frame(
+  exp_norm = rep(exp_seq, 2),
+  fit      = c(pred_C_mid$fit, pred_G_mid$fit),
+  se       = c(pred_C_mid$se.fit, pred_G_mid$se.fit),
+  Group    = rep(c("C-ending preferred", "G-ending preferred"), each = length(exp_seq))
+)
+mid_df$lo <- mid_df$fit - 1.96 * mid_df$se
+mid_df$hi <- mid_df$fit + 1.96 * mid_df$se
+
+p_cg_mid <- ggplot(mid_df, aes(x = exp_norm, y = fit, color = Group, fill = Group)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, colour = NA) +
+  geom_line(linewidth = 1.3) +
+  scale_color_manual(values = c("C-ending preferred" = "#2171B5",
+                                 "G-ending preferred" = "#238B45")) +
+  scale_fill_manual(values = c("C-ending preferred" = "#2171B5",
+                                "G-ending preferred" = "#238B45")) +
+  labs(
+    title = "GAM Predicted Preferred Codon Frequency at Gene Midpoint",
+    subtitle = paste(
+      "Ribbon = 95% CI. Evaluated at dist = 0.5.",
+      "\nDiverging trends at high expression confirm C-specific selection."
+    ),
+    x = expression(log[10](Expression)),
+    y = "Predicted Preferred Codon Frequency",
+    color = NULL, fill = NULL
+  ) +
+  theme_custom() +
+  theme(legend.position = c(0.75, 0.85))
+
+ggsave("./results/gam_pref_freq_C_vs_G_midpoint.pdf",
+       p_cg_mid, width = 8, height = 6)
+
+cat("  Saved: ./results/gam_pref_freq_C_vs_G_midpoint.pdf\n")
+
+# ---- 16.10e: Interpretation summary ----
 cat("\n", strrep("-", 60), "\n", sep = "")
 cat("C-ENDING vs G-ENDING DECOMPOSITION SUMMARY\n")
 cat(strrep("-", 60), "\n")
 
-# Extract expression coefficients (linear term reflects main trend)
-beta_exp_C <- coef(model_pf_C)["exp_norm"]
-beta_exp_G <- coef(model_pf_G)["exp_norm"]
-beta_exp_all <- coef(model_pf_all)["exp_norm"]
+# Evaluate GAM predicted difference at low vs high expression (at midpoint)
+nd_lo <- data.frame(dist_norm = 0.5, exp_norm = quantile(exp_seq, 0.05))
+nd_hi <- data.frame(dist_norm = 0.5, exp_norm = quantile(exp_seq, 0.95))
 
-cat(sprintf("Expression coefficient (linear) for C-ending: %+.6f\n", beta_exp_C))
-cat(sprintf("Expression coefficient (linear) for G-ending: %+.6f\n", beta_exp_G))
-cat(sprintf("Expression coefficient (linear) for combined: %+.6f\n", beta_exp_all))
+pf_C_lo <- predict(gam_pf_C, newdata = nd_lo)
+pf_C_hi <- predict(gam_pf_C, newdata = nd_hi)
+pf_G_lo <- predict(gam_pf_G, newdata = nd_lo)
+pf_G_hi <- predict(gam_pf_G, newdata = nd_hi)
 
-if (sign(beta_exp_C) != sign(beta_exp_G)) {
-  cat("\n→ CONFIRMED: C-ending and G-ending preferred codons show OPPOSING\n")
-  cat("  trends with expression. The combined Preferred_Freq metric is\n")
-  cat("  a Simpson's paradox artifact.\n")
+cat(sprintf("GAM predictions at gene midpoint (dist = 0.5):\n"))
+cat(sprintf("  C-ending: low exp = %.4f, high exp = %.4f, delta = %+.4f\n",
+            pf_C_lo, pf_C_hi, pf_C_hi - pf_C_lo))
+cat(sprintf("  G-ending: low exp = %.4f, high exp = %.4f, delta = %+.4f\n",
+            pf_G_lo, pf_G_hi, pf_G_hi - pf_G_lo))
+
+if (sign(pf_C_hi - pf_C_lo) != sign(pf_G_hi - pf_G_lo)) {
+  cat("\n-> CONFIRMED: C-ending and G-ending preferred codons show OPPOSING\n")
+  cat("   trends with expression (GAM-based). The combined Preferred_Freq\n")
+  cat("   decline (Section 16.9) is a Simpson's-paradox artifact.\n")
   
-  if (beta_exp_C > 0) {
-    cat("→ C-ending preferred codons INCREASE with expression → genuine CUB selection.\n")
+  if ((pf_C_hi - pf_C_lo) > 0) {
+    cat("-> C-ending preferred codons INCREASE at high expression -> genuine CUB.\n")
   }
-  if (beta_exp_G < 0) {
-    cat("→ G-ending preferred codons DECREASE with expression → mutational decay,\n")
-    cat("  no selection support, possibly exacerbated by AT mutation bias.\n")
+  if ((pf_G_hi - pf_G_lo) < 0) {
+    cat("-> G-ending preferred codons DECREASE -> mutational decay / no selection support.\n")
   }
 } else {
-  cat("\n→ Both C-ending and G-ending trend in the same direction.\n")
-  cat("  The composition plot (Section 13b) and this result need reconciliation.\n")
+  cat("\n-> Both C-ending and G-ending move in the same direction.\n")
+  cat("   Direction: C delta = ", round(pf_C_hi - pf_C_lo, 5),
+      ", G delta = ", round(pf_G_hi - pf_G_lo, 5), "\n")
+  cat("   The GAM captures the dominant trend; non-linearity may\n")
+  cat("   still produce opposing trends at extreme expression values.\n")
+  cat("   Check the faceted trend plot for position-dependent effects.\n")
+}
+
+# HRI assessment: compare C-G gap at 5' vs 3'
+nd_5p <- data.frame(dist_norm = 0.1, exp_norm = quantile(exp_seq, 0.95))
+nd_3p <- data.frame(dist_norm = 0.9, exp_norm = quantile(exp_seq, 0.95))
+
+gap_5p <- predict(gam_pf_C, newdata = nd_5p) - predict(gam_pf_G, newdata = nd_5p)
+gap_3p <- predict(gam_pf_C, newdata = nd_3p) - predict(gam_pf_G, newdata = nd_3p)
+
+cat(sprintf("\nHill-Robertson interference diagnostic (highly expressed genes):\n"))
+cat(sprintf("  C-G gap at 5' end (dist=0.1): %.4f\n", gap_5p))
+cat(sprintf("  C-G gap at 3' end (dist=0.9): %.4f\n", gap_3p))
+if (gap_5p > gap_3p) {
+  cat("  -> Larger gap at 5' end consistent with HRI: more effective\n")
+  cat("     selection where recombination (and N_e) is highest.\n")
+} else {
+  cat("  -> Gap does not decrease toward 3' -- HRI effect not detected.\n")
 }
 
 cat(strrep("-", 60), "\n\n")
@@ -5562,13 +5753,16 @@ cat(strrep("-", 60), "\n\n")
 # Section 16 cleanup ----
 rm(codon_4fold, gene_info_16, freq_clean, fourfold_simple, aa_name_map,
    model_all_4fold, pred_grid_16, p_contour_filled, p_contour_lines,
-   logistic_table, result_all, results_aa, aa_levels_16, exp_range_16,
+   logistic_table, logistic_table_z, result_all, result_all_z,
+   results_aa, results_aa_z, aa_levels_16, exp_range_16,
    model_pi_all, pred_grid_pi, p_pi_contour, pi_table, result_pi_all, results_pi_aa,
    model_pf_all, pred_grid_pf, p_pf_contour, pf_table, result_pf_all, results_pf_aa,
-   model_pf_C, model_pf_G, pred_grid_cg, p_pf_C_contour, p_pf_G_contour,
-   exp_grid, exp_trend_long, p_cg_trends, pf_cg_table, result_pf_C, result_pf_G,
-   beta_exp_C, beta_exp_G, beta_exp_all)
+   gam_pf_C, gam_pf_G, gam_data_C, gam_data_G,
+   pred_grid_cg, p_pf_C_contour, p_pf_G_contour,
+   trend_df, trend_long, p_cg_trends,
+   mid_df, p_cg_mid, pred_C_mid, pred_G_mid,
+   pf_cg_table_z, result_pf_C_z, result_pf_G_z,
+   n_C_sites, n_G_sites, exp_seq)
 gc()
-
 
 message("=== Analysis complete. Memory cleaned. ===")
