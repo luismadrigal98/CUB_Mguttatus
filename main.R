@@ -1,6 +1,8 @@
 ##' @title CUB in Mimulus guttaus
 ##' 
 ##' @author Luis Javier Madrigal-Roca & John K. Kelly
+##' 
+##' @date 02/24/2026
 ##' ____________________________________________________________________________
 
 ## *****************************************************************************
@@ -5466,7 +5468,7 @@ if (n_G_sites > max_gam_sites) {
   gam_data_G <- codon_4fold[pref_base3 == "G"]
 }
 
-gam_pf_C <- gam(
+gam_pf_C <- bam(
   Preferred_Freq ~ te(dist_norm, exp_norm, k = c(8, 8)),
   data = gam_data_C,
   method = "fREML",
@@ -5474,7 +5476,7 @@ gam_pf_C <- gam(
   nthreads = 4
 )
 
-gam_pf_G <- gam(
+gam_pf_G <- bam(
   Preferred_Freq ~ te(dist_norm, exp_norm, k = c(8, 8)),
   data = gam_data_G,
   method = "fREML",
@@ -5749,9 +5751,490 @@ if (gap_5p > gap_3p) {
 
 cat(strrep("-", 60), "\n\n")
 
+# 16.11: Gene-level preferred codon frequency GAMs ----
+## Site-level GAMs give low R^2 because each codon position is dominated by
+## stochastic noise.  Gene-level aggregation averages this noise out and yields
+## a surface comparable to the gene-level CDC ~ expression + length models.
+## We aggregate separately for C-ending and G-ending ROC-preferred sites.
+
+cat("\n=== Section 16.11: Gene-Level Preferred Codon Frequency GAMs ===\n")
+
+# Aggregate per gene: mean Preferred_Freq, split by ending
+gene_pf_CG <- codon_4fold[, .(
+  mean_pf   = mean(Preferred_Freq, na.rm = TRUE),
+  n_sites   = .N,
+  exp_norm  = Mean_Log10_Exp[1],
+  log_len   = log10(Total_Codons[1])
+), by = .(Gene_clean, pref_base3)]
+
+gene_pf_C <- gene_pf_CG[pref_base3 == "C" & n_sites >= 10]
+gene_pf_G <- gene_pf_CG[pref_base3 == "G" & n_sites >= 10]
+
+cat(sprintf("  Genes with >= 10 C-ending 4-fold sites: %s\n",
+            format(nrow(gene_pf_C), big.mark = ",")))
+cat(sprintf("  Genes with >= 10 G-ending 4-fold sites: %s\n",
+            format(nrow(gene_pf_G), big.mark = ",")))
+
+# GAM: mean preferred freq ~ s(expression) + s(log gene length)
+gam_gene_C <- gam(
+  mean_pf ~ s(exp_norm, k = 10) + s(log_len, k = 10),
+  data = gene_pf_C, method = "REML"
+)
+gam_gene_G <- gam(
+  mean_pf ~ s(exp_norm, k = 10) + s(log_len, k = 10),
+  data = gene_pf_G, method = "REML"
+)
+
+cat("\n--- Gene-level GAM: C-ending preferred codons ---\n")
+print(summary(gam_gene_C))
+cat("\n--- Gene-level GAM: G-ending preferred codons ---\n")
+print(summary(gam_gene_G))
+
+# Partial-effect plots: expression smooth from each model
+exp_grid_gene <- data.frame(
+  exp_norm = seq(min(gene_pf_C$exp_norm), max(gene_pf_C$exp_norm),
+                 length.out = 200),
+  log_len  = median(gene_pf_C$log_len)
+)
+
+pred_gene_C <- predict(gam_gene_C, newdata = exp_grid_gene, se.fit = TRUE)
+pred_gene_G <- predict(gam_gene_G, newdata = exp_grid_gene, se.fit = TRUE)
+
+gene_trend_df <- data.frame(
+  exp_norm = rep(exp_grid_gene$exp_norm, 2),
+  fit      = c(pred_gene_C$fit, pred_gene_G$fit),
+  se       = c(pred_gene_C$se.fit, pred_gene_G$se.fit),
+  Group    = rep(c("C-ending preferred", "G-ending preferred"),
+                 each = nrow(exp_grid_gene))
+)
+gene_trend_df$lo <- gene_trend_df$fit - 1.96 * gene_trend_df$se
+gene_trend_df$hi <- gene_trend_df$fit + 1.96 * gene_trend_df$se
+
+p_gene_cg <- ggplot(gene_trend_df,
+                     aes(x = exp_norm, y = fit, color = Group, fill = Group)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, colour = NA) +
+  geom_line(linewidth = 1.3) +
+  scale_color_manual(values = c("C-ending preferred" = "#2171B5",
+                                 "G-ending preferred" = "#238B45")) +
+  scale_fill_manual(values = c("C-ending preferred" = "#2171B5",
+                                "G-ending preferred" = "#238B45")) +
+  labs(
+    title = "Gene-Level GAM: Mean Preferred Codon Frequency vs Expression",
+    subtitle = paste0(
+      "s(expression) + s(log10 gene length). Evaluated at median gene length.\n",
+      sprintf("C-ending R2=%.3f, G-ending R2=%.3f",
+              summary(gam_gene_C)$r.sq, summary(gam_gene_G)$r.sq)
+    ),
+    x = expression(log[10](Expression)),
+    y = "Gene-Mean Preferred Codon Frequency",
+    color = NULL, fill = NULL
+  ) +
+  theme_custom() +
+  theme(legend.position = c(0.75, 0.85))
+
+ggsave("./results/gene_level_pref_freq_C_vs_G.pdf",
+       p_gene_cg, width = 8, height = 6)
+cat("  Saved: ./results/gene_level_pref_freq_C_vs_G.pdf\n")
+
+
+# 16.12: Per-amino-acid analysis of G-ending preferred codons ----
+## Only 4 amino acids have G-ending preferred codons:
+##   Glu (GAG), Lys (AAG), Arg_2 (AGG), Val (GTG)
+## At these sites the ROC-preferred codon ends in G, but G is competing
+## against C within the same amino acid family.  The aggregate "G-ending
+## decline" (Section 16.10) could be confounded by C winning the within-
+## family competition everywhere.  If genuine CUB acts on G at these four
+## amino acids, Preferred_Freq should still increase with expression.
+##
+## DATA ISSUE — SPLIT FAMILIES:
+## The ROC model assigns one preferred codon per amino acid *letter*.
+## For Arg: ROC preferred = AGG (2-fold family, AGR).
+## But 4-fold Arg sites are CGN — AGG can NEVER appear there.
+## => Preferred_Freq = 0 at ALL CGN-Arg sites, and pref_base3 = "G"
+##    from substr("AGG", 3, 3).
+## This makes Arg a structural artefact: its "G-ending preferred" signal
+## is uninformative (always zero).  We exclude Arg from the per-AA
+## decomposition and flag it in the output.
+##
+## The same logic applies to split Leu (CTC preferred, 4-fold = CTN -> OK)
+## and split Ser (TCC preferred, 4-fold = TCN -> OK).
+
+cat("\n=== Section 16.12: Per-Amino-Acid Analysis of Preferred Codons ===\n")
+
+# Identify which amino acid families have G-ending preferred codons
+g_preferred_aas <- preferred_codons$aa[substr(preferred_codons$Codon, 3, 3) == "G"]
+cat(sprintf("  Amino acids with G-ending preferred codon: %s\n",
+            paste(g_preferred_aas, collapse = ", ")))
+cat(sprintf("  Codons: %s\n",
+            paste(preferred_codons$Codon[substr(preferred_codons$Codon, 3, 3) == "G"],
+                  collapse = ", ")))
+
+# Flag and exclude Arg: the 4-fold family (CGN) cannot contain the
+# ROC-preferred codon (AGG), so Preferred_Freq = 0 everywhere.
+n_arg_before <- nrow(codon_4fold[AA_name == "Arg"])
+cat(sprintf("\n  WARNING: Excluding Arg (CGN) — Preferred_Codon=AGG cannot appear\n"))
+cat(sprintf("  at CGN sites (%s sites removed).\n",
+            format(n_arg_before, big.mark = ",")))
+codon_4fold_noarg <- codon_4fold[AA_name != "Arg"]
+
+# Recompute aggregate C/G counts without Arg
+n_C_noarg <- sum(codon_4fold_noarg$pref_base3 == "C")
+n_G_noarg <- sum(codon_4fold_noarg$pref_base3 == "G")
+cat(sprintf("  After exclusion: C-ending=%s, G-ending=%s (change: -%s G sites)\n",
+            format(n_C_noarg, big.mark = ","),
+            format(n_G_noarg, big.mark = ","),
+            format(n_arg_before - (n_G_noarg - n_G_sites + n_arg_before),
+                   big.mark = ",")))
+
+# ---- 16.12a: Gene-level aggregation per amino acid ----
+# For each amino acid family, aggregate Preferred_Freq per gene and model vs expression
+# Using codon_4fold_noarg (Arg excluded — see note above)
+
+# Build per-AA, per-gene mean preferred freq
+gene_pf_by_aa <- codon_4fold_noarg[, .(
+  mean_pf   = mean(Preferred_Freq, na.rm = TRUE),
+  n_sites   = .N,
+  exp_norm  = Mean_Log10_Exp[1],
+  log_len   = log10(Total_Codons[1]),
+  pref_end  = pref_base3[1]        # same for all sites in this AA
+), by = .(Gene_clean, AA_name)]
+
+# Keep genes with >= 5 sites per amino acid
+gene_pf_by_aa <- gene_pf_by_aa[n_sites >= 5]
+
+# Spearman correlation: mean preferred freq ~ expression, per amino acid
+aa_corr_table <- gene_pf_by_aa[, {
+  ct <- cor.test(mean_pf, exp_norm, method = "spearman", exact = FALSE)
+  .(rho = ct$estimate, p = ct$p.value, n_genes = .N,
+    n_sites_total = sum(n_sites), pref_end = pref_end[1])
+}, by = AA_name]
+
+setorder(aa_corr_table, pref_end, -rho)
+
+cat("\nSpearman correlation: gene-mean Preferred_Freq ~ expression, per amino acid\n")
+cat("(genes with >= 5 sites per AA family)\n\n")
+print(aa_corr_table, digits = 4)
+
+write.csv(aa_corr_table,
+          "./results/pref_freq_by_aa_expression_correlations.csv",
+          row.names = FALSE)
+cat("\nSaved: ./results/pref_freq_by_aa_expression_correlations.csv\n")
+
+# ---- 16.12b: GAM trends for the 4 G-ending preferred AAs ----
+
+cat("\n--- GAM trends for G-ending preferred amino acids ---\n")
+
+# Filter to amino acids with G-ending preferred codons
+# Map the preferred_codons$aa labels to the AA_name used in codon_4fold
+g_aa_names <- preferred_codons$AA[substr(preferred_codons$Codon, 3, 3) == "G"]
+# These are full names like "Val", "Glu" etc.
+
+# Also get the equivalent names used in AA_name column of codon_4fold
+# AA_name was created by aa_name_map which only maps A,G,L,P,R,S,T,V
+# For the 4 G-ending preferred: Val (V), Glu (not 4-fold), Lys (not 4-fold),
+# Arg_2 (not 4-fold -- it's AGG, 2-fold)
+# Wait -- the 4-fold data only includes 4-fold degenerate families!
+# Let's check which G-ending preferred AAs are actually in codon_4fold
+
+g_end_in_data <- codon_4fold[pref_base3 == "G", unique(AA_name)]
+cat(sprintf("  G-ending preferred AAs in 4-fold data: %s\n",
+            paste(g_end_in_data, collapse = ", ")))
+
+# Gene-level data for G-ending preferred AAs
+gene_pf_g_aas <- gene_pf_by_aa[pref_end == "G"]
+
+if (nrow(gene_pf_g_aas) > 0 && length(unique(gene_pf_g_aas$AA_name)) > 0) {
+  
+  # GAM per AA for G-ending
+  gam_results_g <- list()
+  for (aa in unique(gene_pf_g_aas$AA_name)) {
+    aa_data <- gene_pf_g_aas[AA_name == aa]
+    if (nrow(aa_data) >= 50) {
+      gam_aa <- gam(mean_pf ~ s(exp_norm, k = 8), data = aa_data, method = "REML")
+      gam_results_g[[aa]] <- gam_aa
+      cat(sprintf("  %s: n_genes=%d, R2=%.4f, deviance_expl=%.1f%%\n",
+                  aa, nrow(aa_data),
+                  summary(gam_aa)$r.sq,
+                  summary(gam_aa)$dev.expl * 100))
+    }
+  }
+  
+  # Prediction curves for each G-ending AA
+  if (length(gam_results_g) > 0) {
+    exp_pred_range <- range(gene_pf_g_aas$exp_norm, na.rm = TRUE)
+    exp_pred_seq <- seq(exp_pred_range[1], exp_pred_range[2], length.out = 200)
+    
+    g_trend_list <- lapply(names(gam_results_g), function(aa) {
+      nd <- data.frame(exp_norm = exp_pred_seq)
+      pp <- predict(gam_results_g[[aa]], newdata = nd, se.fit = TRUE)
+      pref_codon <- preferred_codons$Codon[
+        preferred_codons$AA == aa | preferred_codons$aa == aa]
+      if (length(pref_codon) == 0) pref_codon <- "?"
+      data.frame(
+        exp_norm = exp_pred_seq,
+        fit = pp$fit, se = pp$se.fit,
+        AA = aa,
+        label = sprintf("%s (%s)", aa, pref_codon[1])
+      )
+    })
+    g_trend_df <- do.call(rbind, g_trend_list)
+    g_trend_df$lo <- g_trend_df$fit - 1.96 * g_trend_df$se
+    g_trend_df$hi <- g_trend_df$fit + 1.96 * g_trend_df$se
+    
+    p_g_aa_trends <- ggplot(g_trend_df,
+                             aes(x = exp_norm, y = fit, color = label, fill = label)) +
+      geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.10, colour = NA) +
+      geom_line(linewidth = 1.2) +
+      labs(
+        title = "G-ending Preferred Codons: Gene-Mean Preferred Freq vs Expression",
+        subtitle = paste(
+          "If CUB supports G at these amino acids, preferred freq should increase.",
+          "\nDecline -> C within-family competitor is winning / mutational decay."
+        ),
+        x = expression(log[10](Expression)),
+        y = "Gene-Mean Preferred Codon Frequency",
+        color = "Amino acid (preferred codon)",
+        fill  = "Amino acid (preferred codon)"
+      ) +
+      theme_custom() +
+      theme(legend.position = "bottom")
+    
+    ggsave("./results/G_ending_preferred_per_AA_trends.pdf",
+           p_g_aa_trends, width = 9, height = 6)
+    cat("  Saved: ./results/G_ending_preferred_per_AA_trends.pdf\n")
+  }
+} else {
+  cat("  No G-ending preferred amino acids found in 4-fold data.\n")
+  cat("  (This is expected if only Val has G-ending preferred among 4-fold families,\n")
+  cat("   and Glu/Lys/Arg_2 are 2-fold.)\n")
+}
+
+# ---- 16.12c: Comparison panel: all AAs, colored by preferred ending ----
+
+cat("\n--- All amino acid families: preferred freq trend by ending type ---\n")
+
+# GAM per AA for ALL amino acids in 4-fold data
+gam_results_all_aa <- list()
+for (aa in unique(gene_pf_by_aa$AA_name)) {
+  aa_data <- gene_pf_by_aa[AA_name == aa]
+  if (nrow(aa_data) >= 50) {
+    gam_aa <- gam(mean_pf ~ s(exp_norm, k = 8), data = aa_data, method = "REML")
+    gam_results_all_aa[[aa]] <- list(
+      model = gam_aa,
+      pref_end = aa_data$pref_end[1],
+      n_genes = nrow(aa_data)
+    )
+  }
+}
+
+# Build prediction dataframe
+if (length(gam_results_all_aa) > 0) {
+  exp_pred_range_all <- range(gene_pf_by_aa$exp_norm, na.rm = TRUE)
+  exp_pred_seq_all <- seq(exp_pred_range_all[1], exp_pred_range_all[2],
+                          length.out = 200)
+  
+  all_aa_trend_list <- lapply(names(gam_results_all_aa), function(aa) {
+    obj <- gam_results_all_aa[[aa]]
+    nd <- data.frame(exp_norm = exp_pred_seq_all)
+    pp <- predict(obj$model, newdata = nd, se.fit = TRUE)
+    data.frame(
+      exp_norm = exp_pred_seq_all,
+      fit      = pp$fit,
+      se       = pp$se.fit,
+      AA       = aa,
+      pref_end = obj$pref_end,
+      n_genes  = obj$n_genes
+    )
+  })
+  all_aa_trend_df <- do.call(rbind, all_aa_trend_list)
+  all_aa_trend_df$lo <- all_aa_trend_df$fit - 1.96 * all_aa_trend_df$se
+  all_aa_trend_df$hi <- all_aa_trend_df$fit + 1.96 * all_aa_trend_df$se
+  
+  # Color by preferred ending: blue = C-ending, green/orange = G-ending
+  all_aa_trend_df$Ending <- ifelse(all_aa_trend_df$pref_end == "C",
+                                    "C-ending preferred", "G-ending preferred")
+  
+  p_all_aa <- ggplot(all_aa_trend_df,
+                      aes(x = exp_norm, y = fit, color = AA, linetype = Ending)) +
+    geom_line(linewidth = 1.0) +
+    scale_linetype_manual(values = c("C-ending preferred" = "solid",
+                                      "G-ending preferred" = "dashed")) +
+    facet_wrap(~ Ending, ncol = 2, scales = "free_y") +
+    labs(
+      title = "Gene-Mean Preferred Codon Freq vs Expression: All 4-fold AA Families",
+      subtitle = "Solid = C-ending preferred, Dashed = G-ending preferred",
+      x = expression(log[10](Expression)),
+      y = "Gene-Mean Preferred Codon Frequency",
+      color = "Amino acid"
+    ) +
+    guides(linetype = "none") +
+    theme_custom() +
+    theme(legend.position = "bottom")
+  
+  ggsave("./results/pref_freq_all_AA_by_ending.pdf",
+         p_all_aa, width = 12, height = 6)
+  cat("  Saved: ./results/pref_freq_all_AA_by_ending.pdf\n")
+  
+  # Print summary table
+  aa_summary <- do.call(rbind, lapply(names(gam_results_all_aa), function(aa) {
+    obj <- gam_results_all_aa[[aa]]
+    ss <- summary(obj$model)
+    # Low and high expression predictions
+    nd_lo <- data.frame(exp_norm = quantile(exp_pred_seq_all, 0.05))
+    nd_hi <- data.frame(exp_norm = quantile(exp_pred_seq_all, 0.95))
+    delta <- predict(obj$model, newdata = nd_hi) -
+             predict(obj$model, newdata = nd_lo)
+    data.frame(
+      AA       = aa,
+      Pref_End = obj$pref_end,
+      N_genes  = obj$n_genes,
+      R2       = round(ss$r.sq, 4),
+      Dev_Expl = round(ss$dev.expl * 100, 1),
+      Delta_lo_hi = round(delta, 4),
+      Direction = ifelse(delta > 0, "UP", "DOWN")
+    )
+  }))
+  setorder(as.data.table(aa_summary), Pref_End, -Delta_lo_hi)
+  cat("\nSummary: GAM-predicted change (low -> high expression) per amino acid:\n\n")
+  print(aa_summary, row.names = FALSE)
+  
+  write.csv(aa_summary,
+            "./results/pref_freq_per_AA_expression_direction.csv",
+            row.names = FALSE)
+  cat("\nSaved: ./results/pref_freq_per_AA_expression_direction.csv\n")
+}
+
+# ---- 16.12d: GAM contour plots per amino acid ----
+# Contour surface: Preferred_Freq ~ f(expression, gene length) for each AA
+# These give a richer picture than the 1-D trend curves
+
+cat("\n--- GAM contour plots per amino acid (expression x gene length) ---\n")
+
+# Build gene-level data with both predictors per AA
+gene_pf_for_contour <- codon_4fold_noarg[, .(
+  mean_pf   = mean(Preferred_Freq, na.rm = TRUE),
+  n_sites   = .N,
+  exp_norm  = Mean_Log10_Exp[1],
+  log_len   = log10(Total_Codons[1]),
+  pref_end  = pref_base3[1]
+), by = .(Gene_clean, AA_name)]
+gene_pf_for_contour <- gene_pf_for_contour[n_sites >= 5]
+
+# Prediction grid (shared across AAs)
+exp_range_aa <- range(gene_pf_for_contour$exp_norm, na.rm = TRUE)
+len_range_aa <- range(gene_pf_for_contour$log_len, na.rm = TRUE)
+
+pred_grid_aa <- expand.grid(
+  exp_norm = seq(exp_range_aa[1], exp_range_aa[2], length.out = 100),
+  log_len  = seq(len_range_aa[1], len_range_aa[2], length.out = 100)
+)
+
+# Fit te() GAM per AA and collect predictions
+aa_list <- sort(unique(gene_pf_for_contour$AA_name))
+contour_preds <- list()
+
+for (aa in aa_list) {
+  aa_data <- gene_pf_for_contour[AA_name == aa]
+  if (nrow(aa_data) < 200) next
+  
+  gam_aa_2d <- gam(
+    mean_pf ~ te(exp_norm, log_len, k = c(6, 6)),
+    data = aa_data, method = "REML"
+  )
+  
+  ss <- summary(gam_aa_2d)
+  cat(sprintf("  %s: n=%d, R2=%.4f, dev_expl=%.1f%%\n",
+              aa, nrow(aa_data), ss$r.sq, ss$dev.expl * 100))
+  
+  preds <- predict(gam_aa_2d, newdata = pred_grid_aa)
+  contour_preds[[aa]] <- data.frame(
+    pred_grid_aa,
+    pf_pred  = as.numeric(preds),
+    AA       = aa,
+    pref_end = aa_data$pref_end[1]
+  )
+}
+
+contour_all <- do.call(rbind, contour_preds)
+contour_all$Ending <- ifelse(contour_all$pref_end == "C",
+                              "C-ending preferred", "G-ending preferred")
+
+# Faceted contour plot: one panel per amino acid
+p_aa_contours <- ggplot(contour_all, aes(x = exp_norm, y = log_len)) +
+  geom_raster(aes(fill = pf_pred), interpolate = TRUE) +
+  geom_contour(aes(z = pf_pred), colour = "grey30", linewidth = 0.3, bins = 10) +
+  facet_wrap(~ AA, ncol = 4, scales = "free") +
+  scale_fill_gradientn(
+    colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                "#FEE8C8", "#FDBB84", "#E34A33"),
+    name = "Predicted\nPref Freq"
+  ) +
+  labs(
+    title = "GAM: Gene-Mean Preferred Codon Frequency per Amino Acid",
+    subtitle = paste(
+      "te(expression, log10 gene length). Arg excluded (split-family artefact).",
+      "\nWarm colours = higher preferred codon frequency."
+    ),
+    x = expression(log[10](Expression)),
+    y = expression(log[10](Gene~length~in~codons))
+  ) +
+  theme_custom() +
+  theme(legend.position = "right", panel.grid = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+ggsave("./results/gam_pref_freq_per_AA_contour.pdf",
+       width = 14, height = 10)
+cat("  Saved: ./results/gam_pref_freq_per_AA_contour.pdf\n")
+
+# Also make individual high-resolution contour PDFs for each AA
+for (aa in unique(contour_all$AA)) {
+  # 1. Subset data
+  aa_df <- contour_all[contour_all$AA == aa, ]
+  ending_label <- aa_df$Ending[1]
+  
+  # 2. Build plot
+  p_single <- ggplot(aa_df, aes(x = exp_norm, y = log_len)) +
+    geom_raster(aes(fill = pf_pred), interpolate = TRUE) +
+    geom_contour(aes(z = pf_pred), colour = "grey30", linewidth = 0.4, bins = 12) +
+    scale_fill_gradientn(
+      colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF", "#FEE8C8", "#FDBB84", "#E34A33"),
+      name = "Pref Freq"
+    ) +
+    labs(
+      title = sprintf("GAM: Preferred Codon Frequency — %s (%s)", aa, ending_label),
+      x = expression(log[10](Expression)),
+      # Use quotes around "in" to prevent the reserved keyword error
+      y = expression(log[10](Gene~length~"in"~codons)) 
+    ) +
+    theme_custom() +
+    theme(legend.position = "right", panel.grid = element_blank())
+  
+  # 3. Save plot
+  ggsave(sprintf("./results/gam_pref_freq_%s_contour.pdf", tolower(aa)), 
+         plot = p_single, width = 8, height = 7)
+}
+
+cat(sprintf("  Saved %d individual AA contour plots\n", 
+            length(unique(contour_all$AA))))
+
+# ---- 16.12e: Interpretation ----
+cat("\n", strrep("-", 60), "\n", sep = "")
+cat("PER-AMINO-ACID DECOMPOSITION SUMMARY\n")
+cat(strrep("-", 60), "\n")
+cat("Key question: Do G-ending preferred codons (Val=GTG, etc.) increase\n")
+cat("with expression, or does C always outcompete G within-family?\n\n")
+cat("NOTE: Arg (CGN) excluded — the ROC-preferred codon AGG belongs to\n")
+cat("  the 2-fold family (AGR) and cannot appear at 4-fold CGN sites.\n")
+cat("  All Arg CGN sites had Preferred_Freq = 0 (structural artefact).\n\n")
+cat("If ALL G-ending AAs decline -> the aggregate G decline is real,\n")
+cat("  G codons receive no translational selection support.\n")
+cat("If SOME G-ending AAs increase -> selection does act on G at those AAs,\n")
+cat("  and the aggregate decline is driven by specific families.\n")
+cat(strrep("-", 60), "\n\n")
 
 # Section 16 cleanup ----
-rm(codon_4fold, gene_info_16, freq_clean, fourfold_simple, aa_name_map,
+rm(codon_4fold, codon_4fold_noarg, gene_info_16, freq_clean, fourfold_simple,
+   aa_name_map,
    model_all_4fold, pred_grid_16, p_contour_filled, p_contour_lines,
    logistic_table, logistic_table_z, result_all, result_all_z,
    results_aa, results_aa_z, aa_levels_16, exp_range_16,
@@ -5762,7 +6245,13 @@ rm(codon_4fold, gene_info_16, freq_clean, fourfold_simple, aa_name_map,
    trend_df, trend_long, p_cg_trends,
    mid_df, p_cg_mid, pred_C_mid, pred_G_mid,
    pf_cg_table_z, result_pf_C_z, result_pf_G_z,
-   n_C_sites, n_G_sites, exp_seq)
+   n_C_sites, n_G_sites, n_C_noarg, n_G_noarg, n_arg_before, exp_seq,
+   gene_pf_CG, gene_pf_C, gene_pf_G, gam_gene_C, gam_gene_G,
+   exp_grid_gene, pred_gene_C, pred_gene_G, gene_trend_df, p_gene_cg,
+   gene_pf_by_aa, aa_corr_table, gene_pf_g_aas,
+   all_aa_trend_df, aa_summary, p_all_aa, p_g_aa_trends,
+   gene_pf_for_contour, pred_grid_aa, contour_preds, contour_all,
+   p_aa_contours, exp_range_aa, len_range_aa, aa_list)
 gc()
 
 message("=== Analysis complete. Memory cleaned. ===")
