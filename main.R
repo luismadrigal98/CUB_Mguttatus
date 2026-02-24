@@ -6176,14 +6176,14 @@ p_aa_contours <- ggplot(contour_all, aes(x = exp_norm, y = log_len)) +
       "\nWarm colours = higher preferred codon frequency."
     ),
     x = expression(log[10](Expression)),
-    y = expression(log[10](Gene~length~in~codons))
+    y = expression(log[10](Gene~length~"in"~codons))
   ) +
   theme_custom() +
   theme(legend.position = "right", panel.grid = element_blank(),
         strip.text = element_text(face = "bold"))
 
 ggsave("./results/gam_pref_freq_per_AA_contour.pdf",
-       width = 14, height = 10)
+       plot = p_aa_contours, width = 14, height = 10)
 cat("  Saved: ./results/gam_pref_freq_per_AA_contour.pdf\n")
 
 # Also make individual high-resolution contour PDFs for each AA
