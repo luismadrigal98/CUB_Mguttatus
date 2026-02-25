@@ -340,11 +340,19 @@ justification_list <- lapply(predictors, analyze_nonlinearity,
                              resp = "CDC")
 justification_table <- dplyr::bind_rows(justification_list)
 
-write.csv(justification_table, "results/Linearity_Justification_Table.csv", 
+write.csv(justification_table, 
+          "results/Linearity_Justification_Table.csv", 
           row.names = FALSE)
 
 # Generate Visuals (Safe Loop) ----
 plot_list <- list()
+
+# Check that 0 or 1 are not between CDC values
+# Enforce shrinkage to ensure compatibility with betar
+
+integrated_data <- as.data.table(integrated_data) # Coerce to data.table
+integrated_data[CDC == 1, CDC := 0.9999]
+integrated_data[CDC == 0, CDC := 0.0001]
 
 for (pred in predictors) {
     
@@ -355,9 +363,11 @@ for (pred in predictors) {
                    select = T)
   
   p <- gratia::draw(model_gam, residuals = FALSE) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "red", 
+    geom_hline(yintercept = 0, linetype = "dashed", 
+               color = "red", 
                alpha = 0.5) +
-    labs(title = paste0("Partial Effect on CDC (logit scale): ", pred)) +
+    labs(title = paste0("Partial Effect on CDC (logit scale): ", 
+                        pred)) +
     theme_custom()
   
   plot_list[[pred]] <- p
@@ -472,60 +482,6 @@ slopes <- avg_slopes(
   variables = "Max_Log10_Exp",
   by = "Exp_breadth", 
   newdata = datagrid(Exp_breadth = c(1, 25, 29))
-)
-
-# Pairwise Tests (Comparing the slopes)
-# We test if the relationship between Exp and CDC is stronger in one group.
-message("Test: Difference in Slopes (Broad vs Narrow) ---\n")
-test_broad_vs_narrow <- hypotheses(slopes, hypothesis = "b3 - b1 = 0")
-print(test_broad_vs_narrow)
-
-message("Test: Difference in Slopes (Medium vs Narrow) ---\n")
-test_medium_vs_narrow <- hypotheses(slopes, hypothesis = "b2 - b1 = 0")
-print(test_medium_vs_narrow)
-
-# VARIANCE ANALYSIS (Evolutionary Constraint)
-# Question: Does breadth constrain the variation in codon bias?
-
-# Extract Residuals (The "Noise" or deviation from the expected CDC)
-# If residuals are high, other factors (mutation, drift) are overpowering expression.
-integrated_data$bias_deviation <- abs(residuals(m_interaction, type = "response"))
-
-# Visualize the Constraint
-p_constraint <- ggplot(integrated_data, aes(x = Exp_breadth, y = bias_deviation)) +
-  geom_point(alpha = 0.1, color = "gray60") +
-  
-  # Fit a smooth trend line to the noise
-  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), 
-              color = "firebrick", fill = "firebrick") +
-  
-  theme_custom() +
-  labs(y = "Absolute Residuals (Deviation from Expected CDC)",
-       x = "Expression Breadth (Number of Tissues)")
-
-ggsave("./results/Evolutionary_Constraint_Plot.pdf", 
-       p_constraint, width = 8, height = 6)
-
-# Statistical Test of Constraint
-# Gamma regression is ideal for modeling variance (always positive)
-m_noise <- gam(bias_deviation ~ s(Exp_breadth), 
-               data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
-               family = Gamma(link = "log"))
-
-print(summary(m_noise))
-
-# Compare predictions at extreme expression levels, holding length constant
-contrasts <- avg_comparisons(
-  m_interaction,
-  variables = "Max_Log10_Exp",
-  newdata = datagrid(
-    Max_Log10_Exp = c(
-      quantile(integrated_data$Max_Log10_Exp, 0.05),  # Bottom 5%
-      quantile(integrated_data$Max_Log10_Exp, 0.95)   # Top 5%
-    ),
-    CDS_length_nt = mean(integrated_data$CDS_length_nt),
-    Exp_breadth = c(1, 29)
-  )
 )
 
 # Plotting detrended ENC against expression
@@ -728,35 +684,6 @@ cai_results <- calculate_cai(
 cai_values <- cai_results$cai_values
 w_table <- cai_results$w_table
 
-# 7.1) Making bar plot per aminoacid to show differences in use ----
-
-ggplot(data = w_table |> dplyr::filter(amino_acid != "Met" & amino_acid != "Trp" &
-                                         amino_acid != "STOP"), 
-       mapping = aes(x = reorder(codon, relative_adaptiveness), 
-                                     y = relative_adaptiveness)) +
-  geom_segment(aes(xend = codon, y = 0, yend = relative_adaptiveness), 
-               color = "gray70", linewidth = 1) +
-  geom_point(aes(color = relative_adaptiveness), size = 4) +
-  scale_color_gradient2(
-    low = "#d73027", 
-    mid = "#fee090", 
-    high = "#1a9850", 
-    midpoint = 0.5,
-    name = "w"
-  ) +
-  geom_hline(yintercept = 1.0, linetype = "dashed", color = "black", alpha = 0.5) +
-  facet_wrap(~amino_acid, scales = "free", ncol = 4) +
-  coord_flip() +
-  theme_custom() +
-  theme(
-    axis.text.y = element_text(size = 8),
-    strip.text = element_text(face = "bold", size = 10)
-  ) +
-  labs(y = "Relative Adaptiveness (w)", x = "Codon")
-
-ggsave("./results/codons_relative_adaptiveness.pdf", 
-       width = 12, height = 10)
-
 # Merge CAI with expression and integrated data
 integrated_data <- integrated_data |>
   left_join(cai_values, by = "Gene_name")
@@ -887,178 +814,10 @@ p_cai_median <- ggplot(plot_data_cai, aes(x = Exp_Group, y = CAI)) +
 ggsave("./results/CAI_by_expression_group_Median_CI.pdf", p_cai_median, 
        width = 4, height = 3.5)
 
-# 7.2) Compare absolute codon frequencies: Top 5% vs Rest ----
-# This shows that raw frequencies differ, but not all differences are due to 
-# selection some codons are frequent simply because their amino acids are frequent
-
-# Get gene lists
-top5_genes <- integrated_data |>
-  filter(Expression_Group == "Top 5%") |>
-  pull(Gene_name)
-
-rest_genes <- integrated_data |>
-  filter(Expression_Group %in% c("Middle 90%", "Bottom 5%")) |>
-  pull(Gene_name)
-
-# Calculate absolute frequencies (sum of codon counts)
-codon_cols <- setdiff(names(codon_usage), "Gene_name")
-
-freq_top5 <- codon_usage |>
-  dplyr::filter(Gene_name %in% top5_genes) |>
-  dplyr::select(all_of(codon_cols)) |>
-  summarise(across(everything(), sum, na.rm = TRUE)) |>
-  pivot_longer(everything(), names_to = "Codon", values_to = "Count_Top5")
-
-freq_rest <- codon_usage |>
-  dplyr::filter(Gene_name %in% rest_genes) |>
-  dplyr::select(all_of(codon_cols)) |>
-  summarise(across(everything(), sum, na.rm = TRUE)) |>
-  pivot_longer(everything(), names_to = "Codon", values_to = "Count_Rest")
-
-# Combine and calculate proportions
-freq_comparison <- freq_top5 |>
-  left_join(freq_rest, by = "Codon") |>
-  dplyr::mutate(
-    Total_Top5 = sum(Count_Top5),
-    Total_Rest = sum(Count_Rest),
-    Freq_Top5 = Count_Top5 / Total_Top5,
-    Freq_Rest = Count_Rest / Total_Rest,
-    Freq_Diff = Freq_Top5 - Freq_Rest
-  )
-
-# Add amino acid information
-freq_comparison <- freq_comparison |>
-  mutate(AA = genetic_code_dna_long[Codon]) |>
-  filter(!is.na(AA) & AA != "STOP")
-
-# Convert to long format for plotting
-freq_long <- freq_comparison |>
-  dplyr::select(Codon, AA, Freq_Top5, Freq_Rest) |>
-  pivot_longer(cols = c(Freq_Top5, Freq_Rest), 
-               names_to = "Group", 
-               values_to = "Frequency") |>
-  dplyr::mutate(Group = dplyr::recode(Group, 
-                               "Freq_Top5" = "Top 5%",
-                               "Freq_Rest" = "Rest")) |>
-  dplyr::filter(AA != "Trp" & AA != "Met")
-
-# Create lollipop plot
-p_freq_comparison <- ggplot(freq_long, 
-                            aes(x = reorder(Codon, Frequency), 
-                                y = Frequency, 
-                                color = Group)) +
-  geom_line(aes(group = Codon), color = "gray80", linewidth = 0.5) +
-  geom_point(size = 3, alpha = 0.8) +
-  scale_color_manual(values = c("Top 5%" = "#E41A1C", "Rest" = "#377EB8"),
-                     name = "Gene Group") +
-  facet_wrap(~AA, scales = "free", ncol = 4) +
-  coord_flip() +
-  theme_custom() +
-  theme(
-    axis.text.y = element_text(size = 7),
-    strip.text = element_text(face = "bold", size = 10),
-    legend.position = "top"
-  ) +
-  labs(
-    y = "Frequency",
-    x = "Codon",
-    title = "Raw Codon Frequencies: Top 5% vs Rest",
-    subtitle = "Not all differences reflect selection - some codons are frequent due to amino acid composition"
-  )
-
-ggsave("./results/codon_frequency_top5_vs_rest.pdf", 
-       p_freq_comparison, width = 12, height = 14)
-
-# Summary statistics
-cat(sprintf("\nTop 5%% genes: %d genes, %d total codons\n", 
-            length(top5_genes), freq_comparison$Total_Top5[1]))
-cat(sprintf("Rest genes: %d genes, %d total codons\n", 
-            length(rest_genes), freq_comparison$Total_Rest[1]))
-
-# 7.2.1) Enriched codons usage ----
-
-# Get enriched codons (w = 1.0 from CAI)
-enriched_codons_vec <- w_table |>
-  dplyr::filter(relative_adaptiveness == 1.0) |>
-  dplyr::pull(codon)
-
-# Merge codon usage with expression groups
-codon_usage_with_groups <- codon_usage |>
-  dplyr::left_join(integrated_data |> dplyr::select(Gene_name, Expression_Group), 
-                   by = "Gene_name")
-
-# Filter to top 5% and rest (bottom 95%)
-top5_genes <- codon_usage_with_groups |> dplyr::filter(Expression_Group == "Top 5%")
-rest_genes <- codon_usage_with_groups |> dplyr::filter(Expression_Group != "Top 5%")
-
-
-# Calculate for both groups
-cat("Calculating enrichment of codon per amino acid...\n")
-
-enriched_aa <- count_preferred_by_aa(top5_genes, enriched_codons_vec, 
-                                     genetic_code_dna_long)
-enriched_aa$Group <- "Selected (Top 5%)"
-
-rest_aa <- count_preferred_by_aa(rest_genes, enriched_codons_vec, 
-                                 genetic_code_dna_long)
-rest_aa$Group <- "Rest (Bottom 95%)"
-
-# Combine for comparison
-comparison_table <- enriched_aa |>
-  dplyr::select(Amino_Acid, N_synonymous, Preferred_codons, 
-                Selected_count = Preferred_count, 
-                Selected_prop = Prop_preferred) |>
-  dplyr::left_join(
-    rest_aa |> dplyr::select(Amino_Acid, 
-                             Rest_count = Preferred_count,
-                             Rest_prop = Prop_preferred),
-    by = "Amino_Acid"
-  ) |>
-  dplyr::mutate(
-    Difference = Selected_prop - Rest_prop,
-    Fold_enrichment = Selected_prop / Rest_prop
-  ) |>
-  dplyr::arrange(dplyr::desc(Difference))
-
-# Save table
-write.csv(comparison_table, "./results/enriched_codon_usage.csv",
-          row.names = FALSE)
-
-# Wilcoxon test
-wilcox_test <- wilcox.test(comparison_table$Selected_prop, 
-                           comparison_table$Rest_prop,
-                           paired = TRUE)
-
-# Create visualization
-p_comparison <- ggplot(comparison_table, 
-                       aes(x = reorder(Amino_Acid, -Difference))) +
-  geom_segment(aes(xend = Amino_Acid, y = Rest_prop, yend = Selected_prop),
-               color = "gray70", linewidth = 1) +
-  geom_point(aes(y = Selected_prop, color = "Top 5%"), 
-             size = 3, shape = 16) +
-  geom_point(aes(y = Rest_prop, color = "Rest 95%"), 
-             size = 3, shape = 16) +
-  scale_color_manual(values = c("Top 5%" = "#E41A1C", 
-                                "Rest 95%" = "#377EB8"),
-                     name = "") +
-  labs(x = "Amino Acid (ordered by difference)",
-       y = "Proportion of Enriched Codons") +
-  theme_custom() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "bottom",
-        plot.title = element_text(face = "bold"))
-
-ggsave("./results/preferred_codon_usage_comparison.pdf", p_comparison,
-       width = 10, height = 6)
-
 # Memory cleanup: Section 7 CAI intermediates ---
 # Keeping: cai_results, w_table, cai_by_group, kw_test, comparison_table, wilcox_test
 rm(p_cai_boxplot, p_cai_median, plot_data_cai,
-   top_cai, middle_cai, bottom_cai, reference_genes,
-   freq_top5, freq_rest, freq_comparison, freq_long, p_freq_comparison,
-   codon_usage_with_groups, enriched_codons_vec, enriched_aa, rest_aa,
-   p_comparison, top5_genes, rest_genes,
-   codon_cols)
+   top_cai, middle_cai, bottom_cai, reference_genes)
 gc()
 
 ## *****************************************************************************
