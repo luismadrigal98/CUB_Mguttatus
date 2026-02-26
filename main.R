@@ -159,8 +159,7 @@ integrated_data <- dplyr::left_join(exp_complete |> dplyr::select(Gene_name,
                                                                   Geom_Mean_CPM), 
                                     cub_results$enc_results, 
                                     by = dplyr::join_by(Gene_name)) |>
-  na.omit() |>
-  distinct(Gene_name, .keep_all = TRUE)
+  na.exclude()
 
 # Add gene length (CDS length in codons and nucleotides)
 codon_columns <- names(codon_usage)[names(codon_usage) != "Gene_name"]
@@ -974,8 +973,8 @@ ggsave("./results/phi_estimates_vs_expression_dM_fixed.pdf",
 
 # 8.1.3) Preparing the expression data ----
 
-# 1. Filter for complete cases (Intersection of Leaf and Bud)
-# We strictly remove genes with 0 counts in either tissue
+# 1. Filter for complete cases (Intersection of expresion sources)
+# We strictly remove genes with 0 counts in any tissue
 multi_tissue_phi <- exp_complete |>
   dplyr::select(Gene_name, contains(c("IM62", "IM767"))) |>
   dplyr::rename(GeneID = Gene_name) # AnaCoDa expects "GeneID" as first col
@@ -1055,9 +1054,6 @@ cor.test(phi_dM_fixed_with_phi$Mean.log10.Phi,
 #   P(codon_i | phi) = exp(-dM_i - dEta_i * phi) / Z
 # correctly predicts how codon frequencies change with expression.
 
-# Load validation functions
-source("./src/roc_model_validation.R")
-
 # 1. Prepare codon frequency data from the codon_usage already in environment
 # codon_usage is a data.table with Gene_name column and codon count columns
 codon_freq_long <- codon_usage |>
@@ -1129,21 +1125,6 @@ dM_fixed_intergenic <- GR_convergence(run_dirs,
 
 # Convergence: FALSE
 
-# Checking correlation with empirical values
-
-phi_hat_dM_fixed_intergenic <- read.csv(file = "results/MCMC_results/results_dM_fixed_intergenic/run_1/Parameter_est/gene_expression.txt") |>
-  dplyr::select(GeneID, Mean, Mean.log10) |>
-  dplyr::rename(MeanPhi = Mean, Mean.log10.Phi = Mean.log10)
-
-phi_dM_fixed_intergenic <- exp_complete |>
-  left_join(phi_hat_dM_fixed_intergenic, by = join_by("Gene_name" == "GeneID")) |>
-  na.exclude()
-
-cor.test(phi_dM_fixed_intergenic$Mean.log10.Phi, 
-         phi_dM_fixed_intergenic$Mean_Log10_Exp)
-
-# Inappropriate fix to empirical data
-
 # 8.1.5) dM-fixed-with-phi-intergenic ----
 
 # Setup paths for the 3 runs
@@ -1185,7 +1166,7 @@ gc()
 
 # 8.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
 # We chose intron-based models because introns are more appropriate neutral
-# baselines
+# baselines given the AT strand bias we see in coding sequences
 
 # Using chain 1 results (independent chains are indistinguishable)
 
@@ -1217,13 +1198,13 @@ preferred_codons_roc <- preferred_codons |>
                 Family = aa) |>
   dplyr::mutate(Source = "ROC_SEMPPR")
 
-message(sprintf("✓ Preferred codons from ROC model: %d amino acids\n", nrow(preferred_codons_roc)))
+message(sprintf("✓ Preferred codons from ROC model: %d amino acids\n", nrow(preferred_codons_roc) - 1)) # Serine is split in 2
 
 # 8.3) Extracting selection estimates from the best model (dM-fixed-with_phi) ----
 
 genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscriptOnlyCleanFiltered.fa',
                                  match.expression.by.id = TRUE,
-                                 observed.expression.file = 'data/compiled_expression_IM767.txt') 
+                                 observed.expression.file = 'data/compiled_expression_IM767.txt') # Warnings are expected if genes are missing from expression file
 
 parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/R_objects/parameter.Rda")
 
