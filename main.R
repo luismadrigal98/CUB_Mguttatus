@@ -1555,7 +1555,6 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
 subset_strongly_shaped_by_s <- integrated_data |>
   dplyr::filter(S_ROC > thr_sel) |>
   dplyr::arrange(desc(S_ROC)) |>
-  dplyr::slice(1:20) |>
   dplyr::pull(Gene_name)
 
 detailed_annotation <- read.delim(
@@ -1571,18 +1570,18 @@ detailed_annotation <- read.delim(
   dplyr::filter(locusName %in% subset_strongly_shaped_by_s) |>
   dplyr::distinct()
 
-# Export information about top 10 genes
+# Export information about top genes
 
 write.csv(x = detailed_annotation, 
-          file = "./results/Top20_genes_strong_selection_load.csv", 
+          file = "./results/Top_genes_strong_selection_load.csv", 
           quote = T, row.names = F)
 
 # 8.6) Goodness-of-fit test based on Anacoda predictions ----
 
 gof_results <- run_gof_analysis(
-  mutation_file  = "./results/MCMC_results_backup/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Mutation.csv",
-  selection_file = "./results/MCMC_results_backup/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv",
-  phi_file       = "./results/MCMC_results_backup/results_dM_fixed_with_phi_final/run_1/Parameter_est/gene_expression.txt",
+  mutation_file  = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Mutation.csv",
+  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv",
+  phi_file       = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/gene_expression.txt",
   codon_counts_long = codon_freq_long,
   test           = "chisq",
   min_aa_total   = 5,
@@ -2405,8 +2404,7 @@ pi_data <- pi_data |>
 
 # Join polymorphism data to integrated_data
 integrated_data <- integrated_data |>
-  dplyr::left_join(pi_data, by = "Gene_name") |>
-  na.exclude()
+  dplyr::left_join(pi_data, by = "Gene_name")
 
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
