@@ -385,7 +385,7 @@ ggsave("results/GAM_Partial_Effects_Gratia.pdf", combined_plot, width = 12,
 
 # Model 0: Null
 m_null <- gam(CDC ~ 1,
-              data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+              data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0), 
               family = betar(link = "logit"), 
               method = "REML")
 
@@ -393,7 +393,7 @@ m_null <- gam(CDC ~ 1,
 # Hypothesis: Each predictor affects CUB independently.
 
 m_additive <- gam(CDC ~ s(Max_Log10_Exp) + s(Exp_breadth) + s(CDS_length_nt),
-                  data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+                  data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0), 
                   family = betar(link = "logit"), 
                   method = "REML",
                   select = T)
@@ -402,7 +402,7 @@ m_additive <- gam(CDC ~ s(Max_Log10_Exp) + s(Exp_breadth) + s(CDS_length_nt),
 # Hypothesis: High expression only forces strict CUB if the gene is broad.
 
 m_interaction <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth) + s(CDS_length_nt),
-                     data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+                     data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0), 
                      family = betar(link = "logit"), 
                      method = "REML",
                      select = T)
@@ -410,7 +410,7 @@ m_interaction <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth) + s(CDS_length_nt),
 # Model 3: Complex (Full Interaction)
 # Hypothesis: Length and expression interact in complex ways."
 m_complex <- gam(CDC ~ te(Max_Log10_Exp, Exp_breadth, CDS_length_nt),
-                 data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+                 data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0), 
                  family = betar(link = "logit"), 
                  method = "REML")
 
@@ -436,9 +436,9 @@ selection_table <- do.call(rbind, lapply(names(model_list), function(n) {
 p_effects <- plot_predictions(m_interaction, 
                               condition = c("Max_Log10_Exp", "Exp_breadth"), 
                               newdata = datagrid(
-                                CDS_length_nt = mean((integrated_data |> dplyr::filter(Exp_breadth > 0))$CDS_length_nt)),
+                                CDS_length_nt = mean((integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0))$CDS_length_nt)),
                               type = "response") + 
-  geom_rug(data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+  geom_rug(data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0), 
            aes(x = Max_Log10_Exp), 
            sides = "b", alpha = 0.05, inherit.aes = FALSE) +
   # THEME & LABELS
@@ -457,11 +457,11 @@ p_slopes <- plot_slopes(m_interaction,
                         variables = "Max_Log10_Exp",
                         condition = c("Max_Log10_Exp", "Exp_breadth"), 
                         newdata = datagrid(
-                          CDS_length_nt = mean((integrated_data |> dplyr::filter(Exp_breadth > 0))$CDS_length_nt)),
+                          CDS_length_nt = mean((integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0))$CDS_length_nt)),
                         type = "response") +
   # RED LINE = Zero Slope (Where the relationship flattens/saturates)
   geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  geom_rug(data = integrated_data |> dplyr::filter(Exp_breadth > 0), 
+  geom_rug(data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0), 
            aes(x = Max_Log10_Exp), 
            sides = "b", alpha = 0.05, inherit.aes = FALSE) +
   
@@ -2397,14 +2397,15 @@ pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
 # Homogenizing gene names to match the previous convention
 
 pi_data <- pi_data |>
-  dplyr::select(Chr, Gene, contains("Tajima"), contains("mean"),
+  dplyr::select(Chr, Gene, contains("mean"),
                 contains("Sites"), contains("Pi_sum"), contains("Poly")) |>
   dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
   dplyr::rename(Gene_name = Gene)
 
 # Join polymorphism data to integrated_data
 integrated_data <- integrated_data |>
-  dplyr::left_join(pi_data, by = "Gene_name")
+  dplyr::left_join(pi_data, by = "Gene_name") |>
+  na.exclude()
 
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
@@ -2583,12 +2584,13 @@ predictors <- c('Max_Log10_Exp', 'Exp_breadth', 'CDS_length_nt')
 pi_nonlinearity_results <- analyze_nonlinearity_suite(
   resp = "Pi_mean_4fold",
   predictors = predictors,
-  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0,
+                                          Pi_mean_4fold > 0),
   family = Gamma(link = "log")
 )
 
 pi_models <- fit_codon_gam_suite(
-  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
   response_var = "Pi_mean_4fold",
   family = Gamma(link = "log") 
 )
@@ -2597,7 +2599,7 @@ pi_selection <- get_model_selection_stats(pi_models)
 pi_selection_winner <- pi_selection |> dplyr::filter(AIC == min(AIC))
 
 run_posteriori_gam_analysis(model = pi_models[["Complex"]], 
-                            data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+                            data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
                             response_name = "Pi_mean_4fold")
 
 # Analysis based on selection estimates
@@ -2614,12 +2616,12 @@ predictors_s <- c("S_ROC", "Total_Codons", "Exp_breadth")
 pi_nonlinearity_results_s <- analyze_nonlinearity_suite(
   resp = "Pi_mean_4fold",
   predictors = predictors_s,
-  data = integrated_data,
+  data = integrated_data |> dplyr::filter(Pi_mean_4fold > 0),
   family = Gamma(link = "log")
 )
 
 pi_models_s <- fit_codon_gam_suite(
-  data = integrated_data,
+  data = integrated_data |> dplyr::filter(Pi_mean_4fold > 0),
   model_list = alist(
     Null        = ~ 1,
     Additive    = ~ s(S_ROC) + s(Total_Codons) + s(Exp_breadth),
@@ -2634,8 +2636,9 @@ pi_models_s <- fit_codon_gam_suite(
 pi_selection_s <- get_model_selection_stats(pi_models_s)
 pi_secection_winner_s <- pi_selection_s |> dplyr::filter(AIC == min(AIC))
 
-run_posteriori_gam_analysis(model = pi_models_s[["S_Length"]], 
-                            data = integrated_data,
+run_posteriori_gam_analysis(model = pi_models_s[["Complex"]], 
+                            data = integrated_data |> 
+                              dplyr::filter(Pi_mean_4fold > 0),
                             focal_pred = "S_ROC", 
                             interact_pred = "Exp_breadth",
                             third_pred = NULL,
@@ -2671,12 +2674,12 @@ predictors_p <- c("Max_Log10_Exp", "Exp_breadth", "Total_Codons")
 preferred_nonlinearity_results <- analyze_nonlinearity_suite(
   resp = "Mean_preferred_freq",
   predictors = predictors_p,
-  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
   family = betar(link = "logit")
 )
 
 preferred_models <- fit_codon_gam_suite(
-  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
   model_list = alist(
     Null        = ~ 1,
     Additive    = ~ s(Max_Log10_Exp) + s(Exp_breadth) + s(Total_Codons),
@@ -2693,7 +2696,7 @@ preferred_selection_winner <- preferred_selection |>
 
 run_posteriori_gam_analysis(model = preferred_models[["Complex"]], 
                             data = integrated_data |> 
-                              dplyr::filter(Exp_breadth > 0),
+                              dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
                             focal_pred = "Max_Log10_Exp", 
                             interact_pred = "Exp_breadth",
                             third_pred = NULL,
@@ -2822,7 +2825,7 @@ ggsave("./results/Frequency_preferred_by_expression_group_Median_CI.pdf",
 # Execute for your 16% model
 p_surface_pref <- plot_selection_surface(
   model = preferred_models[["Complex"]], 
-  data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
   response_name = "Mean_preferred_freq"
 )
 
@@ -3765,7 +3768,7 @@ cat(strrep("=", 80), "\n")
 # Run the full diagnostic using the expressed gene set
 # neutral_params was estimated in Section 13 from intronic SFS
 gbgc_results <- run_gbgc_diagnostic(
-  integrated_data = integrated_data |> dplyr::filter(Exp_breadth > 0),
+  integrated_data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
   codon_freq_file = "./data/all_chromosomes.codon_frequencies_preferred.txt",
   target_n = target_n,
   n_quantiles = 20,
