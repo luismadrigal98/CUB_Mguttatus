@@ -1425,105 +1425,108 @@ cor.test(integrated_data$S_ROC, integrated_data$CAI)
 
 # 8.3.3) Final visualization ----
 
+# 1. Data Preparation
 plot_data <- integrated_data |>
   dplyr::mutate(
-    # Log Transform Selection Load (Load = Total Cost per Gene)
-    # Note: If you want Intensity (per codon), swap S_load for Selection_Intensity
+    # Log Transform Selection Load
     Log_S_ROC = log10(S_ROC + 0.01), 
     
-    # Log Transform Expression (using the new clear name)
+    # Expression metric
     Log_Phi = Mean.log10.Phi, 
+    
+    # Calculate raw Phi to isolate Intrinsic Inefficiency
+    # Using 10^Mean.log10.Phi approximates the scale
+    Phi_raw = 10^Mean.log10.Phi,
+    Intrinsic_Ineff = S_ROC / Phi_raw,
+    
+    # Calculate Realized Load directly from S_ROC (L' = 1 - e^-S)
+    Realized_Load = 1 - exp(-S_ROC),
     
     # Log Transform Length
     Log_Length = log10(Total_Codons)
   ) |>
-  dplyr::filter(!is.na(ENC), !is.na(Total_Codons), !is.na(CAI))
+  dplyr::filter(!is.na(ENC), !is.na(Total_Codons), !is.na(CAI), !is.na(Log_Phi))
 
-# 4. Visualization Setup
+# --- Print Stats for the Manuscript ---
+cat("\n=== Selection Efficacy Stats (For Manuscript) ===\n")
+
+# 1. Global correlation (Mostly Drift)
+cor_global <- cor.test(plot_data$Log_Phi, plot_data$Intrinsic_Ineff, method = "spearman")
+cat(sprintf("Global (Drift Dominated): Spearman rho = %.3f, p = %.2e\n", 
+            cor_global$estimate, cor_global$p.value))
+
+# 2. High Expression correlation (Selection active, based on your 2.8 inflection point)
+high_exp_data <- plot_data |> dplyr::filter(Log_Phi >= 2.8)
+cor_high <- cor.test(high_exp_data$Log_Phi, high_exp_data$Intrinsic_Ineff, method = "spearman")
+cat(sprintf("Highly Expressed (>2.8):  Spearman rho = %.3f, p = %.2e\n", 
+            cor_high$estimate, cor_high$p.value))
+# ------------------------------------
 
 # Define common color scale limits
 phi_range <- range(plot_data$Log_Phi, na.rm = TRUE)
-
-# Fit linear model for Panel C annotation (Load vs Length)
-tail_data <- plot_data |> 
-  dplyr::filter(Log_S_ROC > -0.5)
-
-# Fit LM specifically on the tail
-lm_tail <- lm(GC3s ~ Log_S_ROC, data = tail_data)
-lm_tail_eq <- sprintf("Tail: y = %.2f + %.2fx\nR² = %.3f, p = %.4f",
-                      coef(lm_tail)[1], 
-                      coef(lm_tail)[2], 
-                      summary(lm_tail)$r.squared,
-                      summary(lm_tail)$coefficients["Log_S_ROC","Pr(>|t|)"])
 
 # Panel A: Selection Load Distribution
 drift_thresh <- log10(1)   
 y_max_anno <- 10000
 
 p1 <- ggplot(plot_data, aes(x = Log_S_ROC)) +
-  
-  # Background Shading ---
   annotate("rect", xmin = -Inf, xmax = drift_thresh, 
            ymin = 0, ymax = Inf, fill = "gray95", alpha = 0.8) +
   annotate("rect", xmin = drift_thresh, xmax = Inf, 
            ymin = 0, ymax = Inf, fill = "#ffe5e5", alpha = 0.5) +
-  
-  # Histogram ---
   geom_histogram(bins = 100, fill = "#69b3a2", color = "white", linewidth = 0.05) +
-  
-  # Vertical Threshold Lines ---
   geom_vline(xintercept = drift_thresh, linetype = "dotted", color = "red") +
-  
-  # Vertical Text Annotations (No Ne*s text) ---
-  # Drift Label (Left side, Vertical)
   annotate("text", x = log10(0.05), y = y_max_anno/12, 
-           label = "Drift Dominated", 
-           color = "gray50", fontface = "bold", size = 4, 
-           angle = 0) +
-  
-  # Strong Selection Label (Right side, Vertical)
+           label = "Drift Dominated", color = "gray50", fontface = "bold", size = 4) +
   annotate("text", x = log10(2), y = y_max_anno/12, 
-           label = "Selection", 
-           color = "red", fontface = "bold", size = 4, 
-           angle = 0) +
-  
-  # Custom "Separated" Rug ---
-  # We draw segments explicitly at y = -0.5 (below axis) to create the gap
-  geom_segment(aes(x = Log_S_ROC, xend = Log_S_ROC, 
-                   y = -0.05, yend = -0.2), # Adjust these values for tick length/position
+           label = "Selection", color = "red", fontface = "bold", size = 4) +
+  geom_segment(aes(x = Log_S_ROC, xend = Log_S_ROC, y = -0.05, yend = -0.2), 
                alpha = 0.3, color = "darkgreen") +
-  
-  # Scales & Coordinates ---
-  scale_y_continuous(
-    trans = "log1p", 
-    breaks = c(0, 10, 100, 1000, 10000), 
-    labels = comma_format(accuracy = 1),
-    expand = c(0, 0)
-  ) +
-  
-  # This allows drawing below the axis (where we put the rug)
+  scale_y_continuous(trans = "log1p", breaks = c(0, 10, 100, 1000, 10000), 
+                     labels = scales::comma_format(accuracy = 1), expand = c(0, 0)) +
   coord_cartesian(clip = "off", ylim = c(0, NA)) + 
-  
-  labs(x = expression(Log[10](S[ROC])), 
-       y = "Gene Count (Log1p Scale)") +
-  
+  labs(x = expression(Log[10](S[ROC])), y = "Gene Count (Log1p Scale)") +
   theme_custom() +
-  # Add margin at bottom to ensure the new rug doesn't get cut off
   theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
 
 # Panel B: CAI vs S_ROC
 p2 <- ggplot(plot_data, aes(x = Log_S_ROC, y = CAI)) +
   geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
-  scale_color_viridis_c(option = "plasma", name = expression(Log[10](Phi[geom])), 
+  scale_color_viridis_c(option = "plasma", name = expression(Log[10](Phi)), 
                         limits = phi_range, direction = 1) +
   geom_smooth(color = "black") +
   labs(x = expression(Log[10](S[ROC])), y = "CAI") +
   theme_custom()
 
-# Combine
-combined_plot <- (p1 | p2) + plot_annotation(tag_levels = 'A')
-ggsave("results/Selection_Landscape_Final.pdf", 
-       combined_plot, width = 12, height = 6)
+# Panel C: Intrinsic Sequence Inefficiency vs Expression
+p3 <- ggplot(plot_data, aes(x = Log_Phi, y = Intrinsic_Ineff)) +
+  geom_hex(bins = 50) +
+  geom_smooth(method = "gam", formula = y ~ s(x), color = "red", linewidth = 1.2) +
+  geom_vline(xintercept = 2.8, linetype = "dashed", color = "black", alpha = 0.5) + # Mark the threshold!
+  scale_fill_viridis_c(option = "plasma", name = "Gene\nCount") +
+  labs(
+    x = expression(Log[10]("Protein Synthesis Rate " * (Phi))),
+    y = expression("Intrinsic Inefficiency " * (bar(Delta * eta)))
+  ) +
+  theme_custom()
+
+# Panel D: Average Translational Load vs Expression
+p4 <- ggplot(plot_data, aes(x = Log_Phi, y = Realized_Load)) +
+  geom_hex(bins = 50) +
+  geom_smooth(method = "gam", formula = y ~ s(x), color = "red", linewidth = 1.2) +
+  geom_vline(xintercept = 2.8, linetype = "dashed", color = "black", alpha = 0.5) +
+  scale_fill_viridis_c(option = "plasma", name = "Gene\nCount") +
+  labs(
+    x = expression(Log[10]("Protein Synthesis Rate " * (Phi))),
+    y = "Translational Load (L')"
+  ) +
+  theme_custom()
+
+# Combine all 4 panels using patchwork
+combined_plot <- (p1 | p2) / (p3 | p4) + plot_annotation(tag_levels = 'A')
+
+# Saved with a larger dimension to accommodate the 2x2 grid nicely
+ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, height = 12)
 
 # 8.4) GO-enrichment analysis of genes with a massive selection load ----
 
@@ -1550,7 +1553,7 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
           file = "./results/Go_enrichment.csv", quote = T, 
           row.names = F)
 
-# 8.5) Getting top 20 genes in terms of S_load ----
+# 8.5) Getting top genes in terms of S_ROC ----
 
 subset_strongly_shaped_by_s <- integrated_data |>
   dplyr::filter(S_ROC > thr_sel) |>
@@ -4734,6 +4737,74 @@ ggsave("./results/gene_level_pref_freq_C_vs_G.pdf",
        p_gene_cg, width = 8, height = 6)
 cat("  Saved: ./results/gene_level_pref_freq_C_vs_G.pdf\n")
 
+cat("\n=== Section 16.11: Gene-Level Preferred Codon Frequency GAMs (2D Contours) ===\n")
+
+# Fit the GAMs using a 2D tensor product (Expression x Gene Length)
+gam_gene_C_2d <- gam(
+  mean_pf ~ te(exp_norm, log_len, k = c(8, 8)),
+  data = gene_pf_C, method = "REML"
+)
+gam_gene_G_2d <- gam(
+  mean_pf ~ te(exp_norm, log_len, k = c(8, 8)),
+  data = gene_pf_G, method = "REML"
+)
+
+cat("\n--- 2D GAM: C-ending preferred codons ---\n")
+print(summary(gam_gene_C_2d))
+cat("\n--- 2D GAM: G-ending preferred codons ---\n")
+print(summary(gam_gene_G_2d))
+
+# Create a high-resolution 2D prediction grid
+exp_range <- range(c(gene_pf_C$exp_norm, gene_pf_G$exp_norm), na.rm = TRUE)
+len_range <- range(c(gene_pf_C$log_len, gene_pf_G$log_len), na.rm = TRUE)
+
+pred_grid_global <- expand.grid(
+  exp_norm = seq(exp_range[1], exp_range[2], length.out = 150),
+  log_len  = seq(len_range[1], len_range[2], length.out = 150)
+)
+
+# Predict the surfaces for both C and G
+pred_grid_global$pf_C <- as.numeric(predict(gam_gene_C_2d, newdata = pred_grid_global))
+pred_grid_global$pf_G <- as.numeric(predict(gam_gene_G_2d, newdata = pred_grid_global))
+
+# 4. Pivot longer so we can facet the plot in ggplot2
+contour_global_long <- tidyr::pivot_longer(
+  pred_grid_global,
+  cols = c(pf_C, pf_G),
+  names_to = "Ending",
+  values_to = "Predicted_Pref_Freq"
+) |>
+  dplyr::mutate(
+    Ending = ifelse(Ending == "pf_C", "C-ending preferred", "G-ending preferred")
+  )
+
+# Build the Contour Plot
+p_global_contour <- ggplot(contour_global_long, aes(x = exp_norm, y = log_len)) +
+  geom_raster(aes(fill = Predicted_Pref_Freq), interpolate = TRUE) +
+  geom_contour(aes(z = Predicted_Pref_Freq), colour = "grey30", linewidth = 0.4, bins = 12) +
+  facet_wrap(~ Ending) +
+  scale_fill_gradientn(
+    colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                "#FEE8C8", "#FDBB84", "#E34A33"),
+    name = "Predicted\nPref Freq"
+  ) +
+  labs(
+    title = "Global Gene-Level Preferred Codon Frequency",
+    subtitle = "Interaction between Expression and Gene Length. Note the distinct topologies.",
+    x = expression(log[10](Expression)),
+    y = expression(log[10]("Gene length in codons"))
+  ) +
+  theme_custom() +
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+
+# Save the plot
+ggsave("./results/global_gene_level_pref_freq_contour.pdf", 
+       p_global_contour, width = 12, height = 6)
+cat("  Saved: ./results/global_gene_level_pref_freq_contour.pdf\n")
 
 # 16.12: Per-amino-acid analysis of G-ending preferred codons ----
 ## Only 4 amino acids have G-ending preferred codons:
