@@ -2822,7 +2822,7 @@ p_preferred_median <- ggplot(plot_data_pref, aes(x = Exp_Group, y = Mean_preferr
 ggsave("./results/Frequency_preferred_by_expression_group_Median_CI.pdf", 
        p_preferred_median, width = 5, height = 6)
 
-# Execute for your 16% model
+# Execute for 16% model
 p_surface_pref <- plot_selection_surface(
   model = preferred_models[["Complex"]], 
   data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
@@ -2969,7 +2969,7 @@ p_nuc_4fold <- ggplot(nuc_long, aes(x = Max_Log10_Exp, y = Frequency,
   geom_smooth(method = "gam", formula = y ~ s(x), se = TRUE, linewidth = 1.2) +
   scale_color_manual(values = c("A" = "#E41A1C", "T" = "#FF7F00",
                                 "C" = "#377EB8", "G" = "#4DAF4A")) +
-  geom_vline() +
+  geom_vline(xintercept = 2.8, colour="black", linetype = "longdash") +
   labs(
     title = "Nucleotide Composition at 4-fold Sites vs Expression",
     subtitle = "Opposing trends (GC up, AT down) indicate selection opposing mutational bias",
@@ -3022,140 +3022,6 @@ rm(fourfold_long, fourfold_per_gene, fourfold_summary,
    fourfold_cols, fourfold_codons, fourfold_families,
    nuc_long, kw_gc3_4fold, m_gc3_4fold, p_gc3_4fold, p_nuc_4fold)
 # Keep fourfold_with_expr for potential downstream use
-gc()
-
-## *****************************************************************************
-## 13c) gBGC Diagnostic: W↔S vs S↔S Comparison ----
-## _____________________________________________________________________________
-# 
-# Motivation: All gamma estimates from Section 13 are positive even for lowly
-# expressed genes. Section 13b shows GC3 does NOT increase with expression.
-# This suggests GC-biased gene conversion (gBGC) inflates the SFS signal,
-# masquerading as selection.
-#
-# Strategy: gBGC only affects W↔S mutations (A/T ↔ G/C). S↔S mutations (G ↔ C)
-# at 3rd codon positions are immune to gBGC. By comparing the preferred-allele
-# frequency spectrum between these two mutation classes, we can:
-#   (a) Quantify the gBGC contribution (from the W↔S − S↔S difference)
-#   (b) Isolate genuine CUB selection (from the S↔S signal alone)
-#
-# Data volumes (from all polymorphic 3rd-position sites):
-#   W↔S: ~6.2M sites (gBGC-affected)
-#   S↔S: ~1.1M sites (gBGC-immune control)
-#   W↔W:    ~84 sites (too few to use)
-#
-# Neutral parameter approximation for S↔S:
-# Since intronic SFS files aggregate all alternatives (not G↔C specifically),
-# we approximate S↔S neutral params as the mean of intronic G and C estimates.
-# This is a first-order approximation; G↔C transversion rates in introns
-# should be roughly symmetric.
-#
-# Reference: Galtier et al. (2009) Trends Genet; Rousselle et al. (2019) MBE
-
-cat("\n", strrep("=", 80), "\n", sep = "")
-cat("SECTION 13c: gBGC DIAGNOSTIC — W↔S vs S↔S COMPARISON\n")
-cat(strrep("=", 80), "\n")
-
-# Run the full diagnostic using the expressed gene set
-# neutral_params was estimated in Section 13 from intronic SFS
-gbgc_results <- run_gbgc_diagnostic(
-  integrated_data = integrated_data |> dplyr::filter(Exp_breadth > 0,                                           Pi_mean_4fold > 0),
-  codon_freq_file = "./data/all_chromosomes.codon_frequencies_preferred.txt",
-  target_n = target_n,
-  n_quantiles = 20,
-  neutral_params = neutral_params
-)
-
-# ---- Save diagnostic plots ----
-pdf("./results/gBGC_diagnostic_freq_comparison.pdf", width = 10, height = 7)
-print(gbgc_results$plots$freq_comparison)
-dev.off()
-
-pdf("./results/gBGC_diagnostic_delta.pdf", width = 9, height = 6)
-print(gbgc_results$plots$delta)
-dev.off()
-
-if (!is.null(gbgc_results$plots$gamma)) {
-  pdf("./results/gBGC_diagnostic_gamma_comparison.pdf", width = 10, height = 7)
-  print(gbgc_results$plots$gamma)
-  dev.off()
-}
-
-pdf("./results/gBGC_diagnostic_sfs_by_class.pdf", width = 12, height = 6)
-print(gbgc_results$plots$sfs_by_class)
-dev.off()
-
-cat("\nSaved: ./results/gBGC_diagnostic_freq_comparison.pdf\n")
-cat("Saved: ./results/gBGC_diagnostic_delta.pdf\n")
-cat("Saved: ./results/gBGC_diagnostic_gamma_comparison.pdf\n")
-cat("Saved: ./results/gBGC_diagnostic_sfs_by_class.pdf\n")
-
-# ---- Save numeric results ----
-write.csv(gbgc_results$comparison,
-          "./results/gBGC_diagnostic_quantile_comparison.csv",
-          row.names = FALSE)
-cat("Saved: ./results/gBGC_diagnostic_quantile_comparison.csv\n")
-
-# ---- Summary interpretation ----
-cat("\n", strrep("-", 60), "\n", sep = "")
-cat("gBGC DIAGNOSTIC SUMMARY\n")
-cat(strrep("-", 60), "\n")
-
-comp <- gbgc_results$comparison
-mean_ws <- mean(comp$mean_freq_WS, na.rm = TRUE)
-mean_ss <- mean(comp$mean_freq_SS, na.rm = TRUE)
-mean_delta <- mean(comp$delta_freq, na.rm = TRUE)
-
-cat(sprintf("Mean preferred-allele freq (W↔S): %.4f\n", mean_ws))
-cat(sprintf("Mean preferred-allele freq (S↔S): %.4f\n", mean_ss))
-cat(sprintf("Mean gBGC excess (Δ = WS−SS):     %.4f\n", mean_delta))
-
-# Test: does delta correlate with expression?
-if (sum(!is.na(comp$delta_freq)) >= 5) {
-  cor_delta_exp <- cor.test(comp$mean_exp, comp$delta_freq, 
-                            method = "spearman", exact = FALSE)
-  cat(sprintf("\nΔ ~ expression correlation: rho=%.3f, p=%.4g\n",
-              cor_delta_exp$estimate, cor_delta_exp$p.value))
-  
-  if (cor_delta_exp$p.value < 0.05) {
-    cat("  → gBGC varies with expression level (possible recombination correlation)\n")
-  } else {
-    cat("  → gBGC effect is roughly constant across expression levels\n")
-  }
-}
-
-# Test: does S↔S preferred freq increase with expression? (genuine CUB signal)
-if (sum(!is.na(comp$mean_freq_SS)) >= 5) {
-  cor_ss_exp <- cor.test(comp$mean_exp, comp$mean_freq_SS,
-                         method = "spearman", exact = FALSE)
-  cat(sprintf("\nS↔S freq ~ expression: rho=%.3f, p=%.4g\n",
-              cor_ss_exp$estimate, cor_ss_exp$p.value))
-  
-  if (cor_ss_exp$p.value < 0.05 && cor_ss_exp$estimate > 0) {
-    cat("  → GENUINE CUB signal detected at gBGC-immune sites!\n")
-    cat("  → Selection for preferred codons increases with expression,\n")
-    cat("    independent of gene conversion.\n")
-  } else {
-    cat("  → No significant CUB signal at gBGC-immune sites.\n")
-    cat("  → Positive gammas in Section 13 are primarily driven by gBGC.\n")
-  }
-}
-
-if (!is.null(gbgc_results$gamma_results)) {
-  cat("\nGamma-based decomposition:\n")
-  gr <- gbgc_results$gamma_results
-  cat(sprintf("  Mean gamma(W↔S) = %.3f  (gBGC + selection)\n",
-              mean(gr$gamma_WS, na.rm = TRUE)))
-  cat(sprintf("  Mean gamma(S↔S) = %.3f  (selection only)\n",
-              mean(gr$gamma_SS, na.rm = TRUE)))
-  cat(sprintf("  Mean Δgamma     = %.3f  (estimated gBGC contribution)\n",
-              mean(gr$delta_gamma, na.rm = TRUE)))
-}
-
-cat(strrep("-", 60), "\n\n")
-
-# Cleanup
-rm(gbgc_results, comp)
 gc()
 
 ## *****************************************************************************
@@ -3545,7 +3411,7 @@ fit_contrast_ml <- bam(
   family = binomial(link = "logit"),
   method = "fREML",
   discrete = TRUE,
-  nthreads = 4
+  nthreads = 1
 )
 
 summary(fit_contrast_ml)
