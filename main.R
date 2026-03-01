@@ -1460,7 +1460,6 @@ high_exp_data <- plot_data |> dplyr::filter(Log_Phi >= 2.8)
 cor_high <- cor.test(high_exp_data$Log_Phi, high_exp_data$Intrinsic_Ineff, method = "spearman")
 cat(sprintf("Highly Expressed (>2.8):  Spearman rho = %.3f, p = %.2e\n", 
             cor_high$estimate, cor_high$p.value))
-# ------------------------------------
 
 # Define common color scale limits
 phi_range <- range(plot_data$Log_Phi, na.rm = TRUE)
