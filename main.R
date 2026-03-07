@@ -1592,11 +1592,19 @@ gof_results <- run_gof_analysis(
 
 # 8.7) Independent multinomial validation of ROC preferred codons ----
 
-# Validate that the same preferred codons emerge from a model-free multinomial
-# regression of codon frequencies on expression, controlling for gene length.
-# This does NOT assume the ROC mutational background derived from introns —
-# it tests whether the data alone, via the expression–frequency relationship,
-# recovers the same codon preferences that the ROC model identifies.
+# Validates ROC preferred codons via two complementary approaches:
+#
+#   1) Targeted binomial GLM: For each AA, tests whether the ROC-predicted
+#      preferred codon's usage increases significantly with expression.
+#      A positive expression coefficient confirms the ROC prediction.
+#
+#   2) Full multinomial models: Fits per-AA multinomial regressions and
+#      checks whether the ROC preferred codon shows positive Delta_P,
+#      plus dEta vs Delta_P correlation across all codons.
+#
+# These tests do NOT assume the ROC mutational background derived from
+# introns — they ask whether the ROC model's predictions are borne out
+# by the expression-frequency relationship in the data.
 
 message("\n=== Independent Multinomial Validation of ROC Preferred Codons ===\n")
 

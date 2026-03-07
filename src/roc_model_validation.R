@@ -875,35 +875,179 @@ run_gof_analysis <- function(mutation_file, selection_file, phi_file,
 # =============================================================================
 # INDEPENDENT MULTINOMIAL VALIDATION OF ROC PREFERRED CODONS
 # =============================================================================
+#
+# The ROC model separates mutational bias (dM, fixed from introns) from
+# selection (dEta) to identify preferred codons. A naive multinomial on
+# expression alone confounds the two — it will pick T-ending (AT-biased)
+# codons because Mimulus has strong AT mutational pressure.
+#
+# The correct validation is: "Does the ROC-predicted preferred codon's
+# usage increase significantly with expression?"  This is tested via:
+#   1. Per-AA binomial GLMs of preferred-codon proportion ~ expression
+#   2. Full multinomial models (fixing the VGAM naming bug for 2-codon AAs)
+#      to inspect delta_P for the ROC-preferred codon
+# =============================================================================
 
-#' Fit independent multinomial models to validate ROC preferred codons
+
+#' Targeted validation: does ROC preferred codon usage increase with expression?
 #'
-#' For each amino acid family, fits a VGAM multinomial logistic regression
-#' where codon counts are the response and gene expression (controlling for
-#' gene length) is the predictor. Identifies the codon whose probability
-#' increases most with expression — the "independently preferred" codon —
-#' without assuming the ROC model's intron-derived mutational background.
-#'
-#' This provides a model-free validation: if the ROC preferred codons are
-#' correct, a simple expression-based multinomial should recover the same
-#' preferences from the data alone.
+#' For each amino acid family, computes per-gene frequency of the ROC-preferred
+#' codon and fits a binomial GLM:
+#'   cbind(preferred_count, other_count) ~ expression + log(CDS_length)
+#' A positive expression coefficient confirms the ROC model's prediction.
 #'
 #' @param codon_counts_long Data frame with Gene, Codon, AA, Count columns
 #' @param expression_df Data frame with Gene, Exp_log10 columns
 #' @param length_df Optional data frame with Gene, CDS_length_nt columns
-#' @param roc_preferred_df Optional data frame with ROC preferred codons
-#'   (expects columns: Family [AA letter code], Preferred_Codons [codon])
-#' @param csp_df Optional CSP parameters (from load_csp_parameters) for
-#'   quantitative correlation between dEta and multinomial coefficients
-#' @param min_aa_total Minimum AA occurrence per gene to include (default: 5)
-#' @return List with: per_codon (detailed results), comparison (concordance
-#'   table), model_details (fitted VGAM objects), dEta_correlation (if csp_df
-#'   provided)
-fit_independent_multinomial_validation <- function(
+#' @param roc_preferred_df ROC preferred codons (columns: Family, Preferred_Codons)
+#' @param min_aa_total Minimum AA total per gene to include (default: 5)
+#' @return Data frame with per-AA test results
+validate_roc_preferred_binomial <- function(
     codon_counts_long,
     expression_df,
     length_df = NULL,
-    roc_preferred_df = NULL,
+    roc_preferred_df,
+    min_aa_total = 5
+) {
+
+  # --- Parse ROC preferred codons ---
+  roc <- roc_preferred_df
+  if ("Preferred_Codons" %in% names(roc) && "Family" %in% names(roc)) {
+    roc_map <- setNames(roc$Preferred_Codons, roc$Family)
+  } else if ("Codon" %in% names(roc) && "aa" %in% names(roc)) {
+    roc_map <- setNames(roc$Codon, roc$aa)
+  } else {
+    stop("Cannot parse ROC preferred codons format.")
+  }
+
+  # --- Merge data ---
+  dat <- merge(
+    codon_counts_long[, c("Gene", "Codon", "AA", "Count")],
+    expression_df[, c("Gene", "Exp_log10")],
+    by = "Gene"
+  )
+  has_length <- !is.null(length_df)
+  if (has_length) {
+    dat <- merge(dat, length_df[, c("Gene", "CDS_length_nt")], by = "Gene")
+    dat$log_CDS_length <- log10(dat$CDS_length_nt)
+  }
+
+  # Map to AnaCoDa AA convention
+  dat <- map_aa_to_anacoda(dat)
+
+  # --- Per-gene preferred vs non-preferred counts ---
+  aa_families <- sort(intersect(names(roc_map), unique(dat$AA_anacoda)))
+
+  results_list <- list()
+
+  for (aa in aa_families) {
+    pref_codon <- roc_map[aa]
+    aa_dat <- dat[dat$AA_anacoda == aa, ]
+
+    # Compute per-gene: preferred count, total count
+    gene_summary <- aa_dat |>
+      dplyr::group_by(Gene) |>
+      dplyr::summarize(
+        pref_count = sum(Count[Codon == pref_codon], na.rm = TRUE),
+        aa_total = sum(Count, na.rm = TRUE),
+        Exp_log10 = Exp_log10[1],
+        .groups = "drop"
+      )
+
+    if (has_length) {
+      len_vals <- unique(aa_dat[, c("Gene", "log_CDS_length")])
+      gene_summary <- merge(gene_summary, len_vals, by = "Gene")
+    }
+
+    gene_summary$other_count <- gene_summary$aa_total - gene_summary$pref_count
+    gene_summary <- gene_summary[gene_summary$aa_total >= min_aa_total, ]
+
+    if (nrow(gene_summary) < 50) next
+
+    # Fit binomial GLM
+    fit <- tryCatch({
+      if (has_length) {
+        glm(cbind(pref_count, other_count) ~ Exp_log10 + log_CDS_length,
+            family = binomial(link = "logit"), data = gene_summary)
+      } else {
+        glm(cbind(pref_count, other_count) ~ Exp_log10,
+            family = binomial(link = "logit"), data = gene_summary)
+      }
+    }, error = function(e) NULL)
+
+    if (is.null(fit)) next
+
+    summ <- summary(fit)
+    exp_row <- which(rownames(summ$coefficients) == "Exp_log10")
+    if (length(exp_row) == 0) next
+
+    exp_beta <- summ$coefficients[exp_row, 1]
+    exp_se   <- summ$coefficients[exp_row, 2]
+    exp_z    <- summ$coefficients[exp_row, 3]
+    exp_p    <- summ$coefficients[exp_row, 4]
+
+    # Mean preferred frequency at low vs high expression
+    q10 <- quantile(gene_summary$Exp_log10, 0.10, na.rm = TRUE)
+    q90 <- quantile(gene_summary$Exp_log10, 0.90, na.rm = TRUE)
+
+    low_exp  <- gene_summary[gene_summary$Exp_log10 <= q10, ]
+    high_exp <- gene_summary[gene_summary$Exp_log10 >= q90, ]
+
+    freq_low  <- sum(low_exp$pref_count) / sum(low_exp$aa_total)
+    freq_high <- sum(high_exp$pref_count) / sum(high_exp$aa_total)
+
+    results_list[[length(results_list) + 1]] <- data.frame(
+      AA = aa,
+      ROC_Preferred = pref_codon,
+      n_genes = nrow(gene_summary),
+      Exp_beta = exp_beta,
+      Exp_SE = exp_se,
+      Exp_z = exp_z,
+      Exp_pvalue = exp_p,
+      Freq_low_exp = freq_low,
+      Freq_high_exp = freq_high,
+      Delta_freq = freq_high - freq_low,
+      Direction = ifelse(exp_beta > 0, "Increases", "Decreases"),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  results_df <- do.call(rbind, results_list)
+  rownames(results_df) <- NULL
+  results_df$p_adj <- p.adjust(results_df$Exp_pvalue, method = "BH")
+  results_df$Significant <- results_df$p_adj < 0.05
+  results_df$Validated <- results_df$Significant & results_df$Exp_beta > 0
+
+  n_validated <- sum(results_df$Validated, na.rm = TRUE)
+  n_tested <- nrow(results_df)
+  n_increases <- sum(results_df$Exp_beta > 0, na.rm = TRUE)
+
+  message(sprintf("\n=== Binomial GLM Validation of ROC Preferred Codons ==="))
+  message(sprintf("  %d / %d AA families: preferred codon frequency increases with expression",
+                  n_increases, n_tested))
+  message(sprintf("  %d / %d statistically significant (FDR < 0.05)",
+                  n_validated, n_tested))
+
+  return(results_df)
+}
+
+
+#' Fit full multinomial models per AA family
+#'
+#' For each amino acid family, fits a VGAM multinomial logistic regression
+#' with expression and gene length as predictors. Reports delta_P for every
+#' codon, including the ROC-preferred one.
+#'
+#' @param codon_counts_long Data frame with Gene, Codon, AA, Count columns
+#' @param expression_df Data frame with Gene, Exp_log10 columns
+#' @param length_df Optional data frame with Gene, CDS_length_nt columns
+#' @param csp_df Optional CSP parameters for dEta correlation
+#' @param min_aa_total Minimum AA occurrence per gene (default: 5)
+#' @return List with per_codon results and model_details
+fit_multinomial_per_aa <- function(
+    codon_counts_long,
+    expression_df,
+    length_df = NULL,
     csp_df = NULL,
     min_aa_total = 5
 ) {
@@ -923,24 +1067,20 @@ fit_independent_multinomial_validation <- function(
     dat$log_CDS_length <- log10(dat$CDS_length_nt)
   }
 
-  # Map to AnaCoDa AA convention (Z for AGC/AGT serines)
   dat <- map_aa_to_anacoda(dat)
 
   # --- 2. Identify multi-codon AA families ---
   aa_codons <- tapply(dat$Codon, dat$AA_anacoda, function(x) sort(unique(x)))
   multi_aas <- sort(names(aa_codons[sapply(aa_codons, length) >= 2]))
 
-  # Expression quantiles for predicted probability contrast
   exp_q10 <- quantile(dat$Exp_log10, 0.10, na.rm = TRUE)
   exp_q90 <- quantile(dat$Exp_log10, 0.90, na.rm = TRUE)
   mean_len <- if (has_length) mean(dat$log_CDS_length, na.rm = TRUE) else NULL
 
-  message(sprintf("Fitting multinomial models for %d amino acid families",
-                  length(multi_aas)))
+  message(sprintf("Fitting multinomial models for %d amino acid families", length(multi_aas)))
   message(sprintf("Prediction contrast: expression %.2f vs %.2f (10th vs 90th percentile)",
                   exp_q10, exp_q90))
 
-  # --- 3. Fit per-AA multinomial models ---
   all_codon_results <- list()
   model_objects <- list()
 
@@ -950,13 +1090,11 @@ fit_independent_multinomial_validation <- function(
     k <- length(codons)
     aa_dat <- dat[dat$AA_anacoda == aa, ]
 
-    # Pivot to wide: one row per gene, columns = codon counts
     wide <- aa_dat |>
       dplyr::select(Gene, Codon, Count, Exp_log10,
                     dplyr::any_of("log_CDS_length")) |>
       tidyr::pivot_wider(names_from = Codon, values_from = Count, values_fill = 0)
 
-    # AA total per gene; filter low-count genes
     wide$aa_total <- rowSums(wide[, codons, drop = FALSE])
     wide <- wide[wide$aa_total >= min_aa_total, ]
 
@@ -965,10 +1103,8 @@ fit_independent_multinomial_validation <- function(
       next
     }
 
-    # Response matrix
     Y <- as.matrix(wide[, codons, drop = FALSE])
 
-    # Fit multinomial (last codon = reference)
     fit <- tryCatch({
       if (has_length) {
         VGAM::vglm(Y ~ Exp_log10 + log_CDS_length,
@@ -986,58 +1122,63 @@ fit_independent_multinomial_validation <- function(
 
     if (is.null(fit)) next
 
-    # --- Extract coefficients ---
+    # --- Extract expression coefficients ---
+    # VGAM naming: for M>1 logits, "Exp_log10:1", "Exp_log10:2", ...
+    #              for M=1 logit,  "Exp_log10" (no colon-suffix)
     cc <- coef(fit)
-    M <- k - 1  # number of logit equations
+    M <- k - 1
 
-    exp_coef_names <- paste0("Exp_log10:", seq_len(M))
-    int_names <- paste0("(Intercept):", seq_len(M))
+    # Match with or without colon-suffix
+    exp_idx <- grep("^Exp_log10(:|$)", names(cc))
+    if (length(exp_idx) != M) {
+      message(sprintf("  %s: unexpected coefficient structure (%d Exp coefs, expected %d)",
+                      aa, length(exp_idx), M))
+      next
+    }
+    exp_betas <- cc[exp_idx]
 
-    exp_betas <- cc[exp_coef_names]
-    intercepts <- cc[int_names]
-
-    # All codons' expression logit-effects (reference = 0)
-    all_exp_betas <- c(exp_betas, 0)
+    all_exp_betas <- c(unname(exp_betas), 0)
     names(all_exp_betas) <- codons
 
     # --- Predicted probabilities at low and high expression ---
+    newdata_low <- data.frame(Exp_log10 = exp_q10)
+    newdata_high <- data.frame(Exp_log10 = exp_q90)
     if (has_length) {
-      len_betas <- cc[paste0("log_CDS_length:", seq_len(M))]
-      eta_low  <- intercepts + exp_betas * exp_q10 + len_betas * mean_len
-      eta_high <- intercepts + exp_betas * exp_q90 + len_betas * mean_len
-    } else {
-      eta_low  <- intercepts + exp_betas * exp_q10
-      eta_high <- intercepts + exp_betas * exp_q90
+      newdata_low$log_CDS_length <- mean_len
+      newdata_high$log_CDS_length <- mean_len
     }
 
-    # Append 0 for reference codon, then softmax
-    eta_low  <- c(unname(eta_low), 0)
-    eta_high <- c(unname(eta_high), 0)
-
-    p_low  <- exp(eta_low)  / sum(exp(eta_low))
-    p_high <- exp(eta_high) / sum(exp(eta_high))
+    p_low <- tryCatch(
+      as.numeric(predict(fit, newdata = newdata_low, type = "response")[1, ]),
+      error = function(e) rep(NA_real_, k)
+    )
+    p_high <- tryCatch(
+      as.numeric(predict(fit, newdata = newdata_high, type = "response")[1, ]),
+      error = function(e) rep(NA_real_, k)
+    )
     names(p_low) <- names(p_high) <- codons
 
     delta_p <- p_high - p_low
 
-    # Preferred codon: largest probability increase with expression
-    preferred <- names(which.max(delta_p))
+    valid_delta <- delta_p[!is.na(delta_p) & !is.nan(delta_p)]
+    if (length(valid_delta) == 0) {
+      message(sprintf("  %s: skipped (could not compute probability predictions)", aa))
+      next
+    }
+    multinom_preferred <- names(which.max(valid_delta))
 
-    # --- Wald p-values for expression coefficients ---
+    # --- Wald p-values ---
     p_values <- rep(NA_real_, M)
     summ <- tryCatch(summary(fit), error = function(e) NULL)
     if (!is.null(summ)) {
       coef_table <- coef(summ)
-      for (j in seq_len(M)) {
-        pname <- exp_coef_names[j]
-        if (pname %in% rownames(coef_table)) {
-          p_values[j] <- coef_table[pname, 4]
-        }
+      exp_row_idx <- grep("^Exp_log10(:|$)", rownames(coef_table))
+      for (j in seq_along(exp_row_idx)) {
+        if (j <= M) p_values[j] <- coef_table[exp_row_idx[j], 4]
       }
     }
-    p_values <- c(p_values, NA_real_)  # reference has no p-value
+    p_values <- c(p_values, NA_real_)
 
-    # Store per-codon results
     for (i in seq_along(codons)) {
       all_codon_results[[length(all_codon_results) + 1]] <- data.frame(
         AA = aa,
@@ -1049,107 +1190,50 @@ fit_independent_multinomial_validation <- function(
         Prob_low_exp = unname(p_low[i]),
         Prob_high_exp = unname(p_high[i]),
         Delta_prob = unname(delta_p[i]),
-        is_multinom_preferred = (codons[i] == preferred),
+        is_multinom_preferred = (codons[i] == multinom_preferred),
         is_reference = (i == k),
         stringsAsFactors = FALSE
       )
     }
 
     model_objects[[aa]] <- list(
-      fit = fit,
-      codons = codons,
-      preferred = preferred,
-      prob_low = p_low,
-      prob_high = p_high,
-      delta_p = delta_p
+      fit = fit, codons = codons, preferred = multinom_preferred,
+      prob_low = p_low, prob_high = p_high, delta_p = delta_p
     )
 
-    message(sprintf("  %s [%d codons, %d genes]: preferred = %s (Delta_P = %+.3f)",
-                    aa, k, nrow(wide), preferred, max(delta_p)))
+    message(sprintf("  %s [%d codons, %d genes]: multinom preferred = %s (Delta_P = %+.3f)",
+                    aa, k, nrow(wide), multinom_preferred, max(valid_delta)))
   }
 
   results_df <- do.call(rbind, all_codon_results)
   rownames(results_df) <- NULL
 
-  # --- 4. Compare with ROC preferred codons ---
-  comparison <- NULL
-  if (!is.null(roc_preferred_df)) {
-
-    # Parse ROC preferred codons format
-    roc <- roc_preferred_df
-    if ("Preferred_Codons" %in% names(roc) && "Family" %in% names(roc)) {
-      roc_clean <- data.frame(AA = roc$Family, ROC_Preferred = roc$Preferred_Codons,
-                              stringsAsFactors = FALSE)
-    } else if ("Codon" %in% names(roc) && "aa" %in% names(roc)) {
-      roc_clean <- data.frame(AA = roc$aa, ROC_Preferred = roc$Codon,
-                              stringsAsFactors = FALSE)
-    } else {
-      warning("Could not parse ROC preferred codons format. Skipping comparison.")
-      roc_clean <- NULL
-    }
-
-    if (!is.null(roc_clean)) {
-      multinom_pref <- results_df[results_df$is_multinom_preferred,
-                                  c("AA", "Codon", "Delta_prob", "n_genes")]
-      names(multinom_pref)[2] <- "Multinom_Preferred"
-
-      comparison <- merge(multinom_pref, roc_clean, by = "AA", all = TRUE)
-      comparison$Match <- comparison$Multinom_Preferred == comparison$ROC_Preferred
-
-      n_tested <- sum(!is.na(comparison$Match))
-      n_match <- sum(comparison$Match, na.rm = TRUE)
-
-      message(sprintf("\n=== ROC vs Independent Multinomial: Preferred Codon Concordance ==="))
-      message(sprintf("  %d / %d AA families match (%.1f%%)",
-                      n_match, n_tested, 100 * n_match / n_tested))
-
-      mismatches <- comparison[!is.na(comparison$Match) & !comparison$Match, ]
-      if (nrow(mismatches) > 0) {
-        message("  Mismatches:")
-        for (i in seq_len(nrow(mismatches))) {
-          message(sprintf("    %s: ROC = %s, Multinomial = %s (Delta_P = %+.3f)",
-                          mismatches$AA[i], mismatches$ROC_Preferred[i],
-                          mismatches$Multinom_Preferred[i],
-                          mismatches$Delta_prob[i]))
-        }
-      }
-    }
-  }
-
-  # --- 5. Quantitative correlation: dEta vs multinomial expression effect ---
+  # Quantitative correlation: dEta vs delta_P
   deta_cor <- NULL
   if (!is.null(csp_df) && nrow(results_df) > 0) {
-    # Merge ROC dEta values with multinomial expression coefficients
     csp_merge <- csp_df[, c("AA", "Codon", "dEta")]
-    merged_coefs <- merge(results_df[, c("AA", "Codon", "Exp_beta")],
-                          csp_merge, by = c("AA", "Codon"))
+    merged <- merge(results_df[, c("AA", "Codon", "Delta_prob")],
+                    csp_merge, by = c("AA", "Codon"))
+    merged <- merged[!is.na(merged$Delta_prob), ]
 
-    # Remove reference codons (Exp_beta = 0 by construction) to avoid bias
-    merged_coefs <- merged_coefs[merged_coefs$Exp_beta != 0, ]
-
-    if (nrow(merged_coefs) >= 5) {
-      # More negative dEta = stronger selection for that codon
-      # More positive Exp_beta = frequency increases with expression
-      # Expect NEGATIVE correlation (negative dEta ↔ positive Exp_beta)
-      cor_result <- cor.test(merged_coefs$dEta, merged_coefs$Exp_beta,
+    if (nrow(merged) >= 5) {
+      cor_result <- cor.test(merged$dEta, merged$Delta_prob,
                              method = "spearman", exact = FALSE)
       deta_cor <- list(
         rho = cor_result$estimate,
         p_value = cor_result$p.value,
-        n = nrow(merged_coefs),
-        data = merged_coefs
+        n = nrow(merged),
+        data = merged
       )
-      message(sprintf(
-        "\n=== dEta vs Multinomial Exp. Coefficient Correlation ==="))
+      message(sprintf("\n=== dEta vs Delta_P Correlation ==="))
       message(sprintf("  Spearman rho = %.3f (p = %.2e, n = %d codons)",
-                      cor_result$estimate, cor_result$p.value, nrow(merged_coefs)))
-      message("  Expected: negative (more negative dEta = stronger selection = more positive Exp_beta)")
+                      cor_result$estimate, cor_result$p.value, nrow(merged)))
+      message("  Expected: negative (more negative dEta -> larger Delta_P)")
     }
   }
 
   return(list(
     per_codon = results_df,
-    comparison = comparison,
     model_details = model_objects,
     dEta_correlation = deta_cor
   ))
@@ -1158,86 +1242,134 @@ fit_independent_multinomial_validation <- function(
 
 #' Visualize multinomial validation results
 #'
-#' Creates a multi-panel figure showing probability changes for each codon
-#' with expression, colored by agreement between ROC and multinomial models.
+#' Creates a multi-panel figure: (1) per-AA barplot of Delta_P highlighting
+#' the ROC-preferred codon's behavior, (2) binomial validation forest plot,
+#' and (3) dEta vs Delta_P scatter.
 #'
-#' @param validation_result Output from fit_independent_multinomial_validation
+#' @param binomial_results Output from validate_roc_preferred_binomial
+#' @param multinom_results Output from fit_multinomial_per_aa
+#' @param roc_preferred_df ROC preferred codons
 #' @param output_file Path to save PDF (optional)
 #' @return List of ggplot objects
-plot_multinomial_validation <- function(validation_result, output_file = NULL) {
+plot_multinomial_validation <- function(binomial_results,
+                                        multinom_results = NULL,
+                                        roc_preferred_df = NULL,
+                                        output_file = NULL) {
 
   require(ggplot2)
   require(gridExtra)
 
-  df <- validation_result$per_codon
-  comp <- validation_result$comparison
-  deta_cor <- validation_result$dEta_correlation
-
   plots <- list()
 
-  # --- Panel 1: Probability change per codon, faceted by AA ---
-  if (!is.null(comp)) {
-    roc_map <- setNames(comp$ROC_Preferred, comp$AA)
+  # --- Panel 1: Forest plot of binomial validation ---
+  binom_df <- binomial_results
+  binom_df$AA_label <- paste0(binom_df$AA, " (", binom_df$ROC_Preferred, ")")
+  binom_df$AA_label <- factor(binom_df$AA_label,
+                               levels = binom_df$AA_label[order(binom_df$Exp_beta)])
+
+  plots$binomial_forest <- ggplot(binom_df,
+                                   aes(x = Exp_beta, y = AA_label,
+                                       color = Validated)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_pointrange(aes(xmin = Exp_beta - 1.96 * Exp_SE,
+                        xmax = Exp_beta + 1.96 * Exp_SE),
+                    size = 0.5) +
+    scale_color_manual(values = c("TRUE" = "forestgreen", "FALSE" = "firebrick"),
+                       labels = c("TRUE" = "Validated (FDR < 0.05)",
+                                  "FALSE" = "Not validated"),
+                       name = NULL) +
+    labs(
+      title = "ROC Preferred Codon Validation: Expression Effect",
+      subtitle = paste0("Binomial GLM: preferred_count / AA_total ~ expression + log(CDS_length)\n",
+                        "Positive = ROC-preferred codon usage increases with expression"),
+      x = "Expression coefficient (logit scale)",
+      y = NULL
+    ) +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "bottom",
+          plot.title = element_text(size = 13, face = "bold"))
+
+  # --- Panel 2: Delta_P barplot (multinomial) with ROC preferred highlighted ---
+  if (!is.null(multinom_results) && !is.null(roc_preferred_df)) {
+    df <- multinom_results$per_codon
+
+    roc <- roc_preferred_df
+    if ("Preferred_Codons" %in% names(roc) && "Family" %in% names(roc)) {
+      roc_map <- setNames(roc$Preferred_Codons, roc$Family)
+    } else {
+      roc_map <- setNames(roc$Codon, roc$aa)
+    }
+
     df$is_ROC_preferred <- mapply(function(aa, codon) {
       if (aa %in% names(roc_map)) codon == roc_map[aa] else FALSE
     }, df$AA, df$Codon)
 
-    df$Category <- "Neither"
-    df$Category[df$is_multinom_preferred & df$is_ROC_preferred] <- "Both agree"
-    df$Category[df$is_multinom_preferred & !df$is_ROC_preferred] <- "Multinomial only"
-    df$Category[!df$is_multinom_preferred & df$is_ROC_preferred] <- "ROC only"
+    df$Category <- "Other codon"
+    df$Category[df$is_ROC_preferred & df$Delta_prob > 0] <- "ROC preferred (increases)"
+    df$Category[df$is_ROC_preferred & df$Delta_prob <= 0] <- "ROC preferred (decreases)"
+    df$Category[df$is_multinom_preferred] <- paste0(
+      ifelse(df$is_ROC_preferred[df$is_multinom_preferred],
+             "ROC preferred (increases)", "Highest Delta_P (not ROC)")
+    )
+    # Re-assign cleanly
+    df$Category <- "Other codon"
+    df$Category[df$is_multinom_preferred & !df$is_ROC_preferred] <- "Highest Delta_P"
+    df$Category[df$is_ROC_preferred & df$Delta_prob > 0] <- "ROC preferred (increases)"
+    df$Category[df$is_ROC_preferred & df$Delta_prob <= 0] <- "ROC preferred (decreases)"
 
-    color_vals <- c("Both agree" = "forestgreen", "Multinomial only" = "steelblue",
-                    "ROC only" = "darkorange", "Neither" = "gray70")
-  } else {
-    df$Category <- ifelse(df$is_multinom_preferred, "Preferred", "Other")
-    color_vals <- c("Preferred" = "steelblue", "Other" = "gray70")
+    color_vals <- c("ROC preferred (increases)" = "forestgreen",
+                    "ROC preferred (decreases)" = "firebrick",
+                    "Highest Delta_P" = "steelblue",
+                    "Other codon" = "gray70")
+
+    plots$delta_prob <- ggplot(df, aes(x = reorder(Codon, Delta_prob),
+                                       y = Delta_prob, fill = Category)) +
+      geom_col(width = 0.7) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "black",
+                 linewidth = 0.3) +
+      facet_wrap(~ AA, scales = "free", ncol = 5) +
+      coord_flip() +
+      scale_fill_manual(values = color_vals) +
+      labs(
+        title = "Multinomial Model: Codon Probability Change with Expression",
+        subtitle = paste0(
+          "Delta_P = P(codon | high exp.) - P(codon | low exp.) | ",
+          "Green = ROC preferred codon increases with expression"
+        ),
+        x = NULL,
+        y = expression(Delta * "P (high exp. " - " low exp.)"),
+        fill = NULL
+      ) +
+      theme_bw(base_size = 10) +
+      theme(
+        legend.position = "bottom",
+        strip.text = element_text(face = "bold"),
+        plot.title = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 9)
+      )
   }
 
-  plots$delta_prob <- ggplot(df, aes(x = reorder(Codon, Delta_prob),
-                                     y = Delta_prob, fill = Category)) +
-    geom_col(width = 0.7) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "black",
-               linewidth = 0.3) +
-    facet_wrap(~ AA, scales = "free_y", ncol = 5) +
-    coord_flip() +
-    scale_fill_manual(values = color_vals) +
-    labs(
-      title = "Independent Multinomial Validation of ROC Preferred Codons",
-      subtitle = paste0(
-        "Predicted codon probability change from low to high expression",
-        " (10th-90th percentile)\nControlling for gene length | ",
-        "Green = ROC and multinomial agree"
-      ),
-      x = NULL,
-      y = expression(Delta * "P (high exp. " - " low exp.)"),
-      fill = NULL
-    ) +
-    theme_bw(base_size = 10) +
-    theme(
-      legend.position = "bottom",
-      strip.text = element_text(face = "bold"),
-      plot.title = element_text(size = 13, face = "bold"),
-      plot.subtitle = element_text(size = 9)
-    )
+  # --- Panel 3: dEta vs Delta_P scatter ---
+  if (!is.null(multinom_results$dEta_correlation) &&
+      nrow(multinom_results$dEta_correlation$data) >= 5) {
+    deta_dat <- multinom_results$dEta_correlation$data
+    deta_rho <- multinom_results$dEta_correlation$rho
+    deta_p   <- multinom_results$dEta_correlation$p_value
 
-  # --- Panel 2: dEta vs Exp_beta scatter (quantitative agreement) ---
-  if (!is.null(deta_cor) && nrow(deta_cor$data) >= 5) {
-    plots$deta_scatter <- ggplot(deta_cor$data,
-                                 aes(x = dEta, y = Exp_beta)) +
+    plots$deta_scatter <- ggplot(deta_dat, aes(x = dEta, y = Delta_prob)) +
       geom_point(alpha = 0.6, size = 2, color = "steelblue") +
       geom_smooth(method = "lm", color = "red", se = TRUE, linewidth = 0.8) +
       geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
       geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
       annotate("text", x = Inf, y = Inf,
                label = sprintf("rho = %.3f\np = %.2e",
-                               deta_cor$rho, deta_cor$p_value),
+                               deta_rho, deta_p),
                hjust = 1.1, vjust = 1.5, size = 4, fontface = "italic") +
       labs(
-        title = "ROC Selection (dEta) vs Multinomial Expression Effect",
-        subtitle = "Expected: negative correlation (selected codons increase with expression)",
+        title = expression("ROC Selection (" * Delta * eta * ") vs Multinomial " * Delta * "P"),
+        subtitle = "Expected: negative (selected-for codons increase with expression)",
         x = expression("ROC Selection Coefficient (" * Delta * eta * ")"),
-        y = "Multinomial Exp. Coefficient"
+        y = expression(Delta * "P (high " - " low expression)")
       ) +
       theme_bw(base_size = 11)
   }
@@ -1248,17 +1380,21 @@ plot_multinomial_validation <- function(validation_result, output_file = NULL) {
       if (inherits(p, "ggplot")) ggplotGrob(p) else p
     })
 
-    if (length(grob_list) == 1) {
+    n_panels <- length(grob_list)
+    if (n_panels == 1) {
       combined <- grob_list[[1]]
+      plot_height <- 10
+    } else if (n_panels == 2) {
+      combined <- gridExtra::arrangeGrob(grobs = grob_list, ncol = 1,
+                                          heights = c(1, 1.5))
+      plot_height <- 18
     } else {
-      combined <- gridExtra::arrangeGrob(
-        grobs = grob_list, ncol = 1,
-        heights = if (length(grob_list) == 2) c(2, 1) else rep(1, length(grob_list))
-      )
+      combined <- gridExtra::arrangeGrob(grobs = grob_list, ncol = 1,
+                                          heights = c(1, 1.5, 0.8))
+      plot_height <- 24
     }
 
-    ggsave(output_file, combined,
-           width = 18, height = if (length(plots) > 1) 20 else 14)
+    ggsave(output_file, combined, width = 18, height = plot_height)
     message(sprintf("Saved: %s", output_file))
   }
 
@@ -1268,18 +1404,17 @@ plot_multinomial_validation <- function(validation_result, output_file = NULL) {
 
 #' Run complete independent multinomial validation
 #'
-#' Convenience wrapper: fits per-AA multinomial models, compares preferred
-#' codons with ROC model, and generates diagnostic visualization.
+#' Fits per-AA binomial GLMs (targeted test) and full multinomial models,
+#' compares with ROC preferred codons, and generates diagnostic plots.
 #'
 #' @param codon_counts_long Data frame with Gene, Codon, AA, Count columns
 #' @param expression_df Data frame with Gene, Exp_log10 columns
 #' @param length_df Optional data frame with Gene, CDS_length_nt columns
-#' @param roc_preferred_df Optional ROC preferred codons
-#'   (columns: Family, Preferred_Codons)
+#' @param roc_preferred_df ROC preferred codons (columns: Family, Preferred_Codons)
 #' @param csp_df Optional CSP parameters for dEta correlation analysis
 #' @param min_aa_total Minimum AA count per gene (default: 5)
 #' @param output_prefix Path prefix for saving outputs (optional)
-#' @return List with per_codon results, comparison, model_details, plots
+#' @return List with binomial_validation, multinomial_results, plots
 run_multinomial_validation <- function(
     codon_counts_long,
     expression_df,
@@ -1290,42 +1425,86 @@ run_multinomial_validation <- function(
     output_prefix = NULL
 ) {
 
-  # Fit models and compare
-  results <- fit_independent_multinomial_validation(
+  # 1. Targeted binomial validation
+  binomial_results <- validate_roc_preferred_binomial(
     codon_counts_long = codon_counts_long,
     expression_df = expression_df,
     length_df = length_df,
     roc_preferred_df = roc_preferred_df,
+    min_aa_total = min_aa_total
+  )
+
+  # 2. Full multinomial models
+  multinom_results <- fit_multinomial_per_aa(
+    codon_counts_long = codon_counts_long,
+    expression_df = expression_df,
+    length_df = length_df,
     csp_df = csp_df,
     min_aa_total = min_aa_total
   )
 
-  # Generate plots
-  plot_file <- if (!is.null(output_prefix)) {
-    paste0(output_prefix, ".pdf")
-  } else NULL
+  # 3. Build comparison table: merge binomial + multinomial preferred
+  comparison <- binomial_results[, c("AA", "ROC_Preferred", "Exp_beta",
+                                      "Direction", "Validated",
+                                      "Delta_freq")]
 
-  results$plots <- plot_multinomial_validation(results, output_file = plot_file)
+  # Add multinomial preferred codon and ROC preferred's delta_P
+  if (nrow(multinom_results$per_codon) > 0) {
+    multinom_pref <- multinom_results$per_codon[
+      multinom_results$per_codon$is_multinom_preferred,
+      c("AA", "Codon", "Delta_prob")]
+    names(multinom_pref) <- c("AA", "Multinom_Preferred", "Multinom_Delta_P")
+    comparison <- merge(comparison, multinom_pref, by = "AA", all.x = TRUE)
 
-  # Save comparison table
-  if (!is.null(output_prefix) && !is.null(results$comparison)) {
-    write.csv(results$comparison,
-              paste0(output_prefix, "_concordance.csv"),
-              row.names = FALSE)
+    # ROC preferred codon's Delta_P from the multinomial
+    roc_in_multinom <- merge(
+      binomial_results[, c("AA", "ROC_Preferred")],
+      multinom_results$per_codon[, c("AA", "Codon", "Delta_prob")],
+      by.x = c("AA", "ROC_Preferred"), by.y = c("AA", "Codon"),
+      all.x = TRUE
+    )
+    names(roc_in_multinom)[3] <- "ROC_Delta_P"
+    comparison <- merge(comparison, roc_in_multinom[, c("AA", "ROC_Delta_P")],
+                        by = "AA", all.x = TRUE)
+
+    comparison$ROC_increases_in_multinom <- !is.na(comparison$ROC_Delta_P) &
+                                             comparison$ROC_Delta_P > 0
+  }
+
+  # 4. Generate plots
+  plot_file <- if (!is.null(output_prefix)) paste0(output_prefix, ".pdf") else NULL
+
+  plots <- plot_multinomial_validation(
+    binomial_results = binomial_results,
+    multinom_results = multinom_results,
+    roc_preferred_df = roc_preferred_df,
+    output_file = plot_file
+  )
+
+  # 5. Save comparison table
+  if (!is.null(output_prefix)) {
+    write.csv(comparison, paste0(output_prefix, "_concordance.csv"), row.names = FALSE)
     message(sprintf("Saved: %s_concordance.csv", output_prefix))
   }
 
-  # Print summary
-  if (!is.null(results$comparison)) {
-    cat("\n=== Independent Multinomial Validation Summary ===\n")
-    cat(sprintf("AA families tested: %d\n", sum(!is.na(results$comparison$Match))))
-    cat(sprintf("Concordant with ROC: %d (%.1f%%)\n",
-                sum(results$comparison$Match, na.rm = TRUE),
-                100 * mean(results$comparison$Match, na.rm = TRUE)))
-    cat("\nDetailed comparison:\n")
-    print(results$comparison[, c("AA", "ROC_Preferred", "Multinom_Preferred",
-                                 "Match", "Delta_prob")])
-  }
+  # 6. Print summary
+  cat("\n=== ROC Preferred Codon Validation Summary ===\n")
+  n_tested <- nrow(binomial_results)
+  n_increases <- sum(binomial_results$Exp_beta > 0, na.rm = TRUE)
+  n_validated <- sum(binomial_results$Validated, na.rm = TRUE)
 
-  return(results)
+  cat(sprintf("AA families tested: %d\n", n_tested))
+  cat(sprintf("ROC preferred increases with expression: %d / %d (%.1f%%)\n",
+              n_increases, n_tested, 100 * n_increases / n_tested))
+  cat(sprintf("Statistically significant (FDR < 0.05): %d / %d (%.1f%%)\n",
+              n_validated, n_tested, 100 * n_validated / n_tested))
+  cat("\nDetailed comparison:\n")
+  print(comparison[order(comparison$AA), ])
+
+  return(list(
+    binomial_validation = binomial_results,
+    multinomial_results = multinom_results,
+    comparison = comparison,
+    plots = plots
+  ))
 }
