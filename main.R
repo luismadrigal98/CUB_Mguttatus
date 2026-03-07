@@ -1590,8 +1590,51 @@ gof_results <- run_gof_analysis(
   output_prefix  = "./results/ROC_model_goodness_of_fit"
 )
 
+# 8.7) Independent multinomial validation of ROC preferred codons ----
+
+# Validate that the same preferred codons emerge from a model-free multinomial
+# regression of codon frequencies on expression, controlling for gene length.
+# This does NOT assume the ROC mutational background derived from introns —
+# it tests whether the data alone, via the expression–frequency relationship,
+# recovers the same codon preferences that the ROC model identifies.
+
+message("\n=== Independent Multinomial Validation of ROC Preferred Codons ===\n")
+
+# Prepare expression and length data
+expr_for_multinom <- exp_complete |>
+  dplyr::mutate(Exp_log10 = Max_Log10_Exp) |>
+  dplyr::select(Gene_name, Exp_log10) |>
+  dplyr::rename(Gene = Gene_name)
+
+length_for_multinom <- integrated_data |>
+  dplyr::select(Gene_name, CDS_length_nt) |>
+  dplyr::rename(Gene = Gene_name) |>
+  as.data.frame()
+
+# Load CSP parameters for quantitative dEta correlation
+csp_for_validation <- load_csp_parameters(
+  mutation_file  = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Mutation.csv",
+  selection_file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv"
+)
+
+# Run validation
+multinomial_validation <- run_multinomial_validation(
+  codon_counts_long = codon_freq_long,
+  expression_df     = expr_for_multinom,
+  length_df         = length_for_multinom,
+  roc_preferred_df  = preferred_codons_roc,
+  csp_df            = csp_for_validation,
+  min_aa_total      = 5,
+  output_prefix     = "./results/ROC_multinomial_validation"
+)
+
+# Memory cleanup: multinomial validation intermediates ---
+# Keeping: multinomial_validation
+rm(expr_for_multinom, length_for_multinom, csp_for_validation)
+gc()
+
 # Memory cleanup: large codon frequency data ---
-# Keeping: gof_results
+# Keeping: gof_results, multinomial_validation
 rm(codon_freq_long)
 gc()
 
