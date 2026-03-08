@@ -1418,10 +1418,17 @@ integrated_data <- integrated_data |>
 
 # Correlation between selection metric and CUB metrics
 
-cor_S_and_bias <- corrr::correlate(x = as.matrix(integrated_data[, c(29, 6, 16, 28)]),
+cor_S_and_bias <- corrr::correlate(x = as.matrix(integrated_data[, c(27, 6, 16, 26)]),
                                    method = "spearman")
 
-cor.test(integrated_data$S_ROC, integrated_data$CAI)
+cor.test(integrated_data$S_ROC, 
+         integrated_data$CAI)
+
+cor.test(integrated_data$S_ROC, 
+         integrated_data$CDC)
+
+cor.test(integrated_data$S_ROC[integrated_data$Max_Log10_Exp > 3.5], 
+         integrated_data$CDC[integrated_data$Max_Log10_Exp > 3.5])
 
 # 8.3.3) Final visualization ----
 
@@ -1489,12 +1496,12 @@ p1 <- ggplot(plot_data, aes(x = Log_S_ROC)) +
   theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
 
 # Panel B: CAI vs S_ROC
-p2 <- ggplot(plot_data, aes(x = Log_S_ROC, y = CAI)) +
+p2 <- ggplot(plot_data, aes(x = Log_S_ROC, y = CDC)) +
   geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
   scale_color_viridis_c(option = "plasma", name = expression(Log[10](Phi)), 
                         limits = phi_range, direction = 1) +
   geom_smooth(color = "black") +
-  labs(x = expression(Log[10](S[ROC])), y = "CAI") +
+  labs(x = expression(Log[10](S[ROC])), y = "CDC") +
   theme_custom()
 
 # Panel C: Intrinsic Sequence Inefficiency vs Expression
@@ -1942,7 +1949,7 @@ p_ca <- create_preference_biplot(
   ordination_result = codon_usage_CA,
   gene_data = gene_data_ca,
   preferred_codons = preferred_codons_roc,
-  dims = c(2, 3),
+  dims = c(1, 3),
   arrow_scale = 1.0,
   title = NULL,
   subtitle = NULL,
@@ -2476,6 +2483,7 @@ has_mutation_types <- all(paste0("Pi_sum_4fold_", mutation_types) %in%
 
 # Rank genes by Mean_Log10_Exp and create bins
 pi_by_expression <- integrated_data |>
+  dplyr::filter(S_ROC < 1) |>
   dplyr::arrange(Mean_Log10_Exp) |>
   dplyr::mutate(
     Rank = dplyr::row_number(),
@@ -2494,6 +2502,25 @@ pi_by_expression <- integrated_data |>
     se_pi_4fold = sd_pi_4fold / sqrt(n()),
     .groups = "drop"
   )
+
+sel_cat <- integrated_data |>
+  dplyr::filter(S_ROC > 1) |> 
+  dplyr::summarize(
+    Exp_Bin = 24,
+    n_genes = n(),
+    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+    # Weighted mean π at 4-fold sites: total π_sum / total sites
+    total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
+    total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
+    weighted_pi_4fold = total_pi_sum_4fold / total_sites_4fold,
+    # Also compute individual-gene SD for error bars
+    sd_pi_4fold = sd(Pi_mean_4fold, na.rm = TRUE),
+    se_pi_4fold = sd_pi_4fold / sqrt(n()),
+    .groups = "drop"
+  )
+
+pi_by_expression <- pi_by_expression |>
+  rbind(sel_cat) # Bin 24 is the one where genes with S_ROC > 1 are
 
 cat("\n=== 4-fold π by Expression Rank (groups of ~1000 genes) ===\n")
 print(pi_by_expression)
@@ -2528,6 +2555,7 @@ if (has_mutation_types) {
   # Calculate per-mutation-type pi component within each expression bin
   # Component = sum(Pi_sum_type) / sum(Sites_4fold) → additive decomposition
   pi_by_mutation <- integrated_data |>
+    dplyr::filter(S_ROC < 1) |>
     dplyr::arrange(Mean_Log10_Exp) |>
     dplyr::mutate(
       Rank = dplyr::row_number(),
@@ -2546,6 +2574,25 @@ if (has_mutation_types) {
       pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
       .groups = "drop"
     )
+  
+  pi_sel_group <- integrated_data |>
+    dplyr::filter(S_ROC > 1) |>
+    dplyr::summarize(
+      Exp_Bin = 24,
+      n_genes = n(),
+      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+      total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
+      pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AT = sum(Pi_sum_4fold_AT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CG = sum(Pi_sum_4fold_CG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CT = sum(Pi_sum_4fold_CT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  pi_by_mutation <- pi_by_mutation |>
+    rbind(pi_sel_group)
   
   # Verify additive decomposition
   pi_check <- pi_by_expression |>
@@ -2882,6 +2929,278 @@ p_surface_pref <- plot_selection_surface(
   response_name = "Mean_preferred_freq"
 )
 
+# 12.4) Contour plot: preferred codon frequency ~ expression x gene length ----
+# Shows joint effect of expression and gene length on the frequency of
+# ROC-preferred codons across ALL amino acid families (not only 4-fold).
+# Mean_preferred_freq is the per-gene average across all codon positions.
+# Also produces separate contour surfaces for C-ending and G-ending
+# preferred codons, which reduces noise from mixing two distinct nucleotide
+# biases that selection must act against.
+
+cat("\n=== Contour Plot: Preferred Codon Frequency ~ Expression x Gene Length ===\n")
+
+# --- 12.4a: Overall (all preferred codons pooled) ---
+
+contour_data <- integrated_data |>
+  dplyr::filter(!is.na(Mean_preferred_freq),
+                !is.na(Max_Log10_Exp),
+                Total_Codons > 0) |>
+  dplyr::mutate(log10_length = log10(Total_Codons))
+
+contour_gam <- mgcv::gam(
+  Mean_preferred_freq ~ te(Max_Log10_Exp, log10_length, k = c(10, 10)),
+  data = contour_data,
+  family = betar(link = "logit")
+)
+cat("GAM surface R-sq(adj) [all preferred]: ", summary(contour_gam)$r.sq, "\n")
+
+pred_grid_pref <- expand.grid(
+  Max_Log10_Exp = seq(min(contour_data$Max_Log10_Exp, na.rm = TRUE),
+                      max(contour_data$Max_Log10_Exp, na.rm = TRUE),
+                      length.out = 200),
+  log10_length  = seq(min(contour_data$log10_length, na.rm = TRUE),
+                      max(contour_data$log10_length, na.rm = TRUE),
+                      length.out = 200)
+)
+pred_grid_pref$Predicted <- predict(contour_gam, newdata = pred_grid_pref,
+                                    type = "response")
+
+p_pref_contour <- ggplot(pred_grid_pref,
+                         aes(x = Max_Log10_Exp, y = log10_length)) +
+  geom_raster(aes(fill = Predicted), interpolate = TRUE) +
+  geom_contour(aes(z = Predicted), colour = "grey30",
+               linewidth = 0.4, bins = 12) +
+  scale_fill_gradientn(
+    colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                "#FEE8C8", "#FDBB84", "#E34A33"),
+    name = "Freq.\npreferred"
+  ) +
+  labs(
+    title = "Frequency of ROC-Preferred Codons (All Amino Acids)",
+    subtitle = "GAM-predicted surface across expression and gene length",
+    x = expression(log[10](Max~Expression~CPM)),
+    y = expression(log[10](Gene~Length~"(codons)"))
+  ) +
+  theme_custom() +
+  theme(legend.position = "right",
+        panel.grid = element_blank())
+
+ggsave("./results/Preferred_freq_contour_exp_x_length.pdf",
+       p_pref_contour, width = 9, height = 7)
+cat("Saved: ./results/Preferred_freq_contour_exp_x_length.pdf\n")
+
+# --- 12.4b: Split by C-ending vs G-ending preferred codons ---
+# Re-read the per-position file to compute separate per-gene frequencies
+
+preferred_raw <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt",
+                            stringsAsFactors = FALSE) |>
+  dplyr::mutate(Gene_name = paste0("MgIM767.", Gene))
+
+# Classify preferred codons by their 3rd nucleotide
+preferred_raw$Ending <- substr(preferred_raw$Preferred_Codon,
+                               nchar(preferred_raw$Preferred_Codon),
+                               nchar(preferred_raw$Preferred_Codon))
+
+# Skip stop codons and methionine/tryptophan (single-codon families)
+preferred_raw <- preferred_raw |>
+  dplyr::filter(!AA %in% c("*", "Stop", "M", "W"))
+
+# Per-gene average preferred freq split by ending nucleotide
+pref_by_ending <- preferred_raw |>
+  dplyr::group_by(Gene_name, Ending) |>
+  dplyr::summarize(
+    Mean_pref_freq = mean(Preferred_Freq, na.rm = TRUE),
+    n_positions = dplyr::n(),
+    .groups = "drop"
+  ) |>
+  tidyr::pivot_wider(
+    names_from = Ending,
+    values_from = c(Mean_pref_freq, n_positions),
+    names_sep = "_"
+  )
+
+contour_split <- integrated_data |>
+  dplyr::left_join(pref_by_ending, by = "Gene_name") |>
+  dplyr::filter(!is.na(Max_Log10_Exp), Total_Codons > 0) |>
+  dplyr::mutate(log10_length = log10(Total_Codons))
+
+# Build contour for each ending type
+for (ending in c("C", "G")) {
+  col_name <- paste0("Mean_pref_freq_", ending)
+  if (!col_name %in% names(contour_split)) next
+
+  sub <- contour_split |>
+    dplyr::filter(!is.na(.data[[col_name]]),
+                  .data[[col_name]] > 0,
+                  .data[[col_name]] < 1)
+
+  if (nrow(sub) < 200) {
+    message(sprintf("  %s-ending: skipped (%d genes)", ending, nrow(sub)))
+    next
+  }
+
+  gam_split <- mgcv::gam(
+    as.formula(paste0(col_name, " ~ te(Max_Log10_Exp, log10_length, k = c(10, 10))")),
+    data = sub,
+    family = betar(link = "logit")
+  )
+  cat(sprintf("GAM R-sq(adj) [%s-ending]: %.3f\n", ending, summary(gam_split)$r.sq))
+
+  grid_split <- expand.grid(
+    Max_Log10_Exp = seq(min(sub$Max_Log10_Exp, na.rm = TRUE),
+                        max(sub$Max_Log10_Exp, na.rm = TRUE),
+                        length.out = 200),
+    log10_length  = seq(min(sub$log10_length, na.rm = TRUE),
+                        max(sub$log10_length, na.rm = TRUE),
+                        length.out = 200)
+  )
+  grid_split$Predicted <- predict(gam_split, newdata = grid_split, type = "response")
+
+  p_split <- ggplot(grid_split, aes(x = Max_Log10_Exp, y = log10_length)) +
+    geom_raster(aes(fill = Predicted), interpolate = TRUE) +
+    geom_contour(aes(z = Predicted), colour = "grey30",
+                 linewidth = 0.4, bins = 12) +
+    scale_fill_gradientn(
+      colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                  "#FEE8C8", "#FDBB84", "#E34A33"),
+      name = paste0("Freq.\n", ending, "-end")
+    ) +
+    labs(
+      title = sprintf("Freq. of ROC-Preferred %s-Ending Codons (All AA Families)", ending),
+      subtitle = "GAM-predicted surface across expression and gene length",
+      x = expression(log[10](Max~Expression~CPM)),
+      y = expression(log[10](Gene~Length~"(codons)"))
+    ) +
+    theme_custom() +
+    theme(legend.position = "right", panel.grid = element_blank())
+
+  outfile <- sprintf("./results/Preferred_freq_contour_%s_ending.pdf", ending)
+  ggsave(outfile, p_split, width = 9, height = 7)
+  cat(sprintf("Saved: %s\n", outfile))
+}
+
+rm(preferred_raw, pref_by_ending, contour_split)
+
+# 12.5) Background selection test: nonsynonymous pi vs expression ----
+# Under background selection, genes under stronger purifying selection
+# (= more highly expressed) should have lower pi at nonsynonymous (0-fold)
+# sites. This is independent of the codon usage bias signal.
+
+cat("\n=== Background Selection: Nonsynonymous Pi vs Expression ===\n")
+
+bgs_data <- integrated_data |>
+  dplyr::filter(Sites_0fold >= 10, Pi_mean_0fold >= 0,
+                !is.na(Max_Log10_Exp)) |>
+  dplyr::mutate(log10_length = log10(CDS_length_nt))
+
+# Spearman correlation: pi_0fold vs expression
+cor_0fold <- cor.test(bgs_data$Max_Log10_Exp, bgs_data$Pi_mean_0fold,
+                      method = "spearman", exact = FALSE)
+cat(sprintf("Spearman rho (Pi_0fold ~ Expression): %.4f (p = %.2e, n = %d)\n",
+            cor_0fold$estimate, cor_0fold$p.value, nrow(bgs_data)))
+
+# Expression-binned weighted mean pi_0fold (parallels the 4-fold analysis)
+bgs_binned <- bgs_data |>
+  dplyr::arrange(Max_Log10_Exp) |>
+  dplyr::mutate(Rank = dplyr::row_number(),
+                Exp_Bin = ceiling(Rank / 1000)) |>
+  dplyr::group_by(Exp_Bin) |>
+  dplyr::summarize(
+    n_genes = dplyr::n(),
+    mean_expression = mean(Max_Log10_Exp, na.rm = TRUE),
+    weighted_pi_0fold = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
+    weighted_pi_4fold = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Compute pi_0fold / pi_4fold ratio (controls for demography/linked effects)
+bgs_binned$Pi_ratio_0_4 <- bgs_binned$weighted_pi_0fold / bgs_binned$weighted_pi_4fold
+
+# Plot: pi at 0-fold and 4-fold sites vs expression
+bgs_long <- bgs_binned |>
+  tidyr::pivot_longer(cols = c(weighted_pi_0fold, weighted_pi_4fold),
+                      names_to = "Site_Class", values_to = "Pi") |>
+  dplyr::mutate(Site_Class = ifelse(Site_Class == "weighted_pi_0fold",
+                                    "Nonsynonymous (0-fold)",
+                                    "Synonymous (4-fold)"))
+
+p_bgs <- ggplot(bgs_long, aes(x = mean_expression, y = Pi, color = Site_Class)) +
+  geom_point(size = 2) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
+  scale_color_manual(values = c("Nonsynonymous (0-fold)" = "#E41A1C",
+                                "Synonymous (4-fold)" = "#377EB8")) +
+  labs(
+    title = "Nucleotide Diversity vs Expression: Nonsynonymous and Synonymous Sites",
+    subtitle = "Stronger purifying selection on highly expressed genes reduces pi_0fold",
+    x = expression(Mean~log[10](Expression)),
+    y = expression("Weighted " * pi),
+    color = NULL
+  ) +
+  theme_custom() +
+  theme(legend.position = "top")
+
+ggsave("./results/Pi_0fold_4fold_vs_expression.pdf", p_bgs, width = 9, height = 6)
+cat("Saved: ./results/Pi_0fold_4fold_vs_expression.pdf\n")
+
+# Plot: pi_0fold / pi_4fold ratio vs expression
+p_ratio <- ggplot(bgs_binned, aes(x = mean_expression, y = Pi_ratio_0_4)) +
+  geom_point(size = 2, color = "steelblue") +
+  geom_smooth(method = "loess", se = TRUE, color = "firebrick", linewidth = 0.8) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+  labs(
+    title = expression("Ratio " * pi[0] / pi[4] * " vs Expression"),
+    subtitle = "Declining ratio = stronger purifying selection at higher expression",
+    x = expression(Mean~log[10](Expression)),
+    y = expression(pi["0-fold"] / pi["4-fold"])
+  ) +
+  theme_custom()
+
+ggsave("./results/Pi_ratio_0fold_4fold_vs_expression.pdf", p_ratio, width = 8, height = 6)
+cat("Saved: ./results/Pi_ratio_0fold_4fold_vs_expression.pdf\n")
+
+# GAM contour: pi at 0-fold sites ~ expression x gene length
+bgs_contour_data <- bgs_data |>
+  dplyr::filter(Pi_mean_0fold > 0)
+
+bgs_gam <- mgcv::gam(
+  Pi_mean_0fold ~ te(Max_Log10_Exp, log10_length, k = c(10, 10)),
+  data = bgs_contour_data,
+  family = Gamma(link = "log")
+)
+cat(sprintf("GAM R-sq(adj) [Pi_0fold surface]: %.3f\n", summary(bgs_gam)$r.sq))
+
+bgs_grid <- expand.grid(
+  Max_Log10_Exp = seq(min(bgs_contour_data$Max_Log10_Exp, na.rm = TRUE),
+                      max(bgs_contour_data$Max_Log10_Exp, na.rm = TRUE),
+                      length.out = 200),
+  log10_length  = seq(min(bgs_contour_data$log10_length, na.rm = TRUE),
+                      max(bgs_contour_data$log10_length, na.rm = TRUE),
+                      length.out = 200)
+)
+bgs_grid$Predicted <- predict(bgs_gam, newdata = bgs_grid, type = "response")
+
+p_bgs_contour <- ggplot(bgs_grid, aes(x = Max_Log10_Exp, y = log10_length)) +
+  geom_raster(aes(fill = Predicted), interpolate = TRUE) +
+  geom_contour(aes(z = Predicted), colour = "grey30",
+               linewidth = 0.4, bins = 12) +
+  scale_fill_gradientn(
+    colours = rev(c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                    "#FEE8C8", "#FDBB84", "#E34A33")),
+    name = expression(pi["0-fold"])
+  ) +
+  labs(
+    title = expression("Nonsynonymous Diversity (" * pi["0-fold"] * ") Surface"),
+    subtitle = "Background selection: pi decreases with expression (purifying selection)",
+    x = expression(log[10](Max~Expression~CPM)),
+    y = expression(log[10](Gene~Length~"(nt)"))
+  ) +
+  theme_custom() +
+  theme(legend.position = "right", panel.grid = element_blank())
+
+ggsave("./results/Pi_0fold_contour_exp_x_length.pdf",
+       p_bgs_contour, width = 9, height = 7)
+cat("Saved: ./results/Pi_0fold_contour_exp_x_length.pdf\n")
+
 # Memory cleanup: Section 12 plot objects and temporary subsets ---
 # Keeping: pi_nonlinearity_results, pi_models, pi_selection,
 #          pi_nonlinearity_results_s, pi_models_s, pi_selection_s,
@@ -2891,7 +3210,10 @@ rm(pi_selection_winner, pi_secection_winner_s,
    preferred_selection_winner, confounder_model_gam,
    predictors, predictors_s, predictors_p,
    top5_preferred, middle_preferred, bottom5_preferred,
-   p_boxplot_preferred, p_preferred_median, p_surface_pref, plot_data_pref)
+   p_boxplot_preferred, p_preferred_median, p_surface_pref, plot_data_pref,
+   contour_data, contour_gam, pred_grid_pref, p_pref_contour,
+   bgs_data, bgs_binned, bgs_long, bgs_contour_data,
+   bgs_gam, bgs_grid, p_bgs, p_ratio, p_bgs_contour, cor_0fold)
 gc()
 
 ## *****************************************************************************
@@ -2942,7 +3264,7 @@ fourfold_per_gene <- fourfold_long |>
 # Merge with expression data
 fourfold_with_expr <- integrated_data |>
   dplyr::select(Gene_name, Max_Log10_Exp, Expression_Group,
-                Geom_Mean_CPM, CDS_length_nt) |>
+                Geom_Mean_CPM, CDS_length_nt, S_ROC) |>
   dplyr::inner_join(fourfold_per_gene, by = "Gene_name") |>
   dplyr::filter(Total_4fold >= 20)  # Minimum for reliable composition estimates
 
@@ -3117,13 +3439,17 @@ compartment_order <- c(
 
 # 2. Prepare the Data
 plot_data <- pi_compartment |>
-  # Remove the 'all' aggregate so we can see the components clearly
-  dplyr::filter(Nuc_Category %in% c("AT", "C", "G")) |> 
+  dplyr::filter(Nuc_Category %in% c("all", "AT", "C", "G")) |> 
   dplyr::mutate(
-    # Apply the logical order
+    # Rename 'all' to 'Overall' for a cleaner legend
+    Nuc_Category = ifelse(Nuc_Category == "all", "Overall", Nuc_Category),
+    
+    # Apply the logical order for compartments
     Compartment = factor(Compartment, levels = compartment_order),
-    # Ensure Nucleotides are ordered for consistency (AT = Baseline)
-    Nuc_Category = factor(Nuc_Category, levels = c("AT", "C", "G"))
+    
+    # Ensure Nucleotides are ordered for consistency in the plot
+    # Placing Overall first, followed by the background (AT), then active (C, G)
+    Nuc_Category = factor(Nuc_Category, levels = c("Overall", "AT", "C", "G"))
   )
 
 # 3. Create the Plot
@@ -3144,7 +3470,8 @@ pi_compart <- ggplot(plot_data, aes(x = Compartment, y = Pi_mean, fill = Nuc_Cat
   # Use Gray for AT (Background) and colors for C/G (Active)
   scale_fill_manual(values = c("AT" = "gray80", 
                                "C" = "#E41A1C", # Red (High Mutation)
-                               "G" = "#377EB8"), # Blue
+                               "G" = "#377EB8", # Blue
+                               "Overall" = "yellow"), # Match genomewide
                     name = "Nucleotide") +
   
   # D. Aesthetics
@@ -3161,13 +3488,181 @@ pi_compart <- ggplot(plot_data, aes(x = Compartment, y = Pi_mean, fill = Nuc_Cat
 ggsave("./results/diversity_boxplot_improved.pdf",
        pi_compart, width = 10, height = 6)
 
+# ADDITIVITY VERIFICATION ----
+# Pi_component(AT) + Pi_component(C) + Pi_component(G) + Pi_component(CG) = Pi(all)
+# Pi_component = Pi_sum_category / Sites_all (additive contribution to total pi)
+
+additivity_check <- pi_compartment |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron")) |>
+  dplyr::group_by(Chromosome, Compartment) |>
+  dplyr::summarize(
+    Pi_all = Pi_sum[Nuc_Category == "all"],
+    Sites_all = Sites[Nuc_Category == "all"],
+    Sum_components = sum(Pi_sum[Nuc_Category != "all"]),
+    Residual = abs(Pi_all - Sum_components),
+    .groups = "drop"
+  )
+
+cat("\n=== Additivity Verification: Pi_all == Pi(C) + Pi(G) + Pi(AT) + Pi(CG) ===\n")
+cat(sprintf("Max residual across all chromosome x compartment: %.2e\n",
+            max(additivity_check$Residual)))
+stopifnot(all(additivity_check$Residual < 1e-4))
+cat("Additivity confirmed.\n")
+
+# DECOMPOSITION DEMONSTRATION ----
+# Prove that the apparently high per-site pi at GC-segregating sites (~5%)
+# and the low per-site pi at AT-only sites (~0.5%) are perfectly consistent 
+# with the modest overall pi (~3%) once we account for site composition.
+#
+# Key identity:  Pi(overall) = f_GC * Pi(GC) + f_AT * Pi(AT)
+# where f_GC, f_AT are the fraction of sites in each category.
+
+decomp <- pi_compartment |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron"),
+                Nuc_Category != "all") |>
+  dplyr::mutate(Site_Type = ifelse(Nuc_Category == "AT", "AT_Only", "GC_Segregating")) |>
+  dplyr::group_by(Chromosome, Compartment, Site_Type) |>
+  dplyr::summarize(Pi_sum = sum(Pi_sum), Sites = sum(Sites), .groups = "drop")
+
+# Add the "all" row for comparison
+decomp_all <- pi_compartment |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron"),
+                Nuc_Category == "all") |>
+  dplyr::select(Chromosome, Compartment, Sites_all = Sites, Pi_overall = Pi_mean)
+
+decomp <- decomp |>
+  dplyr::left_join(decomp_all, by = c("Chromosome", "Compartment")) |>
+  dplyr::mutate(
+    # Per-site pi within this site type
+    Pi_per_site = Pi_sum / Sites,
+    # Fraction of total sites belonging to this site type
+    Fraction_of_sites = Sites / Sites_all,
+    # Contribution to overall pi = fraction × per-site pi
+    Contribution_to_overall = Fraction_of_sites * Pi_per_site
+  )
+
+# Verify the identity for every chromosome × compartment
+decomp_verify <- decomp |>
+  dplyr::group_by(Chromosome, Compartment) |>
+  dplyr::summarize(
+    Pi_overall = Pi_overall[1],
+    Reconstructed = sum(Contribution_to_overall),
+    Residual = abs(Pi_overall - Reconstructed),
+    .groups = "drop"
+  )
+
+cat("\n=== Decomposition Proof: Pi(overall) = f_GC * Pi(GC) + f_AT * Pi(AT) ===\n")
+cat(sprintf("Max reconstruction residual: %.2e (should be ~0)\n",
+            max(decomp_verify$Residual)))
+
+# Print an example (genome-wide average across chromosomes)
+decomp_summary <- decomp |>
+  dplyr::group_by(Compartment, Site_Type) |>
+  dplyr::summarize(
+    Mean_fraction = mean(Fraction_of_sites),
+    Mean_per_site_pi = mean(Pi_per_site),
+    Mean_contribution = mean(Contribution_to_overall),
+    .groups = "drop"
+  )
+
+cat("\n--- Average decomposition across 14 chromosomes ---\n")
+cat(sprintf("%-25s  %-18s  Frac_sites  Pi_per_site  Contribution\n",
+            "Compartment", "Site_Type"))
+for (i in seq_len(nrow(decomp_summary))) {
+  row <- decomp_summary[i, ]
+  cat(sprintf("%-25s  %-18s  %.3f       %.5f      %.5f\n",
+              row$Compartment, row$Site_Type,
+              row$Mean_fraction, row$Mean_per_site_pi, row$Mean_contribution))
+}
+
+# Add the totals per compartment
+decomp_totals <- decomp_summary |>
+  dplyr::group_by(Compartment) |>
+  dplyr::summarize(Total_Pi = sum(Mean_contribution), .groups = "drop")
+cat("\nReconstructed overall pi:\n")
+for (i in seq_len(nrow(decomp_totals))) {
+  cat(sprintf("  %s: %.5f\n", decomp_totals$Compartment[i], decomp_totals$Total_Pi[i]))
+}
+
+# Stacked bar: show how overall pi decomposes into GC and AT contributions
+decomp_plot_data <- decomp |>
+  dplyr::mutate(Compartment_label = factor(
+    ifelse(Compartment == "intron", "Intron", "Exon (4-fold)"),
+    levels = c("Intron", "Exon (4-fold)")
+  )) |>
+  dplyr::group_by(Compartment_label, Site_Type) |>
+  dplyr::summarize(
+    Mean_per_site_pi = mean(Pi_per_site),
+    Mean_fraction = mean(Fraction_of_sites),
+    Mean_contribution = mean(Contribution_to_overall),
+    .groups = "drop"
+  )
+
+# Panel A: Per-site pi
+p_decomp_A <- ggplot(decomp_plot_data,
+                     aes(x = Compartment_label, y = Mean_per_site_pi, fill = Site_Type)) +
+  geom_col(position = "dodge", width = 0.6) +
+  scale_fill_manual(values = c("AT_Only" = "#999999", "GC_Segregating" = "#C0392B"),
+                    labels = c("AT_Only" = "AT-only sites",
+                               "GC_Segregating" = "GC-segregating sites")) +
+  labs(title = "A) Per-site pi (within each site type)",
+       subtitle = "GC sites look 'alarming' at ~5%",
+       y = expression("Per-site " * pi), x = NULL, fill = NULL) +
+  theme_custom() + theme(legend.position = "top")
+
+# Panel B: Fraction of sites
+p_decomp_B <- ggplot(decomp_plot_data,
+                     aes(x = Compartment_label, y = Mean_fraction, fill = Site_Type)) +
+  geom_col(position = "stack", width = 0.5) +
+  scale_fill_manual(values = c("AT_Only" = "#999999", "GC_Segregating" = "#C0392B"),
+                    labels = c("AT_Only" = "AT-only",
+                               "GC_Segregating" = "GC-segregating")) +
+  labs(title = "B) Site composition (dilution factor)",
+       subtitle = "Each type is ~50% of 4-fold sites",
+       y = "Fraction of sites", x = NULL, fill = NULL) +
+  theme_custom() + theme(legend.position = "top")
+
+# Panel C: Contribution to overall pi
+p_decomp_C <- ggplot(decomp_plot_data,
+                     aes(x = Compartment_label, y = Mean_contribution, fill = Site_Type)) +
+  geom_col(position = "stack", width = 0.5) +
+  scale_fill_manual(values = c("AT_Only" = "#999999", "GC_Segregating" = "#C0392B"),
+                    labels = c("AT_Only" = "AT-only",
+                               "GC_Segregating" = "GC-segregating")) +
+  labs(title = "C) Contribution to overall pi",
+       subtitle = expression(pi[overall] == f[GC] %.% pi[GC] + f[AT] %.% pi[AT]),
+       y = expression("Contribution to " * pi[overall]), x = NULL, fill = NULL) +
+  theme_custom() + theme(legend.position = "top")
+
+# Combined 3-panel figure
+p_decomp_combined <- p_decomp_A + p_decomp_B + p_decomp_C +
+  plot_layout(ncol = 3) +
+  plot_annotation(
+    title = "Why ~5% pi at GC sites is expected: a site-composition decomposition",
+    subtitle = "High per-site GC diversity is diluted by ~50% AT-only sites to yield modest overall pi (~3%)",
+    theme = theme(plot.title = element_text(face = "bold", size = 14),
+                  plot.subtitle = element_text(size = 11))
+  )
+
+ggsave("./results/Pi_decomposition_proof.pdf", p_decomp_combined,
+       width = 14, height = 5.5)
+
+message("Decomposition figure saved: results/Pi_decomposition_proof.pdf")
+
+# Cleanup decomposition intermediates
+rm(decomp, decomp_all, decomp_verify, decomp_summary, decomp_totals,
+   decomp_plot_data, p_decomp_A, p_decomp_B, p_decomp_C, p_decomp_combined)
+
 # HUMP EFFECT TEST ----
 # 1. Aggregate Data by "Selection Potential"
 # We group C, G, and CG as "GC_Segregating" (Where selection acts)
 # We keep AT as "AT_Only" (Where selection is absent/invisible)
+# IMPORTANT: exclude Nuc_Category == "all" to avoid double-counting
+# (the "all" row is the total that already contains C+G+AT+CG)
 
 hump_test_data <- pi_compartment |>
-  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron")) |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron"),
+                Nuc_Category != "all") |>
   dplyr::mutate(Site_Type = ifelse(Nuc_Category == "AT", "AT_Only", "GC_Segregating")) |>
   dplyr::group_by(Compartment, Site_Type) |>
   summarise(
@@ -3192,44 +3687,86 @@ ggsave("./results/diversity_hump_test_by_compartment.pdf", width = 7, height = 5
 
 # 2) Formal testing
 
-# Create the summary dataframe directly from your results
-plot_data_hump <- data.frame(
-  Compartment = factor(c("Intron", "Intron", "Exon (4-fold)", "Exon (4-fold)"),
-                       levels = c("Intron", "Exon (4-fold)")),
-  Site_Type = c("AT_Only", "GC_Segregating", "AT_Only", "GC_Segregating"),
-  Weighted_Pi = c(0.00504, 0.0244, 0.00651, 0.0365)
-)
+# Build per-chromosome data for proper mean ± CI visualization
+hump_per_chrom <- pi_compartment |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron"),
+                Nuc_Category != "all") |>
+  dplyr::mutate(Site_Type = ifelse(Nuc_Category == "AT", "AT_Only", "GC_Segregating")) |>
+  dplyr::group_by(Chromosome, Compartment, Site_Type) |>
+  dplyr::summarize(
+    Pi_weighted = sum(Pi_sum) / sum(Sites),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    Compartment_label = factor(
+      ifelse(Compartment == "intron", "Intron", "Exon (4-fold)"),
+      levels = c("Intron", "Exon (4-fold)")
+    )
+  )
 
-# Plot: The Interaction Effect
-p_hump <- ggplot(plot_data_hump, aes(x = Compartment, y = Weighted_Pi, group = Site_Type, color = Site_Type)) +
-  
-  # Lines connecting the points highlight the differing slopes
-  geom_line(size = 1.2) +
-  geom_point(size = 5) +
-  
+# Summary: mean ± 95% CI across chromosomes
+hump_summary <- hump_per_chrom |>
+  dplyr::group_by(Compartment_label, Site_Type) |>
+  dplyr::summarize(
+    Mean_Pi = mean(Pi_weighted),
+    SD_Pi = sd(Pi_weighted),
+    n = dplyr::n(),
+    SE_Pi = SD_Pi / sqrt(n),
+    CI_lo = Mean_Pi - qt(0.975, n - 1) * SE_Pi,
+    CI_hi = Mean_Pi + qt(0.975, n - 1) * SE_Pi,
+    .groups = "drop"
+  )
+
+# Plot: Mean ± 95% CI with individual chromosome points and connecting lines
+p_hump <- ggplot(hump_summary,
+                 aes(x = Compartment_label, y = Mean_Pi,
+                     color = Site_Type, group = Site_Type)) +
+  # Connecting lines between compartments
+  geom_line(linewidth = 1.2) +
+  # 95% CI error bars
+  geom_errorbar(aes(ymin = CI_lo, ymax = CI_hi),
+                width = 0.08, linewidth = 0.8) +
+  # Mean points (larger, filled)
+  geom_point(size = 4) +
+  # Individual chromosome values (smaller, semi-transparent)
+  geom_point(data = hump_per_chrom,
+             aes(x = Compartment_label, y = Pi_weighted,
+                 color = Site_Type, group = Site_Type),
+             position = position_dodge(width = 0.15),
+             size = 1.5, alpha = 0.4, shape = 16) +
   # Formatting
-  scale_color_manual(values = c("AT_Only" = "gray60", "GC_Segregating" = "firebrick")) +
-  labs(title = "Evidence for Weak Selection (The 'Hump' Effect)",
-       subtitle = "Selection opposing Mutational Bias boosts diversity specifically at GC sites",
-       y = "Nucleotide Diversity (Pi)",
-       x = NULL,
-       color = "Site Category") +
+  scale_color_manual(
+    values = c("AT_Only" = "#999999", "GC_Segregating" = "#C0392B"),
+    labels = c("AT_Only" = "AT-only sites",
+               "GC_Segregating" = "GC-segregating sites (C + G + CG)")
+  ) +
+  labs(
+    title = "Evidence for Weak Selection (The 'Hump' Effect)",
+    subtitle = "Mean ± 95% CI across 14 chromosomes | Points = individual chromosomes",
+    y = expression("Per-site Nucleotide Diversity (" * pi * ")"),
+    x = NULL,
+    color = NULL
+  ) +
   theme_custom() +
-  theme(axis.text = element_text(size = 12, face = "bold"),
-        legend.position = "top")
+  theme(axis.text.x = element_text(size = 12, face = "bold"),
+        legend.position = "top",
+        legend.text = element_text(size = 10))
 
 ggsave("./results/Hump_Hypothesis_Confirmation.pdf", p_hump, width = 8, height = 6)
 
 # Statistical test
 
 # 1. Prepare Data with Aggregation step
+# IMPORTANT: exclude Nuc_Category == "all" before grouping to avoid
+# contaminating GC_Segregating with the total row (which already includes AT)
 paired_test_data <- pi_compartment |>
-  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron")) |>
+  dplyr::filter(Compartment %in% c("nonfirst_exon_4fold", "intron"),
+                Nuc_Category != "all") |>
   
-  # Create the new categories
+  # Create the new categories (now "all" is excluded, so only C/G/CG -> GC_Segregating)
   dplyr::mutate(Site_Type = ifelse(Nuc_Category == "AT", "AT_Only", "GC_Segregating")) |>
   
-  # CRITICAL FIX: Aggregate the multiple GC rows (C, G, CG) into one value per Chromosome
+  # Aggregate the multiple GC rows (C, G, CG) into one value per Chromosome
   dplyr::group_by(Chromosome, Compartment, Site_Type) |>
   dplyr::summarise(
     # Recalculate weighted mean: Sum of Pi / Sum of Sites
@@ -3261,8 +3798,8 @@ print(t_test_result)
 # Memory cleanup: Section 14 plot objects and raw data ---
 # Keeping: overall_pi_stats, t_test_result, boost_comparison, hump_test_data
 rm(pi_compartment, compartment_order, pi_compart,
-   plot_data_hump, p_hump,
-   paired_test_data, plot_data)
+   hump_per_chrom, hump_summary, p_hump,
+   paired_test_data, plot_data, additivity_check)
 gc()
 
 # ******************************************************************************
@@ -5235,21 +5772,6 @@ for (aa in unique(contour_all$AA)) {
 
 cat(sprintf("  Saved %d individual AA contour plots\n", 
             length(unique(contour_all$AA))))
-
-# ---- 16.12e: Interpretation ----
-cat("\n", strrep("-", 60), "\n", sep = "")
-cat("PER-AMINO-ACID DECOMPOSITION SUMMARY\n")
-cat(strrep("-", 60), "\n")
-cat("Key question: Do G-ending preferred codons (Val=GTG, etc.) increase\n")
-cat("with expression, or does C always outcompete G within-family?\n\n")
-cat("NOTE: Arg (CGN) excluded — the ROC-preferred codon AGG belongs to\n")
-cat("  the 2-fold family (AGR) and cannot appear at 4-fold CGN sites.\n")
-cat("  All Arg CGN sites had Preferred_Freq = 0 (structural artefact).\n\n")
-cat("If ALL G-ending AAs decline -> the aggregate G decline is real,\n")
-cat("  G codons receive no translational selection support.\n")
-cat("If SOME G-ending AAs increase -> selection does act on G at those AAs,\n")
-cat("  and the aggregate decline is driven by specific families.\n")
-cat(strrep("-", 60), "\n\n")
 
 # Section 16 cleanup ----
 rm(codon_4fold, codon_4fold_noarg, gene_info_16, freq_clean, fourfold_simple,
