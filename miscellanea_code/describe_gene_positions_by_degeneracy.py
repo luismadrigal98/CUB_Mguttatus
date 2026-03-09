@@ -190,6 +190,7 @@ def parse_gff3(gff3_file, chrom):
     
     Returns:
         genes: dict of gene_id -> {strand, cds_regions, utr5, utr3, introns}
+        parse_stats: dict with counters for features skipped/kept
     """
     genes = defaultdict(lambda: {
         'strand': '+',
@@ -198,6 +199,13 @@ def parse_gff3(gff3_file, chrom):
         'utr3': [],
         'gene_range': None
     })
+
+    parse_stats = {
+        'non_primary_features_skipped': 0,
+        'genes_without_primary_isoform': set(),
+        'genes_with_any_parent_feature': set(),
+        'genes_with_primary_parent_feature': set()
+    }
     
     found_chroms = set()
     
@@ -236,9 +244,12 @@ def parse_gff3(gff3_file, chrom):
                 parts = parent.split('.')
                 if len(parts) >= 3:
                     transcript_num = parts[2]
+                    parse_stats['genes_with_any_parent_feature'].add(parts[1])
                     # Skip non-primary transcripts
                     if transcript_num != '1':
+                        parse_stats['non_primary_features_skipped'] += 1
                         continue
+                    parse_stats['genes_with_primary_parent_feature'].add(parts[1])
                     gene_id = parts[1]  # Extract 01G000100
                 else:
                     gene_id = parent.split('.')[1] if '.' in parent else parent
@@ -269,6 +280,11 @@ def parse_gff3(gff3_file, chrom):
         genes[gene_id]['cds'].sort()
         genes[gene_id]['utr5'].sort()
         genes[gene_id]['utr3'].sort()
+
+    parse_stats['genes_without_primary_isoform'] = (
+        parse_stats['genes_with_any_parent_feature'] -
+        parse_stats['genes_with_primary_parent_feature']
+    )
     
     # Error checking
     if len(genes) == 0:
@@ -281,7 +297,7 @@ def parse_gff3(gff3_file, chrom):
         print(f"\nTip: Check that chromosome name matches exactly (case-sensitive)", file=sys.stderr)
         sys.exit(1)
     
-    return genes
+    return genes, parse_stats
 
 def validate_cds_sequences(genes, genome_seq, cds_seqs, max_genes_to_check=20):
     """
@@ -401,29 +417,41 @@ def annotate_positions(chrom, genes, genome_seq, cds_seqs):
     
     Returns:
         annotations: list of (chr, gene, pos, base, codon_position, degeneracy, ref_codon, amino_acid)
+        annotation_stats: dict with gene-level skip counts and examples
     """
     annotations = []
-    
+    annotation_stats = {
+        'genes_seen': 0,
+        'genes_with_no_cds_regions': set(),
+        'genes_missing_in_cds_fasta': set(),
+        'genes_cds_length_mismatch': set(),
+        'genes_incomplete_terminal_codon': set(),
+        'genes_annotated': set()
+    }
+
     for gene_id, gene_info in genes.items():
+        annotation_stats['genes_seen'] += 1
         strand = gene_info['strand']
         cds_regions = gene_info['cds']
-        
+
         if not cds_regions:
+            annotation_stats['genes_with_no_cds_regions'].add(gene_id)
             continue
-        
+
         # Get CDS sequence
         if gene_id not in cds_seqs:
             print(f"Warning: Gene {gene_id} not found in CDS FASTA", file=sys.stderr)
+            annotation_stats['genes_missing_in_cds_fasta'].add(gene_id)
             continue
-        
+
         cds_seq = cds_seqs[gene_id]
-        
+
         # Build position -> (codon, codon_position) mapping
         cds_positions = []
         for start, end in cds_regions:
             for pos in range(start, end + 1):
                 cds_positions.append(pos)
-        
+
         # For minus strand, reverse positions so CDS[0] maps to highest genomic coordinate
         # This is necessary because:
         # 1. CDS FASTA sequences are already in gene orientation (5'→3')
@@ -431,7 +459,7 @@ def annotate_positions(chrom, genes, genome_seq, cds_seqs):
         # 3. After reversal: cds_positions[0] = highest coordinate = START codon position
         if strand == '-':
             cds_positions = cds_positions[::-1]
-        
+
         # Check if CDS length matches
         if len(cds_positions) != len(cds_seq):
             # This is expected for genes with overlapping isoforms or phase issues
@@ -441,43 +469,50 @@ def annotate_positions(chrom, genes, genome_seq, cds_seqs):
                 print(f"Info: Gene {gene_id} skipped - likely has multiple isoforms (genomic={len(cds_positions)}, fasta={len(cds_seq)})", file=sys.stderr)
             else:
                 print(f"Warning: Gene {gene_id} CDS length mismatch: genomic={len(cds_positions)}, fasta={len(cds_seq)}", file=sys.stderr)
+            annotation_stats['genes_cds_length_mismatch'].add(gene_id)
             continue
-        
+
+        gene_had_annotation = False
         # Annotate each position
         for i, genomic_pos in enumerate(cds_positions):
             codon_idx = i // 3
             codon_pos = i % 3
-            
+
             # Get codon from CDS sequence
             codon_start = codon_idx * 3
             codon_end = codon_start + 3
-            
+
             if codon_end > len(cds_seq):
                 print(f"Warning: Incomplete codon for gene {gene_id} at position {genomic_pos}", file=sys.stderr)
+                annotation_stats['genes_incomplete_terminal_codon'].add(gene_id)
                 break
-            
+
             codon = cds_seq[codon_start:codon_end]
-            
+
             # Get genomic base from reference genome (always from + strand)
             # This matches what VCF reports
             genomic_base = genome_seq[genomic_pos - 1]  # Convert to 0-indexed
-            
+
             # Note: genomic_base is kept as reference strand (for VCF matching)
             # The codon from CDS FASTA is already in gene orientation (5'→3')
-            
+
             # Classify degeneracy using TRUE degeneracy testing
             degeneracy = classify_degeneracy(codon, codon_pos)
-            
+
             # Get amino acid
             amino_acid = translate_codon(codon)
-            
+
             # 1-indexed codon position for output
             codon_position_label = codon_pos + 1
-            
-            annotations.append((chrom, gene_id, genomic_pos, genomic_base, 
-                              codon_position_label, degeneracy, codon, amino_acid, strand))
-    
-    return annotations
+
+            annotations.append((chrom, gene_id, genomic_pos, genomic_base,
+                                codon_position_label, degeneracy, codon, amino_acid, strand))
+            gene_had_annotation = True
+
+        if gene_had_annotation:
+            annotation_stats['genes_annotated'].add(gene_id)
+
+    return annotations, annotation_stats
 
 def main():
     if len(sys.argv) != 5:
@@ -526,15 +561,57 @@ def main():
     print(f"  Loaded {len(cds_seqs)} genes")
     
     print("Parsing GFF3...")
-    genes = parse_gff3(gff3_file, chrom)
+    genes, parse_stats = parse_gff3(gff3_file, chrom)
     print(f"  Found {len(genes)} genes")
+
+    if parse_stats['non_primary_features_skipped'] > 0:
+        print(
+            f"Warning: Skipped {parse_stats['non_primary_features_skipped']} non-primary transcript features (.2/.3/etc.)",
+            file=sys.stderr
+        )
+
+    if parse_stats['genes_without_primary_isoform']:
+        skipped_genes = sorted(parse_stats['genes_without_primary_isoform'])
+        print(
+            f"Warning: {len(skipped_genes)} genes skipped - no primary isoform (.1) in GFF3 Parent features",
+            file=sys.stderr
+        )
+        print(
+            f"  Examples: {', '.join(skipped_genes[:10])}",
+            file=sys.stderr
+        )
     
     # Validate CDS sequences
     _ = validate_cds_sequences(genes, genome_seq, cds_seqs, max_genes_to_check=20)
     
     print("Annotating positions...")
-    annotations = annotate_positions(chrom, genes, genome_seq, cds_seqs)
+    annotations, annotation_stats = annotate_positions(chrom, genes, genome_seq, cds_seqs)
     print(f"  Annotated {len(annotations)} positions")
+
+    # Consolidated gene dropout summary for easier debugging
+    total_seen = annotation_stats['genes_seen']
+    total_annotated = len(annotation_stats['genes_annotated'])
+    total_dropped = total_seen - total_annotated
+    print(
+        f"Annotation summary: annotated={total_annotated}, dropped={total_dropped}, total={total_seen}",
+        file=sys.stderr
+    )
+    print(
+        f"  Dropped (no CDS regions): {len(annotation_stats['genes_with_no_cds_regions'])}",
+        file=sys.stderr
+    )
+    print(
+        f"  Dropped (missing in CDS FASTA): {len(annotation_stats['genes_missing_in_cds_fasta'])}",
+        file=sys.stderr
+    )
+    print(
+        f"  Dropped (CDS length mismatch): {len(annotation_stats['genes_cds_length_mismatch'])}",
+        file=sys.stderr
+    )
+    print(
+        f"  Truncated (incomplete terminal codon): {len(annotation_stats['genes_incomplete_terminal_codon'])}",
+        file=sys.stderr
+    )
     
     # Write output
     output_file = f"{chrom}.genic_bases.annotated.txt"

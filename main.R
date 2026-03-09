@@ -3455,38 +3455,47 @@ plot_data <- pi_compartment |>
 # 3. Create the Plot
 pi_compart <- ggplot(plot_data, aes(x = Compartment, y = Pi_mean, fill = Nuc_Category)) +
   
-  # A. Boxplots side-by-side (Dodged)
-  # outlier.shape = NA hides the "duplicate" points since we add jitter below
+  # A. Jittered Points FIRST (so they sit behind the boxes)
+  # Mapped color to Nuc_Category to remove the heavy black blobs
+  geom_point(aes(color = Nuc_Category), 
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8), 
+             size = 1.2, alpha = 0.5) +
+  
+  # B. Boxplots ON TOP
   geom_boxplot(position = position_dodge(width = 0.8), 
                outlier.shape = NA, 
-               alpha = 0.7) +
+               alpha = 0.8,
+               color = "black",       # Keeps the box outline crisp
+               linewidth = 0.4) +     # Thinner borders prevent clunkiness
   
-  # B. Jittered Points (The Chromosomes)
-  # This shows the actual variance across the genome
-  geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8), 
-             size = 1.2, alpha = 0.6, color = "black") +
-  
-  # C. Colors
-  # Use Gray for AT (Background) and colors for C/G (Active)
-  scale_fill_manual(values = c("AT" = "gray80", 
-                               "C" = "#E41A1C", # Red (High Mutation)
-                               "G" = "#377EB8", # Blue
-                               "Overall" = "yellow"), # Match genomewide
+  # C. Colors & Fills
+  scale_fill_manual(values = c("Overall" = "#F0E442", # Softer, colorblind-friendly yellow
+                               "AT" = "gray80",      
+                               "C" = "#E41A1C",      
+                               "G" = "#377EB8"),     
                     name = "Nucleotide") +
+  
+  # Use slightly darker shades for the background points
+  scale_color_manual(values = c("Overall" = "#C5B91B", 
+                                "AT" = "gray50",      
+                                "C" = "#B11315",      
+                                "G" = "#265A84"),     
+                     guide = "none") + # Hides the redundant point-color legend
   
   # D. Aesthetics
   labs(title = "Nucleotide Diversity (Pi) by Genomic Compartment",
-       subtitle = "Separation of C/G hypermutability from AT background",
+       subtitle = "Overall Pi compared to C/G hypermutability and AT background",
        y = "Mean Nucleotide Diversity",
        x = NULL) +
-  theme_custom() +
+  theme_custom() + 
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
     legend.position = "top"
   )
 
+# E. Increased width to 12
 ggsave("./results/diversity_boxplot_improved.pdf",
-       pi_compart, width = 10, height = 6)
+       pi_compart, width = 12, height = 6)
 
 # ADDITIVITY VERIFICATION ----
 # Pi_component(AT) + Pi_component(C) + Pi_component(G) + Pi_component(CG) = Pi(all)
