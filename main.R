@@ -2697,54 +2697,57 @@ if (has_mutation_types) {
                                          "C\u2194G", "C\u2194T", "G\u2194T"))
     )
   
-  # Plot 3a: Absolute pi component for each mutation type (two bars side by side)
+  # Plot 3a: Absolute pi component for each mutation type (PIE CHART)
   p_mutation_abs <- ggplot(focus_long, 
-                           aes(x = Mutation_Label, y = Pi_component, fill = Group)) +
-    geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-    scale_fill_manual(values = c(setNames("#377EB8", 
-                                          paste0("Bin ", max_regular_bin, " (highest expression)")),
-                                 "Selection (S > 1)" = "#E41A1C")) +
+                           aes(x = "", y = Pi_component, fill = Mutation_Label)) +
+    geom_col(width = 1, color = "white") +
+    coord_polar("y", start = 0) +
+    facet_wrap(~ Group) +
+    scale_fill_brewer(palette = "Set2") + 
+    # FIX: Pushed text outward (vjust = 0.8) and added a clean background label
+    geom_label(aes(label = scales::scientific(Pi_component, digits = 2)), 
+               position = position_stack(vjust = 0.8), 
+               size = 3.5, 
+               show.legend = FALSE,   # Keeps the legend clean
+               label.size = NA,       # Removes the harsh border around the label
+               alpha = 0.7) +         # Makes the label background slightly transparent
     labs(
-      title = expression(paste("4-fold ", pi, " by Mutation Type: High Expression vs Selection Group")),
+      title = expression(paste("4-fold ", pi, " by Mutation Type: High Expression vs Selection")),
       subtitle = "Absolute additive contribution of each segregating pair",
-      x = "Segregating Pair",
-      y = expression(paste(pi, " component (4-fold)")),
-      fill = NULL
+      fill = "Segregating Pair"
     ) +
-    theme_custom() +
-    theme(legend.position = "top",
-          axis.text.x = element_text(size = 11))
+    theme_void() + 
+    theme(legend.position = "right",
+          strip.text = element_text(size = 12, face = "bold", margin = margin(b = 10)))
   
   ggsave("./results/pi_4fold_mutation_type_bin23_vs_selection.pdf",
          p_mutation_abs, width = 8, height = 5)
   cat("\u2713 Saved: ./results/pi_4fold_mutation_type_bin23_vs_selection.pdf\n")
   
-  # Plot 3b: Relative contribution (proportion of total pi)
+  # Plot 3b: Relative contribution (PIE CHART)
   p_mutation_rel <- ggplot(focus_long, 
-                           aes(x = Mutation_Label, y = Relative_Contribution, fill = Group)) +
-    geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-    scale_fill_manual(values = c(setNames("#377EB8", 
-                                          paste0("Bin ", max_regular_bin, " (highest expression)")),
-                                 "Selection (S > 1)" = "#E41A1C")) +
-    scale_y_continuous(labels = scales::percent_format()) +
+                           aes(x = "", y = Relative_Contribution, fill = Mutation_Label)) +
+    geom_col(width = 1, color = "white") +
+    coord_polar("y", start = 0) +
+    facet_wrap(~ Group) +
+    scale_fill_brewer(palette = "Set2") +
+    # Add percentage labels
+    geom_text(aes(label = scales::percent(Relative_Contribution, accuracy = 1)), 
+              position = position_stack(vjust = 0.5), size = 3) +
     labs(
       title = expression(paste("Relative Contribution to 4-fold ", pi)),
       subtitle = "Proportion of total diversity attributable to each segregating pair",
-      x = "Segregating Pair",
-      y = expression(paste("Fraction of total ", pi)),
-      fill = NULL
+      fill = "Segregating Pair"
     ) +
-    theme_custom() +
-    theme(legend.position = "top",
-          axis.text.x = element_text(size = 11))
+    theme_void() +
+    theme(legend.position = "right",
+          strip.text = element_text(size = 12, face = "bold", margin = margin(b = 10)))
   
   ggsave("./results/pi_4fold_mutation_type_relative_bin23_vs_selection.pdf",
          p_mutation_rel, width = 8, height = 5)
   cat("\u2713 Saved: ./results/pi_4fold_mutation_type_relative_bin23_vs_selection.pdf\n")
   
   # --- CG-segregating vs AT-segregating comparison ---
-  # CG-segregating: any mutation involving C or G (AC, AG, CG, CT, GT)
-  # AT-segregating: only A<->T
   cg_vs_at <- focus_bins |>
     dplyr::mutate(
       pi_CG_segregating = pi_AC + pi_AG + pi_CG + pi_CT + pi_GT,
@@ -2768,25 +2771,28 @@ if (has_mutation_types) {
                                          "AT-only\n(A\u2194T)"))
     )
   
-  # Plot 4: CG vs AT - absolute
-  p_cg_at_abs <- ggplot(cg_vs_at, aes(x = Category_Label, y = Pi_component, fill = Group)) +
-    geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-    scale_fill_manual(values = c(setNames("#377EB8", 
-                                          paste0("Bin ", max_regular_bin, " (highest expression)")),
-                                 "Selection (S > 1)" = "#E41A1C")) +
+  # Plot 4: CG vs AT - absolute (PIE CHART)
+  p_cg_at_abs <- ggplot(cg_vs_at, 
+                        aes(x = "", y = Pi_component, fill = Category_Label)) +
+    geom_col(width = 1, color = "white") +
+    coord_polar("y", start = 0) +
+    facet_wrap(~ Group) +
+    # Use stark contrasting colors to highlight the AT vs CG difference
+    scale_fill_manual(values = c("CG-segregating\n(A\u2194C, A\u2194G, C\u2194G, C\u2194T, G\u2194T)" = "#E41A1C",
+                                 "AT-only\n(A\u2194T)" = "gray70")) +
+    geom_text(aes(label = scales::percent(Relative, accuracy = 1)), 
+              position = position_stack(vjust = 0.5), size = 4, fontface = "bold") +
     labs(
       title = expression(paste("4-fold ", pi, ": CG-segregating vs AT-only")),
       subtitle = "CG-segregating sites dominate diversity; selection acts primarily on CG categories",
-      x = NULL,
-      y = expression(paste(pi, " component (4-fold)")),
-      fill = NULL
+      fill = "Site Category"
     ) +
-    theme_custom() +
-    theme(legend.position = "top",
-          axis.text.x = element_text(size = 10))
+    theme_void() +
+    theme(legend.position = "bottom",
+          strip.text = element_text(size = 12, face = "bold", margin = margin(b = 10)))
   
   ggsave("./results/pi_4fold_CG_vs_AT_segregating.pdf",
-         p_cg_at_abs, width = 7, height = 5)
+         p_cg_at_abs, width = 8, height = 5)
   cat("\u2713 Saved: ./results/pi_4fold_CG_vs_AT_segregating.pdf\n")
   
   # Print the decomposition
@@ -2795,9 +2801,6 @@ if (has_mutation_types) {
   
   rm(focus_bins, focus_long, cg_vs_at, max_regular_bin,
      p_mutation_abs, p_mutation_rel, p_cg_at_abs)
-  
-  rm(pi_by_mutation, pi_mutation_long, pi_check,
-     p_pi_by_mutation, p_pi_mutation_facet)
   
 } else {
   cat("\nNote: Mutation-type columns not found in pi data.\n")
