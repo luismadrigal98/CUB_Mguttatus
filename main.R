@@ -3811,6 +3811,169 @@ rm(pi_compartment, compartment_order, pi_compart,
    paired_test_data, plot_data, additivity_check)
 gc()
 
+## *****************************************************************************
+## 14.1) Pi along gene structure: exon/intron positional profile ----
+## _____________________________________________________________________________
+## Expectation: recombination is highest at the 5' end of genes, so pi at
+## neutral (4-fold, intron) sites should decline from first to later features.
+## This section reads the per-gene, per-exon/intron output produced by
+## calculate_pi_by_genomic_compartment.py --per-gene-output and creates a
+## mean ± 95% CI plot with interleaved exons and introns on the x-axis.
+
+message("\n=== Section 14.1: Pi along gene structure (exon/intron profile) ===\n")
+
+# --- Load data ---
+pi_gene_feature <- fread("data/all_chromosomes.pi_per_gene_feature.txt")
+
+cat(sprintf("Loaded %d rows covering %d genes\n",
+            nrow(pi_gene_feature),
+            length(unique(pi_gene_feature$Gene))))
+
+# --- Build an interleaved position label ---
+# For each gene, features are: exon 1, intron 1, exon 2, intron 2, ...
+# We assign a universal "Feature_Position" (1 = exon 1, 2 = intron 1, 3 = exon 2, ...):
+#   exon  N -> position 2*N - 1
+#   intron N -> position 2*N
+pi_gene_feature <- pi_gene_feature |>
+  dplyr::mutate(
+    Feature_Position = ifelse(Feature_Type == "exon",
+                              2L * Feature_Num - 1L,
+                              2L * Feature_Num)
+  )
+
+# --- Determine a reasonable feature cutoff ---
+# We keep features up to the position where at least 100 genes contribute
+# (to ensure stable mean ± CI estimates)
+min_genes_per_position <- 100
+
+# Use 4-fold for exons and 'all' for introns as reference for counting genes
+gene_counts <- pi_gene_feature |>
+  dplyr::filter(
+    (Feature_Type == "exon" & Degeneracy == "all") |
+    (Feature_Type == "intron" & Degeneracy == "all")
+  ) |>
+  dplyr::group_by(Feature_Position) |>
+  dplyr::summarize(n_genes = dplyr::n_distinct(Gene), .groups = "drop")
+
+max_position <- max(gene_counts$Feature_Position[gene_counts$n_genes >= min_genes_per_position])
+
+cat(sprintf("Using features up to position %d (exon %d / intron %d), requiring >= %d genes\n",
+            max_position,
+            ceiling(max_position / 2),
+            floor(max_position / 2),
+            min_genes_per_position))
+
+# --- Compute per-gene pi_mean for each feature position and degeneracy ---
+# Keep only categories of interest for exons: 0-fold, 2-fold, 3-fold, 4-fold, all
+# For introns: only 'all'
+plot_cats <- c("0-fold", "2-fold", "3-fold", "4-fold", "all")
+
+pi_filtered <- pi_gene_feature |>
+  dplyr::filter(
+    Feature_Position <= max_position,
+    Degeneracy %in% plot_cats,
+    Sites > 0
+  )
+
+# --- Summarize: mean ± 95% CI across genes for each Feature_Position x Degeneracy ---
+pi_summary <- pi_filtered |>
+  dplyr::group_by(Feature_Type, Feature_Num, Feature_Position, Degeneracy) |>
+  dplyr::summarize(
+    n_genes = dplyr::n(),
+    Mean_Pi = mean(Pi_mean, na.rm = TRUE),
+    SD_Pi = sd(Pi_mean, na.rm = TRUE),
+    SE_Pi = SD_Pi / sqrt(n_genes),
+    CI_lo = Mean_Pi - qt(0.975, n_genes - 1) * SE_Pi,
+    CI_hi = Mean_Pi + qt(0.975, n_genes - 1) * SE_Pi,
+    .groups = "drop"
+  )
+
+# --- Create feature labels for x-axis ---
+pi_summary <- pi_summary |>
+  dplyr::mutate(
+    Feature_Label = ifelse(Feature_Type == "exon",
+                           paste0("E", Feature_Num),
+                           paste0("I", Feature_Num)),
+    Feature_Label = factor(Feature_Label,
+                           levels = unique(Feature_Label[order(Feature_Position)]))
+  )
+
+# --- Separate into two panels: exon degeneracy categories and intron "all" ---
+exon_data <- pi_summary |> dplyr::filter(Feature_Type == "exon")
+intron_data <- pi_summary |> dplyr::filter(Feature_Type == "intron", Degeneracy == "all")
+
+# Combine the exon degeneracy data with intron data for a unified plot
+# Intron gets labelled as "intron" in the Degeneracy column for the legend
+intron_data_plot <- intron_data |> dplyr::mutate(Degeneracy = "intron")
+
+combined_data <- dplyr::bind_rows(exon_data, intron_data_plot) |>
+  dplyr::mutate(
+    Degeneracy = factor(Degeneracy,
+                        levels = c("0-fold", "2-fold", "3-fold", "4-fold", "all", "intron"))
+  )
+
+# --- Plot ---
+p_pi_gene_structure <- ggplot(combined_data,
+                              aes(x = Feature_Position, y = Mean_Pi,
+                                  color = Degeneracy, group = Degeneracy)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = CI_lo, ymax = CI_hi),
+                width = 0.2, linewidth = 0.5, alpha = 0.6) +
+  
+  # Alternate background shading for exon vs intron regions
+  annotate("rect",
+           xmin = seq(1.5, max_position, by = 2),
+           xmax = pmin(seq(2.5, max_position + 1, by = 2), max_position + 0.5),
+           ymin = -Inf, ymax = Inf,
+           fill = "grey90", alpha = 0.4) +
+  
+  scale_x_continuous(
+    breaks = sort(unique(combined_data$Feature_Position)),
+    labels = levels(combined_data$Feature_Label)[sort(unique(combined_data$Feature_Position))],
+    expand = expansion(mult = 0.02)
+  ) +
+  
+  scale_color_manual(
+    values = c("0-fold" = "#E41A1C",    # red - most constrained
+               "2-fold" = "#FF7F00",    # orange
+               "3-fold" = "#984EA3",    # purple
+               "4-fold" = "#377EB8",    # blue - least constrained (synonymous)
+               "all"    = "#4DAF4A",    # green - all exonic
+               "intron" = "#A65628"),   # brown - intronic
+    name = "Site Category"
+  ) +
+  
+  labs(
+    title = expression("Nucleotide Diversity (" * pi * ") Along Gene Structure"),
+    subtitle = "Mean \u00B1 95% CI across genes | Shaded bands = intron positions",
+    x = "Gene Feature (E = Exon, I = Intron)",
+    y = expression("Mean " * pi * " per site")
+  ) +
+  theme_custom() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "top"
+  )
+
+ggsave("./results/Pi_along_gene_structure.pdf", p_pi_gene_structure,
+       width = 12, height = 6)
+
+message("Saved: results/Pi_along_gene_structure.pdf")
+
+# --- Summary statistics ---
+cat("\n=== Gene counts per feature position ===\n")
+print(gene_counts |> dplyr::filter(Feature_Position <= max_position))
+
+cat("\n=== Mean pi by feature and degeneracy ===\n")
+print(pi_summary |> dplyr::select(Feature_Label, Degeneracy, n_genes, Mean_Pi, CI_lo, CI_hi))
+
+# Memory cleanup: Section 14.1
+rm(pi_gene_feature, pi_filtered, pi_summary, gene_counts,
+   exon_data, intron_data, intron_data_plot, combined_data,
+   p_pi_gene_structure, plot_cats, max_position, min_genes_per_position)
+gc()
+
 # ******************************************************************************
 # 15) Testing the translational ramp hypothesis ----
 # ______________________________________________________________________________

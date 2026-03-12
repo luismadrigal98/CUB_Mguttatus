@@ -259,6 +259,7 @@ if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
         fi
         
         # Run the compartment analysis
+        PERGENE_FILE="$OUTPUT_DIR/${CHR}.pi_per_gene_feature.txt"
         if [[ "$VCF_INPUT" == *.gz ]]; then
             zcat "$VCF_INPUT" | python3 "${SCRIPT_DIR}/calculate_pi_by_genomic_compartment.py" \
                 --stream \
@@ -266,6 +267,7 @@ if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
                 --degeneracy "$ANNOT_FILE" \
                 --chromosome "$CHR" \
                 --output "$OUTPUT_FILE" \
+                --per-gene-output "$PERGENE_FILE" \
                 > "${OUTPUT_DIR}/${CHR}.step2.log" 2>&1
         else
             python3 "${SCRIPT_DIR}/calculate_pi_by_genomic_compartment.py" \
@@ -274,6 +276,7 @@ if [ ${#CHROMOSOMES_TO_PROCESS[@]} -gt 0 ]; then
                 --degeneracy "$ANNOT_FILE" \
                 --chromosome "$CHR" \
                 --output "$OUTPUT_FILE" \
+                --per-gene-output "$PERGENE_FILE" \
                 > "${OUTPUT_DIR}/${CHR}.step2.log" 2>&1
         fi
         
@@ -343,6 +346,32 @@ else
     echo ""
     echo "ERROR: No chromosome files found to concatenate."
     exit 1
+fi
+
+# Concatenate per-gene feature files
+COMBINED_PERGENE="$OUTPUT_DIR/all_chromosomes.pi_per_gene_feature.txt"
+
+FIRST=1
+for CHR in "${CHROMOSOMES_ARRAY[@]}"; do
+    CHR_PERGENE="$OUTPUT_DIR/${CHR}.pi_per_gene_feature.txt"
+    
+    if [ ! -f "$CHR_PERGENE" ]; then
+        continue
+    fi
+    
+    if [ $FIRST -eq 1 ]; then
+        cat "$CHR_PERGENE" > "$COMBINED_PERGENE"
+        FIRST=0
+    else
+        tail -n +2 "$CHR_PERGENE" >> "$COMBINED_PERGENE"
+    fi
+    
+    echo "  ✓ Added $CHR (per-gene feature)"
+done
+
+if [ -f "$COMBINED_PERGENE" ]; then
+    echo ""
+    echo "Created: $COMBINED_PERGENE"
 fi
 
 # ============================================================================

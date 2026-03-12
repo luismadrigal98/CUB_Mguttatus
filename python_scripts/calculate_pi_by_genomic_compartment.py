@@ -26,6 +26,7 @@ Input:
 Output:
     - pi_by_compartment.txt: Summary statistics per compartment
     - pi_by_window.txt: Per-window/region statistics
+    - pi_per_gene_feature.txt: Per-gene, per-exon/intron pi by degeneracy category
 
 Author: Luis Javier Madrigal-Roca & John K. Kelly
 Date: 2026-01-22
@@ -195,7 +196,13 @@ def parse_gff3(gff_file, target_chrom=None):
                 intron_start = sorted_exons[i][1] + INTRON_TRIM_BP
                 intron_end = sorted_exons[i + 1][0] - INTRON_TRIM_BP
                 if intron_end > intron_start:
-                    introns[chrom].append((intron_start, intron_end, gene_id, strand))
+                    # Intron numbering: for + strand, intron 1 is between exon 1 and 2
+                    # For - strand, intron 1 is between the 3'-most pair (reversed)
+                    if strand == '-':
+                        intron_num = len(sorted_exons) - 1 - i
+                    else:
+                        intron_num = i + 1
+                    introns[chrom].append((intron_start, intron_end, gene_id, intron_num, strand))
     
     for chrom in exons: exons[chrom].sort()
     for chrom in introns: introns[chrom].sort()
@@ -309,7 +316,7 @@ def classify_position(chrom, pos, exons, introns, intergenic, degeneracy, u2kb, 
 
     in_match = binary_search_region(chrom, pos, introns)
     if in_match:
-        return ['intron'], {'gene': in_match[2], 'strand': in_match[3]}
+        return ['intron'], {'gene': in_match[2], 'intron': in_match[3], 'strand': in_match[4]}
     
     if u2kb:
         u2 = binary_search_region(chrom, pos, u2kb)
@@ -380,8 +387,17 @@ def init_stats():
         for n in NUC_CATEGORIES: stats[c][n] = {'sites': 0, 'poly': 0, 'pi_sum': 0.0}
     return stats
 
+def init_gene_feature_stats():
+    """Initialize per-gene, per-feature (exon/intron) stats by degeneracy category."""
+    # gene_feature_stats[gene_id][(feature_type, feature_num)][degeneracy_cat] = {sites, poly, pi_sum}
+    return defaultdict(lambda: defaultdict(lambda: defaultdict(
+        lambda: {'sites': 0, 'poly': 0, 'pi_sum': 0.0}
+    )))
+
+
 def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, u2kb, u10kb, stream, target_chrom):
     stats = init_stats()
+    gene_feature_stats = init_gene_feature_stats()
     
     if stream: f = sys.stdin
     elif vcf_path.endswith('.gz'): f = gzip.open(vcf_path, 'rt')
@@ -430,10 +446,42 @@ def process_vcf(vcf_path, exons, introns, intergenic, degeneracy, u2kb, u10kb, s
                 if is_poly:
                     stats[c][nuc_cat]['poly'] += 1
                     stats[c][nuc_cat]['pi_sum'] += pi_val
+        
+        # --- Per-gene, per-feature accumulation ---
+        gene_id = det.get('gene')
+        if not gene_id:
+            continue
+        
+        # Exonic sites: classify by degeneracy
+        if 'exon_all' in comps:
+            exon_num = det.get('exon', 0)
+            # Determine degeneracy category for this site
+            if chrom in degeneracy and pos in degeneracy[chrom]:
+                degen_cat = degeneracy[chrom][pos]['degeneracy']  # '0-fold', '2-fold', '3-fold', '4-fold'
+            else:
+                degen_cat = 'unknown'
+            
+            feature_key = ('exon', exon_num)
+            gene_feature_stats[gene_id][feature_key][degen_cat]['sites'] += 1
+            gene_feature_stats[gene_id][feature_key]['all']['sites'] += 1
+            if is_poly:
+                gene_feature_stats[gene_id][feature_key][degen_cat]['poly'] += 1
+                gene_feature_stats[gene_id][feature_key][degen_cat]['pi_sum'] += pi_val
+                gene_feature_stats[gene_id][feature_key]['all']['poly'] += 1
+                gene_feature_stats[gene_id][feature_key]['all']['pi_sum'] += pi_val
+        
+        # Intronic sites: category is 'intron' (no degeneracy breakdown)
+        if 'intron' in comps:
+            intron_num = det.get('intron', 0)
+            feature_key = ('intron', intron_num)
+            gene_feature_stats[gene_id][feature_key]['all']['sites'] += 1
+            if is_poly:
+                gene_feature_stats[gene_id][feature_key]['all']['poly'] += 1
+                gene_feature_stats[gene_id][feature_key]['all']['pi_sum'] += pi_val
                     
     if not stream and f != sys.stdin: f.close()
     print(f"\nTotal sites: {lc:,}, Classified: {cc:,}")
-    return stats
+    return stats, gene_feature_stats
 
 
 # ====================== OUTPUT ======================
@@ -493,6 +541,41 @@ def write_summary(stats, output_file, chromosome=None):
         print(f"{comp:<25} {pi_all:>10.6f} {sum_comps:>10.6f} {comp_C:>8.6f} {comp_G:>8.6f} {comp_AT:>8.6f} {comp_CG:>8.6f} {match:>6}")
 
 
+def write_per_gene_feature(gene_feature_stats, output_file, chromosome=None):
+    """Write per-gene, per-exon/intron pi by degeneracy category."""
+    chrom_str = chromosome if chromosome else "all"
+    print(f"\nWriting per-gene feature stats to: {output_file}")
+    
+    degen_cats = ['all', '0-fold', '2-fold', '3-fold', '4-fold', 'unknown']
+    
+    with open(output_file, 'w') as out:
+        out.write("Chromosome\tGene\tFeature_Type\tFeature_Num\tDegeneracy\tSites\tPolymorphic\tPi_sum\tPi_mean\n")
+        
+        for gene_id in sorted(gene_feature_stats.keys()):
+            features = gene_feature_stats[gene_id]
+            # Sort features: exons first by number, then introns by number
+            sorted_keys = sorted(features.keys(), key=lambda x: (0 if x[0] == 'exon' else 1, x[1]))
+            
+            for feat_type, feat_num in sorted_keys:
+                cat_data = features[(feat_type, feat_num)]
+                
+                # For introns, only write 'all' category
+                cats_to_write = degen_cats if feat_type == 'exon' else ['all']
+                
+                for dcat in cats_to_write:
+                    s = cat_data[dcat]
+                    ns, np, pis = s['sites'], s['poly'], s['pi_sum']
+                    if ns == 0:
+                        continue
+                    pi_mean = pis / ns if ns > 0 else 0.0
+                    out.write(f"{chrom_str}\t{gene_id}\t{feat_type}\t{feat_num}\t{dcat}\t{ns}\t{np}\t{pis:.6f}\t{pi_mean:.8f}\n")
+    
+    # Summary counts
+    n_genes = len(gene_feature_stats)
+    n_features = sum(len(v) for v in gene_feature_stats.values())
+    print(f"  Wrote stats for {n_genes} genes, {n_features} features")
+
+
 # ====================== MAIN ======================
 
 def main():
@@ -503,6 +586,8 @@ def main():
     parser.add_argument('--degeneracy', type=str, nargs='+', required=True)
     parser.add_argument('--chromosome', type=str)
     parser.add_argument('--output', type=str, default='pi_by_compartment.txt')
+    parser.add_argument('--per-gene-output', type=str, default=None,
+                        help='Output file for per-gene, per-exon/intron pi by degeneracy')
     args = parser.parse_args()
     
     if not args.vcf and not args.stream: sys.exit("Error: --vcf or --stream required")
@@ -512,8 +597,13 @@ def main():
     u2kb, u10kb = calculate_upstream_regions(genes, intervals)
     degeneracy = load_degeneracy_annotations(args.degeneracy)
     
-    stats = process_vcf(args.vcf, exons, introns, intergenic, degeneracy, u2kb, u10kb, args.stream, args.chromosome)
+    stats, gene_feature_stats = process_vcf(args.vcf, exons, introns, intergenic, degeneracy, u2kb, u10kb, args.stream, args.chromosome)
     write_summary(stats, args.output, args.chromosome)
+    
+    # Write per-gene feature output if requested
+    per_gene_out = getattr(args, 'per_gene_output', None)
+    if per_gene_out:
+        write_per_gene_feature(gene_feature_stats, per_gene_out, args.chromosome)
 
 if __name__ == "__main__":
     main()
