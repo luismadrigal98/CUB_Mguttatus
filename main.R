@@ -2484,7 +2484,7 @@ has_mutation_types <- all(paste0("Pi_sum_4fold_", mutation_types) %in%
 # Rank genes by Mean_Log10_Exp and create bins
 pi_by_expression <- integrated_data |>
   dplyr::filter(S_ROC < 1) |>
-  dplyr::arrange(Mean_Log10_Exp) |>
+  dplyr::arrange(Max_Log10_Exp) |>
   dplyr::mutate(
     Rank = dplyr::row_number(),
     Exp_Bin = ceiling(Rank / bin_size)
@@ -2492,7 +2492,7 @@ pi_by_expression <- integrated_data |>
   dplyr::group_by(Exp_Bin) |>
   dplyr::summarize(
     n_genes = n(),
-    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+    max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
     # Weighted mean π at 4-fold sites: total π_sum / total sites
     total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
     total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
@@ -2508,7 +2508,7 @@ sel_cat <- integrated_data |>
   dplyr::summarize(
     Exp_Bin = 24,
     n_genes = n(),
-    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+    Max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
     # Weighted mean π at 4-fold sites: total π_sum / total sites
     total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
     total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
@@ -2556,7 +2556,7 @@ if (has_mutation_types) {
   # Component = sum(Pi_sum_type) / sum(Sites_4fold) → additive decomposition
   pi_by_mutation <- integrated_data |>
     dplyr::filter(S_ROC < 1) |>
-    dplyr::arrange(Mean_Log10_Exp) |>
+    dplyr::arrange(Max_Log10_Exp) |>
     dplyr::mutate(
       Rank = dplyr::row_number(),
       Exp_Bin = ceiling(Rank / bin_size)
@@ -2564,7 +2564,7 @@ if (has_mutation_types) {
     dplyr::group_by(Exp_Bin) |>
     dplyr::summarize(
       n_genes = n(),
-      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+      max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
       total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
       pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
       pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
@@ -2580,7 +2580,7 @@ if (has_mutation_types) {
     dplyr::summarize(
       Exp_Bin = 24,
       n_genes = n(),
-      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+      max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
       total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
       pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
       pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
@@ -2635,172 +2635,6 @@ if (has_mutation_types) {
          p_pi_by_mutation, width = 12, height = 6)
   
   cat("✓ Saved: ./results/pi_4fold_by_mutation_type_and_expression.pdf\n")
-  
-  # Plot 2: Faceted version for cleaner per-type comparison
-  p_pi_mutation_facet <- ggplot(pi_mutation_long, 
-                                aes(x = Exp_Bin, y = Pi_component)) +
-    geom_point(size = 2, color = "#377EB8") +
-    geom_line(color = "#377EB8", linewidth = 0.6) +
-    facet_wrap(~ Mutation_Type, scales = "free_y", ncol = 3) +
-    labs(
-      title = expression(paste("4-fold ", pi, 
-                                " Components by Segregating Pair")),
-      subtitle = "Each panel shows one mutation type; all exhibit declining trajectory",
-      x = "Expression level category",
-      y = expression(paste(pi, " component"))
-    ) +
-    scale_x_continuous(breaks = seq(5, 25, by = 5)) +
-    theme_custom()
-  
-  ggsave("./results/pi_4fold_mutation_type_faceted.pdf", 
-         p_pi_mutation_facet, width = 12, height = 8)
-  
-  cat("✓ Saved: ./results/pi_4fold_mutation_type_faceted.pdf\n")
-  
-  # Save the summary table
-  write.csv(pi_by_mutation, 
-            "./results/pi_4fold_by_mutation_type_and_expression.csv",
-            row.names = FALSE)
-  
-  # --- Relative mutation-type contributions for Bin 23 vs Selection group ---
-  # Extract the highest-expression regular bin and the selection group
-  max_regular_bin <- max(pi_by_mutation$Exp_Bin[pi_by_mutation$Exp_Bin < 24])
-  
-  focus_bins <- pi_by_mutation |>
-    dplyr::filter(Exp_Bin %in% c(max_regular_bin, 24)) |>
-    dplyr::mutate(
-      Group = ifelse(Exp_Bin == 24, "Selection (S > 1)", 
-                     paste0("Bin ", Exp_Bin, " (highest expression)")),
-      total_pi = pi_AC + pi_AG + pi_AT + pi_CG + pi_CT + pi_GT
-    )
-  
-  # Pivot to long for plotting
-  focus_long <- focus_bins |>
-    tidyr::pivot_longer(
-      cols = c(pi_AC, pi_AG, pi_AT, pi_CG, pi_CT, pi_GT),
-      names_to = "Mutation_Type",
-      values_to = "Pi_component",
-      names_prefix = "pi_"
-    ) |>
-    dplyr::mutate(
-      Relative_Contribution = Pi_component / total_pi,
-      Mutation_Label = dplyr::case_when(
-        Mutation_Type == "AC" ~ "A\u2194C",
-        Mutation_Type == "AG" ~ "A\u2194G",
-        Mutation_Type == "AT" ~ "A\u2194T",
-        Mutation_Type == "CG" ~ "C\u2194G",
-        Mutation_Type == "CT" ~ "C\u2194T",
-        Mutation_Type == "GT" ~ "G\u2194T"
-      ),
-      Mutation_Label = factor(Mutation_Label, 
-                              levels = c("A\u2194C", "A\u2194G", "A\u2194T",
-                                         "C\u2194G", "C\u2194T", "G\u2194T"))
-    )
-  
-  # Plot 3a: Absolute pi component for each mutation type (PIE CHART)
-  p_mutation_abs <- ggplot(focus_long, 
-                           aes(x = "", y = Pi_component, fill = Mutation_Label)) +
-    geom_col(width = 1, color = "white") +
-    coord_polar("y", start = 0) +
-    facet_wrap(~ Group) +
-    scale_fill_brewer(palette = "Set2") + 
-    # FIX: Pushed text outward (vjust = 0.8) and added a clean background label
-    geom_label(aes(label = scales::scientific(Pi_component, digits = 2)), 
-               position = position_stack(vjust = 0.8), 
-               size = 3.5, 
-               show.legend = FALSE,   # Keeps the legend clean
-               label.size = NA,       # Removes the harsh border around the label
-               alpha = 0.7) +         # Makes the label background slightly transparent
-    labs(
-      title = expression(paste("4-fold ", pi, " by Mutation Type: High Expression vs Selection")),
-      subtitle = "Absolute additive contribution of each segregating pair",
-      fill = "Segregating Pair"
-    ) +
-    theme_void() + 
-    theme(legend.position = "right",
-          strip.text = element_text(size = 12, face = "bold", margin = margin(b = 10)))
-  
-  ggsave("./results/pi_4fold_mutation_type_bin23_vs_selection.pdf",
-         p_mutation_abs, width = 8, height = 5)
-  cat("\u2713 Saved: ./results/pi_4fold_mutation_type_bin23_vs_selection.pdf\n")
-  
-  # Plot 3b: Relative contribution (PIE CHART)
-  p_mutation_rel <- ggplot(focus_long, 
-                           aes(x = "", y = Relative_Contribution, fill = Mutation_Label)) +
-    geom_col(width = 1, color = "white") +
-    coord_polar("y", start = 0) +
-    facet_wrap(~ Group) +
-    scale_fill_brewer(palette = "Set2") +
-    # Add percentage labels
-    geom_text(aes(label = scales::percent(Relative_Contribution, accuracy = 1)), 
-              position = position_stack(vjust = 0.5), size = 3) +
-    labs(
-      title = expression(paste("Relative Contribution to 4-fold ", pi)),
-      subtitle = "Proportion of total diversity attributable to each segregating pair",
-      fill = "Segregating Pair"
-    ) +
-    theme_void() +
-    theme(legend.position = "right",
-          strip.text = element_text(size = 12, face = "bold", margin = margin(b = 10)))
-  
-  ggsave("./results/pi_4fold_mutation_type_relative_bin23_vs_selection.pdf",
-         p_mutation_rel, width = 8, height = 5)
-  cat("\u2713 Saved: ./results/pi_4fold_mutation_type_relative_bin23_vs_selection.pdf\n")
-  
-  # --- CG-segregating vs AT-segregating comparison ---
-  cg_vs_at <- focus_bins |>
-    dplyr::mutate(
-      pi_CG_segregating = pi_AC + pi_AG + pi_CG + pi_CT + pi_GT,
-      pi_AT_segregating = pi_AT
-    ) |>
-    dplyr::select(Exp_Bin, Group, n_genes, total_pi, 
-                  pi_CG_segregating, pi_AT_segregating) |>
-    tidyr::pivot_longer(
-      cols = c(pi_CG_segregating, pi_AT_segregating),
-      names_to = "Category",
-      values_to = "Pi_component",
-      names_prefix = "pi_"
-    ) |>
-    dplyr::mutate(
-      Relative = Pi_component / total_pi,
-      Category_Label = ifelse(Category == "CG_segregating", 
-                              "CG-segregating\n(A\u2194C, A\u2194G, C\u2194G, C\u2194T, G\u2194T)",
-                              "AT-only\n(A\u2194T)"),
-      Category_Label = factor(Category_Label, 
-                              levels = c("CG-segregating\n(A\u2194C, A\u2194G, C\u2194G, C\u2194T, G\u2194T)",
-                                         "AT-only\n(A\u2194T)"))
-    )
-  
-  # Plot 4: CG vs AT - absolute (PIE CHART)
-  p_cg_at_abs <- ggplot(cg_vs_at, 
-                        aes(x = "", y = Pi_component, fill = Category_Label)) +
-    geom_col(width = 1, color = "white") +
-    coord_polar("y", start = 0) +
-    facet_wrap(~ Group) +
-    # Use stark contrasting colors to highlight the AT vs CG difference
-    scale_fill_manual(values = c("CG-segregating\n(A\u2194C, A\u2194G, C\u2194G, C\u2194T, G\u2194T)" = "#E41A1C",
-                                 "AT-only\n(A\u2194T)" = "gray70")) +
-    geom_text(aes(label = scales::percent(Relative, accuracy = 1)), 
-              position = position_stack(vjust = 0.5), size = 4, fontface = "bold") +
-    labs(
-      title = expression(paste("4-fold ", pi, ": CG-segregating vs AT-only")),
-      subtitle = "CG-segregating sites dominate diversity; selection acts primarily on CG categories",
-      fill = "Site Category"
-    ) +
-    theme_void() +
-    theme(legend.position = "bottom",
-          strip.text = element_text(size = 12, face = "bold", margin = margin(b = 10)))
-  
-  ggsave("./results/pi_4fold_CG_vs_AT_segregating.pdf",
-         p_cg_at_abs, width = 8, height = 5)
-  cat("\u2713 Saved: ./results/pi_4fold_CG_vs_AT_segregating.pdf\n")
-  
-  # Print the decomposition
-  cat("\n=== CG vs AT segregating decomposition ===\n")
-  print(cg_vs_at |> dplyr::select(Group, Category_Label, Pi_component, Relative))
-  
-  rm(focus_bins, focus_long, cg_vs_at, max_regular_bin,
-     p_mutation_abs, p_mutation_rel, p_cg_at_abs)
   
 } else {
   cat("\nNote: Mutation-type columns not found in pi data.\n")
@@ -4047,7 +3881,8 @@ combined_data <- dplyr::bind_rows(exon_data, intron_data_plot) |>
   dplyr::mutate(
     Degeneracy = factor(Degeneracy,
                         levels = c("0-fold", "2-fold", "3-fold", "4-fold", "all", "intron"))
-  )
+  ) |>
+  dplyr::filter(Degeneracy %in% c('0-fold', '4-fold', 'intron'))
 
 # --- Plot ---
 p_pi_gene_structure <- ggplot(combined_data,
@@ -4073,10 +3908,7 @@ p_pi_gene_structure <- ggplot(combined_data,
   
   scale_color_manual(
     values = c("0-fold" = "#E41A1C",    # red - most constrained
-               "2-fold" = "#FF7F00",    # orange
-               "3-fold" = "#984EA3",    # purple
                "4-fold" = "#377EB8",    # blue - least constrained (synonymous)
-               "all"    = "#4DAF4A",    # green - all exonic
                "intron" = "#A65628"),   # brown - intronic
     name = "Site Category"
   ) +
