@@ -2482,7 +2482,7 @@ has_mutation_types <- all(paste0("Pi_sum_4fold_", mutation_types) %in%
 # Rank genes by Mean_Log10_Exp and create bins
 pi_by_expression <- integrated_data |>
   dplyr::filter(S_ROC < 1) |>
-  dplyr::arrange(Max_Log10_Exp) |>
+  dplyr::arrange(Mean_Log10_Exp) |>
   dplyr::mutate(
     Rank = dplyr::row_number(),
     Exp_Bin = ceiling(Rank / bin_size)
@@ -2490,7 +2490,7 @@ pi_by_expression <- integrated_data |>
   dplyr::group_by(Exp_Bin) |>
   dplyr::summarize(
     n_genes = n(),
-    max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
+    mean_expression = max(Mean_Log10_Exp, na.rm = TRUE),
     # Weighted mean π at 4-fold sites: total π_sum / total sites
     total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
     total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
@@ -2506,7 +2506,7 @@ sel_cat <- integrated_data |>
   dplyr::summarize(
     Exp_Bin = 24,
     n_genes = n(),
-    Max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
+    mean_expression = max(Mean_Log10_Exp, na.rm = TRUE),
     # Weighted mean π at 4-fold sites: total π_sum / total sites
     total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
     total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
@@ -2533,7 +2533,7 @@ p_pi_by_expression <- ggplot(pi_by_expression,
   labs(
     title = expression(paste("4-fold Nucleotide Diversity (", pi, 
                              ") by Expression Level")),
-    subtitle = "Genes ranked by Mean Log10 Expression, binned in groups of ~1000",
+    subtitle = "Genes ranked by Max Log10 Expression, binned in groups of ~1000",
     x = "Expression level category",
     y = expression(paste("nuc_diversity (4 fold)"))
   ) +
@@ -2554,7 +2554,7 @@ if (has_mutation_types) {
   # Component = sum(Pi_sum_type) / sum(Sites_4fold) → additive decomposition
   pi_by_mutation <- integrated_data |>
     dplyr::filter(S_ROC < 1) |>
-    dplyr::arrange(Max_Log10_Exp) |>
+    dplyr::arrange(Mean_Log10_Exp) |>
     dplyr::mutate(
       Rank = dplyr::row_number(),
       Exp_Bin = ceiling(Rank / bin_size)
@@ -2562,7 +2562,7 @@ if (has_mutation_types) {
     dplyr::group_by(Exp_Bin) |>
     dplyr::summarize(
       n_genes = n(),
-      max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
+      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
       total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
       pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
       pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
@@ -2578,7 +2578,7 @@ if (has_mutation_types) {
     dplyr::summarize(
       Exp_Bin = 24,
       n_genes = n(),
-      max_expression = mean(Max_Log10_Exp, na.rm = TRUE),
+      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
       total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
       pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
       pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
@@ -2770,25 +2770,6 @@ if (length(middle_preferred) > 0 && length(bottom5_preferred) > 0) {
   cat(sprintf("Middle 90%% vs Bottom 5%%: d = %.3f\n", d_middle_bottom_preferred))
 }
 
-# Ploting box plot
-
-p_boxplot_preferred <- ggplot(integrated_data, aes(x = Expression_Group, 
-                                                   y = Mean_preferred_freq_detrended, 
-                                                   fill = Expression_Group)) +
-  geom_violin(alpha = 0.3) +
-  geom_boxplot(outlier.alpha = 0.3) +
-  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
-  scale_fill_manual(values = c("Top 5%" = "#E41A1C", 
-                               "Bottom 5%" = "#377EB8",
-                               "Middle 90%" = "#999999")) +
-  labs(y = "Mean Frequency of Preferred Codon (Residuals)",
-       x = "Expression Group") +
-  theme_custom() +
-  theme(legend.position = "none")
-
-ggsave("./results/Frequency_preferred_by_expression_group.pdf", 
-       p_boxplot_preferred, width = 8, height = 6)
-
 # Median and CI
 
 plot_data_pref <- integrated_data |>
@@ -2827,7 +2808,7 @@ p_surface_pref <- plot_selection_surface(
   response_name = "Mean_preferred_freq"
 )
 
-# 12.4) Contour plot: preferred codon frequency ~ expression x gene length ----
+# 12.3) Contour plot: preferred codon frequency ~ expression x gene length ----
 # Shows joint effect of expression and gene length on the frequency of
 # ROC-preferred codons across ALL amino acid families (not only 4-fold).
 # Mean_preferred_freq is the per-gene average across all codon positions.
@@ -2846,27 +2827,41 @@ contour_data <- integrated_data |>
   dplyr::mutate(log10_length = log10(Total_Codons))
 
 contour_gam <- mgcv::gam(
-  Mean_preferred_freq ~ te(Max_Log10_Exp, log10_length, k = c(10, 10)),
+  Mean_preferred_freq ~ te(Max_Log10_Exp, Exp_breadth, log10_length, k = c(10, 10)),
   data = contour_data,
   family = betar(link = "logit")
 )
 cat("GAM surface R-sq(adj) [all preferred]: ", summary(contour_gam)$r.sq, "\n")
 
-pred_grid_pref <- expand.grid(
+pred_grid_pref_broad <- expand.grid(
   Max_Log10_Exp = seq(min(contour_data$Max_Log10_Exp, na.rm = TRUE),
                       max(contour_data$Max_Log10_Exp, na.rm = TRUE),
                       length.out = 200),
   log10_length  = seq(min(contour_data$log10_length, na.rm = TRUE),
                       max(contour_data$log10_length, na.rm = TRUE),
-                      length.out = 200)
-)
-pred_grid_pref$Predicted <- predict(contour_gam, newdata = pred_grid_pref,
+                      length.out = 200),
+  Exp_breadth = 33) # Holding breadth constant (broadly expressed genes)
+
+pred_grid_pref_narrow <- expand.grid(
+  Max_Log10_Exp = seq(min(contour_data$Max_Log10_Exp, na.rm = TRUE),
+                      max(contour_data$Max_Log10_Exp, na.rm = TRUE),
+                      length.out = 200),
+  log10_length  = seq(min(contour_data$log10_length, na.rm = TRUE),
+                      max(contour_data$log10_length, na.rm = TRUE),
+                      length.out = 200),
+  Exp_breadth = 1) # Holding breadth constant (narrowly expressed genes)
+
+pred_grid_pref$Predicted_broad <- predict(contour_gam, newdata = pred_grid_pref_broad,
                                     type = "response")
 
+pred_grid_pref$Predicted_narrow <- predict(contour_gam, newdata = pred_grid_pref_narrow,
+                                          type = "response")
+
+# Broad
 p_pref_contour <- ggplot(pred_grid_pref,
                          aes(x = Max_Log10_Exp, y = log10_length)) +
-  geom_raster(aes(fill = Predicted), interpolate = TRUE) +
-  geom_contour(aes(z = Predicted), colour = "grey30",
+  geom_raster(aes(fill = Predicted_broad), interpolate = TRUE) +
+  geom_contour(aes(z = Predicted_broad), colour = "grey30",
                linewidth = 0.4, bins = 12) +
   scale_fill_gradientn(
     colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
@@ -2883,11 +2878,37 @@ p_pref_contour <- ggplot(pred_grid_pref,
   theme(legend.position = "right",
         panel.grid = element_blank())
 
-ggsave("./results/Preferred_freq_contour_exp_x_length.pdf",
+ggsave("./results/Preferred_freq_contour_exp_x_length_broad.pdf",
        p_pref_contour, width = 9, height = 7)
-cat("Saved: ./results/Preferred_freq_contour_exp_x_length.pdf\n")
+cat("Saved: ./results/Preferred_freq_contour_exp_x_length_broad.pdf\n")
 
-# --- 12.4b: Split by C-ending vs G-ending preferred codons ---
+# Narrow
+
+p_pref_contour <- ggplot(pred_grid_pref,
+                         aes(x = Max_Log10_Exp, y = log10_length)) +
+  geom_raster(aes(fill = Predicted_narrow), interpolate = TRUE) +
+  geom_contour(aes(z = Predicted_narrow), colour = "grey30",
+               linewidth = 0.4, bins = 12) +
+  scale_fill_gradientn(
+    colours = c("#08306B", "#2171B5", "#6BAED6", "#C6DBEF",
+                "#FEE8C8", "#FDBB84", "#E34A33"),
+    name = "Freq.\npreferred"
+  ) +
+  labs(
+    title = "Frequency of ROC-Preferred Codons (All Amino Acids)",
+    subtitle = "GAM-predicted surface across expression and gene length",
+    x = expression(log[10](Max~Expression~CPM)),
+    y = expression(log[10](Gene~Length~"(codons)"))
+  ) +
+  theme_custom() +
+  theme(legend.position = "right",
+        panel.grid = element_blank())
+
+ggsave("./results/Preferred_freq_contour_exp_x_length_narrow.pdf",
+       p_pref_contour, width = 9, height = 7)
+cat("Saved: ./results/Preferred_freq_contour_exp_x_length_narrow.pdf\n")
+
+# 12.3b: Split by C-ending vs G-ending preferred codons ----
 # Re-read the per-position file to compute separate per-gene frequencies
 
 preferred_raw <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt",
@@ -2938,7 +2959,7 @@ for (ending in c("C", "G")) {
   }
 
   gam_split <- mgcv::gam(
-    as.formula(paste0(col_name, " ~ te(Max_Log10_Exp, log10_length, k = c(10, 10))")),
+    as.formula(paste0(col_name, " ~ te(Max_Log10_Exp, Exp_breadth, log10_length, k = c(10, 10))")),
     data = sub,
     family = betar(link = "logit")
   )
@@ -2950,7 +2971,8 @@ for (ending in c("C", "G")) {
                         length.out = 200),
     log10_length  = seq(min(sub$log10_length, na.rm = TRUE),
                         max(sub$log10_length, na.rm = TRUE),
-                        length.out = 200)
+                        length.out = 200),
+    Exp_breadth = 33 # Holding this constant (broad genes)
   )
   grid_split$Predicted <- predict(gam_split, newdata = grid_split, type = "response")
 
@@ -2979,7 +3001,7 @@ for (ending in c("C", "G")) {
 
 rm(preferred_raw, pref_by_ending, contour_split)
 
-# 12.5) Background selection test: nonsynonymous pi vs expression ----
+# 12.4) Background selection test: nonsynonymous pi vs expression ----
 # Under background selection, genes under stronger purifying selection
 # (= more highly expressed) should have lower pi at nonsynonymous (0-fold)
 # sites. This is independent of the codon usage bias signal.
