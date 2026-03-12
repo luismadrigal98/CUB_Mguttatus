@@ -2662,6 +2662,140 @@ if (has_mutation_types) {
             "./results/pi_4fold_by_mutation_type_and_expression.csv",
             row.names = FALSE)
   
+  # --- Relative mutation-type contributions for Bin 23 vs Selection group ---
+  # Extract the highest-expression regular bin and the selection group
+  max_regular_bin <- max(pi_by_mutation$Exp_Bin[pi_by_mutation$Exp_Bin < 24])
+  
+  focus_bins <- pi_by_mutation |>
+    dplyr::filter(Exp_Bin %in% c(max_regular_bin, 24)) |>
+    dplyr::mutate(
+      Group = ifelse(Exp_Bin == 24, "Selection (S > 1)", 
+                     paste0("Bin ", Exp_Bin, " (highest expression)")),
+      total_pi = pi_AC + pi_AG + pi_AT + pi_CG + pi_CT + pi_GT
+    )
+  
+  # Pivot to long for plotting
+  focus_long <- focus_bins |>
+    tidyr::pivot_longer(
+      cols = c(pi_AC, pi_AG, pi_AT, pi_CG, pi_CT, pi_GT),
+      names_to = "Mutation_Type",
+      values_to = "Pi_component",
+      names_prefix = "pi_"
+    ) |>
+    dplyr::mutate(
+      Relative_Contribution = Pi_component / total_pi,
+      Mutation_Label = dplyr::case_when(
+        Mutation_Type == "AC" ~ "A\u2194C",
+        Mutation_Type == "AG" ~ "A\u2194G",
+        Mutation_Type == "AT" ~ "A\u2194T",
+        Mutation_Type == "CG" ~ "C\u2194G",
+        Mutation_Type == "CT" ~ "C\u2194T",
+        Mutation_Type == "GT" ~ "G\u2194T"
+      ),
+      Mutation_Label = factor(Mutation_Label, 
+                              levels = c("A\u2194C", "A\u2194G", "A\u2194T",
+                                         "C\u2194G", "C\u2194T", "G\u2194T"))
+    )
+  
+  # Plot 3a: Absolute pi component for each mutation type (two bars side by side)
+  p_mutation_abs <- ggplot(focus_long, 
+                           aes(x = Mutation_Label, y = Pi_component, fill = Group)) +
+    geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+    scale_fill_manual(values = c(setNames("#377EB8", 
+                                          paste0("Bin ", max_regular_bin, " (highest expression)")),
+                                 "Selection (S > 1)" = "#E41A1C")) +
+    labs(
+      title = expression(paste("4-fold ", pi, " by Mutation Type: High Expression vs Selection Group")),
+      subtitle = "Absolute additive contribution of each segregating pair",
+      x = "Segregating Pair",
+      y = expression(paste(pi, " component (4-fold)")),
+      fill = NULL
+    ) +
+    theme_custom() +
+    theme(legend.position = "top",
+          axis.text.x = element_text(size = 11))
+  
+  ggsave("./results/pi_4fold_mutation_type_bin23_vs_selection.pdf",
+         p_mutation_abs, width = 8, height = 5)
+  cat("\u2713 Saved: ./results/pi_4fold_mutation_type_bin23_vs_selection.pdf\n")
+  
+  # Plot 3b: Relative contribution (proportion of total pi)
+  p_mutation_rel <- ggplot(focus_long, 
+                           aes(x = Mutation_Label, y = Relative_Contribution, fill = Group)) +
+    geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+    scale_fill_manual(values = c(setNames("#377EB8", 
+                                          paste0("Bin ", max_regular_bin, " (highest expression)")),
+                                 "Selection (S > 1)" = "#E41A1C")) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    labs(
+      title = expression(paste("Relative Contribution to 4-fold ", pi)),
+      subtitle = "Proportion of total diversity attributable to each segregating pair",
+      x = "Segregating Pair",
+      y = expression(paste("Fraction of total ", pi)),
+      fill = NULL
+    ) +
+    theme_custom() +
+    theme(legend.position = "top",
+          axis.text.x = element_text(size = 11))
+  
+  ggsave("./results/pi_4fold_mutation_type_relative_bin23_vs_selection.pdf",
+         p_mutation_rel, width = 8, height = 5)
+  cat("\u2713 Saved: ./results/pi_4fold_mutation_type_relative_bin23_vs_selection.pdf\n")
+  
+  # --- CG-segregating vs AT-segregating comparison ---
+  # CG-segregating: any mutation involving C or G (AC, AG, CG, CT, GT)
+  # AT-segregating: only A<->T
+  cg_vs_at <- focus_bins |>
+    dplyr::mutate(
+      pi_CG_segregating = pi_AC + pi_AG + pi_CG + pi_CT + pi_GT,
+      pi_AT_segregating = pi_AT
+    ) |>
+    dplyr::select(Exp_Bin, Group, n_genes, total_pi, 
+                  pi_CG_segregating, pi_AT_segregating) |>
+    tidyr::pivot_longer(
+      cols = c(pi_CG_segregating, pi_AT_segregating),
+      names_to = "Category",
+      values_to = "Pi_component",
+      names_prefix = "pi_"
+    ) |>
+    dplyr::mutate(
+      Relative = Pi_component / total_pi,
+      Category_Label = ifelse(Category == "CG_segregating", 
+                              "CG-segregating\n(A\u2194C, A\u2194G, C\u2194G, C\u2194T, G\u2194T)",
+                              "AT-only\n(A\u2194T)"),
+      Category_Label = factor(Category_Label, 
+                              levels = c("CG-segregating\n(A\u2194C, A\u2194G, C\u2194G, C\u2194T, G\u2194T)",
+                                         "AT-only\n(A\u2194T)"))
+    )
+  
+  # Plot 4: CG vs AT - absolute
+  p_cg_at_abs <- ggplot(cg_vs_at, aes(x = Category_Label, y = Pi_component, fill = Group)) +
+    geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+    scale_fill_manual(values = c(setNames("#377EB8", 
+                                          paste0("Bin ", max_regular_bin, " (highest expression)")),
+                                 "Selection (S > 1)" = "#E41A1C")) +
+    labs(
+      title = expression(paste("4-fold ", pi, ": CG-segregating vs AT-only")),
+      subtitle = "CG-segregating sites dominate diversity; selection acts primarily on CG categories",
+      x = NULL,
+      y = expression(paste(pi, " component (4-fold)")),
+      fill = NULL
+    ) +
+    theme_custom() +
+    theme(legend.position = "top",
+          axis.text.x = element_text(size = 10))
+  
+  ggsave("./results/pi_4fold_CG_vs_AT_segregating.pdf",
+         p_cg_at_abs, width = 7, height = 5)
+  cat("\u2713 Saved: ./results/pi_4fold_CG_vs_AT_segregating.pdf\n")
+  
+  # Print the decomposition
+  cat("\n=== CG vs AT segregating decomposition ===\n")
+  print(cg_vs_at |> dplyr::select(Group, Category_Label, Pi_component, Relative))
+  
+  rm(focus_bins, focus_long, cg_vs_at, max_regular_bin,
+     p_mutation_abs, p_mutation_rel, p_cg_at_abs)
+  
   rm(pi_by_mutation, pi_mutation_long, pi_check,
      p_pi_by_mutation, p_pi_mutation_facet)
   
