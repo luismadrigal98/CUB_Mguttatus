@@ -3211,16 +3211,16 @@ nuc_long <- fourfold_with_expr |>
                             "GC (ROC-preferred)", "AT (mutation-favored)")
   )
 
-p_nuc_4fold <- ggplot(nuc_long, aes(x = Mean_Log10_Exp, y = Frequency, ## <<<<
+p_nuc_4fold <- ggplot(nuc_long, aes(x = Mean_Log10_Exp, y = Frequency,
                                      color = Nucleotide)) +
   geom_smooth(method = "gam", formula = y ~ s(x), se = TRUE, linewidth = 1.2) +
   scale_color_manual(values = c("A" = "#E41A1C", "T" = "#FF7F00",
                                 "C" = "#377EB8", "G" = "#4DAF4A")) +
-  geom_vline(xintercept = 2.8, colour="black", linetype = "longdash") +
+  geom_vline(xintercept = 1.8, colour="black", linetype = "longdash") +
   labs(
     title = "Nucleotide Composition at 4-fold Sites vs Expression",
     subtitle = "Opposing trends (GC up, AT down) indicate selection opposing mutational bias",
-    x = "Max Expression (Log10 CPM)",
+    x = "Mean Expression (Log10 CPM)",
     y = "Nucleotide Frequency at 4-fold Sites"
   ) +
   theme_custom() +
@@ -3237,7 +3237,7 @@ write.csv(fourfold_with_expr,
 # Create the binary group based on the inflection point
 fourfold_with_expr <- fourfold_with_expr |>
   dplyr::mutate(
-    Inflection_Group = ifelse(Max_Log10_Exp >= 2.8, "High (>= 2.8)", "Low/Med (< 2.8)")
+    Inflection_Group = ifelse(Mean_Log10_Exp >= 1.8, "High (>= 2.0)", "Low/Med (< 2.0)")
   )
 
 #Check the summary statistics of C frequency across these two groups
@@ -3255,7 +3255,8 @@ cat("\n=== Summary of Freq_C by 2.8 Inflection Point ===\n")
 print(as.data.frame(inflection_summary))
 
 # Perform the Wilcoxon rank-sum test (equivalent to Kruskal-Wallis for 2 groups)
-wilcox_c_4fold <- wilcox.test(Freq_C ~ Inflection_Group, data = fourfold_with_expr)
+wilcox_c_4fold <- wilcox.test(Freq_C ~ Inflection_Group, 
+                              data = fourfold_with_expr)
 
 cat(sprintf("\nWilcoxon test (Freq_C by Inflection): W = %.2f, p = %.2e\n",
             wilcox_c_4fold$statistic, wilcox_c_4fold$p.value))
