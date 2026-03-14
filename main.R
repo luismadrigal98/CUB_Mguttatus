@@ -2468,6 +2468,65 @@ integrated_data <- integrated_data |>
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
 
+# 12.0) Positional decomposition of pi: first 300 bp vs after 300 bp ----
+# Compute per-gene 4-fold and 0-fold pi split at the 300 bp CDS boundary.
+# This captures Hill-Robertson interference patterns: linked selection near
+# the 5' end (translational ramp) vs the gene body.
+
+pi_feature <- data.table::fread("data/all_chromosomes.pi_per_gene_feature.txt")
+
+# Harmonize gene names: feature file has "MgIM767.01G000100.v2.1",
+# integrated_data has "MgIM767.01G000100"
+pi_feature[, Gene := sub("\\.v[0-9.]+$", "", Gene)]
+
+# Per-exon CDS sizes (from "all" degeneracy) and degeneracy-specific pi
+exon_all <- pi_feature[Feature_Type == "exon" & Degeneracy == "all",
+                       .(Gene, Feature_Num, Exon_Sites = Sites)]
+exon_4fold <- pi_feature[Feature_Type == "exon" & Degeneracy == "4-fold",
+                         .(Gene, Feature_Num, Sites_4f = Sites, Pi_sum_4f = Pi_sum)]
+exon_0fold <- pi_feature[Feature_Type == "exon" & Degeneracy == "0-fold",
+                         .(Gene, Feature_Num, Sites_0f = Sites, Pi_sum_0f = Pi_sum)]
+
+exon_data <- merge(exon_all, exon_4fold, by = c("Gene", "Feature_Num"), all.x = TRUE)
+exon_data <- merge(exon_data, exon_0fold, by = c("Gene", "Feature_Num"), all.x = TRUE)
+exon_data[is.na(Sites_4f), c("Sites_4f", "Pi_sum_4f") := 0]
+exon_data[is.na(Sites_0f), c("Sites_0f", "Pi_sum_0f") := 0]
+
+# Order exons and compute cumulative CDS position
+data.table::setorder(exon_data, Gene, Feature_Num)
+exon_data[, cum_end := cumsum(Exon_Sites), by = Gene]
+exon_data[, cum_start := cum_end - Exon_Sites + 1L, by = Gene]
+
+# Fraction of each exon falling within the first 300 bp of CDS
+bp_cutoff <- 300
+exon_data[, frac_first := data.table::fifelse(
+  cum_end <= bp_cutoff, 1.0,
+  data.table::fifelse(cum_start > bp_cutoff, 0.0,
+                      (bp_cutoff - cum_start + 1) / Exon_Sites)
+)]
+
+# Aggregate per gene: first 300 bp vs after 300 bp
+pi_300bp <- exon_data[, .(
+  Sites_4fold_first300  = sum(Sites_4f * frac_first),
+  Pi_sum_4fold_first300 = sum(Pi_sum_4f * frac_first),
+  Sites_4fold_after300  = sum(Sites_4f * (1 - frac_first)),
+  Pi_sum_4fold_after300 = sum(Pi_sum_4f * (1 - frac_first)),
+  Sites_0fold_first300  = sum(Sites_0f * frac_first),
+  Pi_sum_0fold_first300 = sum(Pi_sum_0f * frac_first),
+  Sites_0fold_after300  = sum(Sites_0f * (1 - frac_first)),
+  Pi_sum_0fold_after300 = sum(Pi_sum_0f * (1 - frac_first))
+), by = .(Gene_name = Gene)]
+
+# Merge into integrated_data
+integrated_data <- integrated_data |>
+  dplyr::left_join(pi_300bp, by = "Gene_name")
+
+cat(sprintf("300 bp decomposition: %d genes matched\n",
+            sum(!is.na(integrated_data$Sites_4fold_first300))))
+
+rm(pi_feature, exon_all, exon_4fold, exon_0fold, exon_data, pi_300bp)
+gc()
+
 # 12.1) Expression-ranked 4-fold π analysis (Kelly replication) ----
 # Bin genes into groups of ~1000 ranked by Mean_Log10_Exp, calculate
 # weighted mean 4-fold nucleotide diversity within each bin.
@@ -2533,7 +2592,7 @@ p_pi_by_expression <- ggplot(pi_by_expression,
   labs(
     title = expression(paste("4-fold Nucleotide Diversity (", pi, 
                              ") by Expression Level")),
-    subtitle = "Genes ranked by Max Log10 Expression, binned in groups of ~1000",
+    subtitle = "Genes ranked by Mean Log10 Expression, binned in groups of ~1000",
     x = "Expression level category",
     y = expression(paste("nuc_diversity (4 fold)"))
   ) +
@@ -2641,7 +2700,7 @@ if (has_mutation_types) {
 }
 
 # Memory cleanup
-rm(p_pi_by_expression, bin_size, mutation_types, has_mutation_types)
+rm(p_pi_by_expression, bin_size, mutation_types)
 
 # 12.2) Tracking frequency of preferred allele as a function of expression ----
 
@@ -3005,12 +3064,18 @@ rm(preferred_raw, pref_by_ending, contour_split)
 # Under background selection, genes under stronger purifying selection
 # (= more highly expressed) should have lower pi at nonsynonymous (0-fold)
 # sites. This is independent of the codon usage bias signal.
+#
+# We decompose 4-fold pi into three components:
+#   (a) Overall 4-fold pi (linked selection signal)
+#   (b) 4-fold pi at the first 300 bp of CDS (ramp / Hill-Robertson zone)
+#   (c) 4-fold pi after the first 300 bp (gene body)
+# The "selection group" (S_ROC > 1) is isolated as an independent point.
 
 cat("\n=== Background Selection: Nonsynonymous Pi vs Expression ===\n")
 
 bgs_data <- integrated_data |>
   dplyr::filter(Sites_0fold >= 10, Pi_mean_0fold >= 0,
-                !is.na(Max_Log10_Exp)) |>
+                !is.na(Mean_Log10_Exp)) |>
   dplyr::mutate(log10_length = log10(CDS_length_nt))
 
 # Spearman correlation: pi_0fold vs expression
@@ -3019,39 +3084,97 @@ cor_0fold <- cor.test(bgs_data$Mean_Log10_Exp, bgs_data$Pi_mean_0fold,
 cat(sprintf("Spearman rho (Pi_0fold ~ Expression): %.4f (p = %.2e, n = %d)\n",
             cor_0fold$estimate, cor_0fold$p.value, nrow(bgs_data)))
 
-# Expression-binned weighted mean pi_0fold (parallels the 4-fold analysis)
-bgs_binned <- bgs_data |>
-  dplyr::arrange(Mean_Log10_Exp) |> 
+# --- Binned analysis: expression-ranked bins (excluding selection group) ---
+bgs_nonsel <- bgs_data |> dplyr::filter(S_ROC < 1)
+
+bgs_binned <- bgs_nonsel |>
+  dplyr::arrange(Mean_Log10_Exp) |>
   dplyr::mutate(Rank = dplyr::row_number(),
                 Exp_Bin = ceiling(Rank / 1000)) |>
   dplyr::group_by(Exp_Bin) |>
   dplyr::summarize(
-    n_genes = dplyr::n(),
-    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
-    weighted_pi_0fold = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
-    weighted_pi_4fold = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    n_genes           = dplyr::n(),
+    mean_expression   = mean(Mean_Log10_Exp, na.rm = TRUE),
+    # Overall 4-fold and 0-fold
+    pi_4fold          = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    pi_0fold          = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
+    # 4-fold decomposed by position
+    pi_4fold_first300 = sum(Pi_sum_4fold_first300, na.rm = TRUE) /
+                        sum(Sites_4fold_first300, na.rm = TRUE),
+    pi_4fold_after300 = sum(Pi_sum_4fold_after300, na.rm = TRUE) /
+                        sum(Sites_4fold_after300, na.rm = TRUE),
     .groups = "drop"
   )
 
-# Compute pi_0fold / pi_4fold ratio (controls for demography/linked effects)
-bgs_binned$Pi_ratio_0_4 <- bgs_binned$weighted_pi_0fold / bgs_binned$weighted_pi_4fold
+# --- Selection group (S_ROC > 1) as isolated point ---
+bgs_sel <- bgs_data |> dplyr::filter(S_ROC > 1)
 
-# Plot: pi at 0-fold and 4-fold sites vs expression
+sel_point <- bgs_sel |>
+  dplyr::summarize(
+    n_genes           = dplyr::n(),
+    mean_expression   = mean(Mean_Log10_Exp, na.rm = TRUE),
+    pi_4fold          = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    pi_0fold          = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
+    pi_4fold_first300 = sum(Pi_sum_4fold_first300, na.rm = TRUE) /
+                        sum(Sites_4fold_first300, na.rm = TRUE),
+    pi_4fold_after300 = sum(Pi_sum_4fold_after300, na.rm = TRUE) /
+                        sum(Sites_4fold_after300, na.rm = TRUE)
+  )
+
+cat(sprintf("Selection group (S_ROC > 1): n = %d, mean_exp = %.2f\n",
+            sel_point$n_genes, sel_point$mean_expression))
+
+# Compute pi_0fold / pi_4fold ratio
+bgs_binned$Pi_ratio_0_4 <- bgs_binned$pi_0fold / bgs_binned$pi_4fold
+
+# --- Pivot to long format for the combined plot ---
 bgs_long <- bgs_binned |>
-  tidyr::pivot_longer(cols = c(weighted_pi_0fold, weighted_pi_4fold),
-                      names_to = "Site_Class", values_to = "Pi") |>
-  dplyr::mutate(Site_Class = ifelse(Site_Class == "weighted_pi_0fold",
-                                    "Nonsynonymous (0-fold)",
-                                    "Synonymous (4-fold)"))
+  tidyr::pivot_longer(
+    cols = c(pi_4fold, pi_0fold, pi_4fold_first300, pi_4fold_after300),
+    names_to = "Site_Class", values_to = "Pi"
+  ) |>
+  dplyr::mutate(
+    Site_Class = dplyr::recode(Site_Class,
+      "pi_0fold"          = "0-fold (nonsynonymous)",
+      "pi_4fold"          = "4-fold (overall)",
+      "pi_4fold_first300" = "4-fold (first 300 bp)",
+      "pi_4fold_after300" = "4-fold (after 300 bp)"
+    ),
+    Source = "Expression bins"
+  )
 
-p_bgs <- ggplot(bgs_long, aes(x = mean_expression, y = Pi, color = Site_Class)) +
+sel_long <- sel_point |>
+  tidyr::pivot_longer(
+    cols = c(pi_4fold, pi_0fold, pi_4fold_first300, pi_4fold_after300),
+    names_to = "Site_Class", values_to = "Pi"
+  ) |>
+  dplyr::mutate(
+    Site_Class = dplyr::recode(Site_Class,
+      "pi_0fold"          = "0-fold (nonsynonymous)",
+      "pi_4fold"          = "4-fold (overall)",
+      "pi_4fold_first300" = "4-fold (first 300 bp)",
+      "pi_4fold_after300" = "4-fold (after 300 bp)"
+    ),
+    Source = "Selection group (S > 1)"
+  )
+
+bgs_colors <- c("0-fold (nonsynonymous)" = "#E41A1C",
+                "4-fold (overall)"        = "#377EB8",
+                "4-fold (first 300 bp)"   = "#984EA3",
+                "4-fold (after 300 bp)"   = "#4DAF4A")
+
+p_bgs <- ggplot(bgs_long,
+                aes(x = mean_expression, y = Pi, color = Site_Class)) +
   geom_point(size = 2) +
-  geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
-  scale_color_manual(values = c("Nonsynonymous (0-fold)" = "#E41A1C",
-                                "Synonymous (4-fold)" = "#377EB8")) +
+  geom_line(linewidth = 0.6) +
+  # Selection group as distinct larger points
+  geom_point(data = sel_long,
+             aes(x = mean_expression, y = Pi, color = Site_Class),
+             shape = 18, size = 5, stroke = 1.2) +
+  scale_color_manual(values = bgs_colors) +
   labs(
-    title = "Nucleotide Diversity vs Expression: Nonsynonymous and Synonymous Sites",
-    subtitle = "Stronger purifying selection on highly expressed genes reduces pi_0fold",
+    title = expression("Linked Selection: " * pi * " at 0-fold and 4-fold Sites vs Expression"),
+    subtitle = "4-fold decomposed: first 300 bp (ramp/HRI zone) vs gene body | Diamonds = selection group (S > 1)",
     x = expression(Mean~log[10](Expression)),
     y = expression("Weighted " * pi),
     color = NULL
@@ -3059,15 +3182,127 @@ p_bgs <- ggplot(bgs_long, aes(x = mean_expression, y = Pi, color = Site_Class)) 
   theme_custom() +
   theme(legend.position = "top")
 
-ggsave("./results/Pi_0fold_4fold_vs_expression.pdf", p_bgs, width = 9, height = 6)
+ggsave("./results/Pi_0fold_4fold_vs_expression.pdf", p_bgs, width = 11, height = 7)
 cat("Saved: ./results/Pi_0fold_4fold_vs_expression.pdf\n")
+
+# --- 12.4b) C-frequency contribution to pi increase in selection group ---
+# The rise in 4-fold pi for the selection category is expected if selection
+# increases C frequency at 4-fold sites (ROC-preferred codons are GC-ending),
+# creating more C/non-C heterozygosity. We show this via mutation-type
+# decomposition: C-involving pairs (AC, CG, CT) vs non-C pairs (AG, AT, GT).
+
+if (has_mutation_types) {
+  # Mutation-type pi components for the binned data
+  bgs_mut_binned <- bgs_nonsel |>
+    dplyr::arrange(Mean_Log10_Exp) |>
+    dplyr::mutate(Rank = dplyr::row_number(),
+                  Exp_Bin = ceiling(Rank / 1000)) |>
+    dplyr::group_by(Exp_Bin) |>
+    dplyr::summarize(
+      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+      pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AT = sum(Pi_sum_4fold_AT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CG = sum(Pi_sum_4fold_CG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CT = sum(Pi_sum_4fold_CT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(Source = "Expression bins")
+
+  # Selection group mutation-type decomposition
+  sel_mut <- bgs_sel |>
+    dplyr::summarize(
+      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+      pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_AT = sum(Pi_sum_4fold_AT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CG = sum(Pi_sum_4fold_CG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_CT = sum(Pi_sum_4fold_CT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+      pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE)
+    ) |>
+    dplyr::mutate(Source = "Selection group (S > 1)")
+
+  bgs_mut_all <- dplyr::bind_rows(bgs_mut_binned, sel_mut)
+
+  # Tag C-involving vs non-C pairs
+  bgs_mut_long <- bgs_mut_all |>
+    tidyr::pivot_longer(
+      cols = starts_with("pi_"),
+      names_to = "Mutation_Type", values_to = "Pi_component",
+      names_prefix = "pi_"
+    ) |>
+    dplyr::mutate(
+      Involves_C = ifelse(grepl("C", Mutation_Type), "C-involving", "Non-C"),
+      Is_Selection = (Source == "Selection group (S > 1)")
+    )
+
+  # Stacked area by C-involvement
+  bgs_c_summary <- bgs_mut_long |>
+    dplyr::group_by(mean_expression, Source, Involves_C) |>
+    dplyr::summarize(Pi_total = sum(Pi_component), .groups = "drop")
+
+  # Split for bins vs selection group
+  bgs_c_bins <- bgs_c_summary |> dplyr::filter(Source == "Expression bins")
+  bgs_c_sel  <- bgs_c_summary |> dplyr::filter(Source == "Selection group (S > 1)")
+
+  p_c_contrib <- ggplot(bgs_c_bins,
+                        aes(x = mean_expression, y = Pi_total, fill = Involves_C)) +
+    geom_area(alpha = 0.7, position = "stack") +
+    # Selection group as stacked bars
+    geom_col(data = bgs_c_sel,
+             aes(x = mean_expression, y = Pi_total, fill = Involves_C),
+             width = 0.08, alpha = 0.9, position = "stack") +
+    scale_fill_manual(values = c("C-involving" = "#377EB8", "Non-C" = "#BDBDBD")) +
+    labs(
+      title = expression("Decomposition of 4-fold " * pi *
+                          ": C-involving vs Non-C Segregating Pairs"),
+      subtitle = "Bar at right = selection group (S > 1); C-involvement drives pi increase under selection",
+      x = expression(Mean~log[10](Expression)),
+      y = expression(pi * " component (4-fold)"),
+      fill = NULL
+    ) +
+    theme_custom() +
+    theme(legend.position = "top")
+
+  ggsave("./results/Pi_4fold_C_contribution_vs_expression.pdf",
+         p_c_contrib, width = 10, height = 6)
+  cat("Saved: ./results/Pi_4fold_C_contribution_vs_expression.pdf\n")
+
+  # Per mutation-type line plot with selection group highlighted
+  p_mut_sel <- ggplot(bgs_mut_long |> dplyr::filter(!Is_Selection),
+                      aes(x = mean_expression, y = Pi_component,
+                          color = Mutation_Type)) +
+    geom_point(size = 1.5) +
+    geom_line(linewidth = 0.6) +
+    # Selection group as diamonds
+    geom_point(data = bgs_mut_long |> dplyr::filter(Is_Selection),
+               aes(x = mean_expression, y = Pi_component, color = Mutation_Type),
+               shape = 18, size = 4) +
+    scale_color_brewer(palette = "Set2", name = "Segregating\nBases") +
+    labs(
+      title = expression("4-fold " * pi * " by Mutation Type: Expression Bins + Selection Group"),
+      subtitle = "Diamonds = selection group (S > 1); note elevated AC, CG, CT (C-involving pairs)",
+      x = expression(Mean~log[10](Expression)),
+      y = expression(pi * " component (4-fold)")
+    ) +
+    theme_custom() +
+    theme(legend.position = "right")
+
+  ggsave("./results/Pi_4fold_mutation_type_with_selection_group.pdf",
+         p_mut_sel, width = 11, height = 6)
+  cat("Saved: ./results/Pi_4fold_mutation_type_with_selection_group.pdf\n")
+
+  rm(bgs_mut_binned, sel_mut, bgs_mut_all, bgs_mut_long,
+     bgs_c_summary, bgs_c_bins, bgs_c_sel, p_c_contrib, p_mut_sel)
+}
 
 # GAM contour: pi at 0-fold sites ~ expression x gene length
 bgs_contour_data <- bgs_data |>
   dplyr::filter(Pi_mean_0fold > 0)
 
 bgs_gam <- mgcv::gam(
-  Pi_mean_0fold ~ te(Max_Log10_Exp, Exp_breadth, log10_length, 
+  Pi_mean_0fold ~ te(Max_Log10_Exp, Exp_breadth, log10_length,
                      k = c(10, 10)),
   data = bgs_contour_data,
   family = Gamma(link = "log")
@@ -3119,8 +3354,9 @@ rm(pi_selection_winner, pi_secection_winner_s,
    top5_preferred, middle_preferred, bottom5_preferred,
    p_boxplot_preferred, p_preferred_median, p_surface_pref, plot_data_pref,
    contour_data, contour_gam, pred_grid_pref, p_pref_contour,
-   bgs_data, bgs_binned, bgs_long, bgs_contour_data,
-   bgs_gam, bgs_grid, p_bgs, p_ratio, p_bgs_contour, cor_0fold)
+   bgs_data, bgs_binned, bgs_long, bgs_contour_data, bgs_nonsel, bgs_sel,
+   bgs_gam, bgs_grid, p_bgs, p_ratio, p_bgs_contour, cor_0fold,
+   sel_point, sel_long, bgs_colors, has_mutation_types)
 gc()
 
 ## *****************************************************************************
