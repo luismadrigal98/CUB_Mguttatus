@@ -3529,7 +3529,7 @@ AIC(fit_null_ml, fit_ramp_ml, fit_ramp_int_ml)
 # Visualization
 
 pred_positions <- data.frame(
-  Position_mid = seq(5, 400, by = 2),
+  Position_mid = seq(5, 200, by = 2),
   Exp_Z = 0,
   Breadth_Z = 0,
   GeneID = model_data_agg$GeneID[1],  # Reference gene for RE
