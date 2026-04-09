@@ -183,26 +183,33 @@ obs.phi <- args$phi
 with.phi <- !is.null(obs.phi)
 
 # ******************************************************************************
-# WORKAROUND FOR ANACODA BUG (segfault with with.phi=TRUE)
-# When using fixed dM with expression data, we:
+# FIXED PHI WORKAROUND (modeling choice, not a bug workaround)
+# When using fixed dM with expression data, we treat observed expression as the
+# "true" phi values and estimate only selection coefficients conditional on them:
 #   - Initialize phi FROM observed expression
 #   - Do NOT estimate phi (keep it fixed at empirical values)
-#   - Set with.phi=FALSE in model to avoid the segfault
-# This effectively treats empirical expression as the "true" phi values.
+#   - Set with.phi=FALSE in the model
+#
+# NOTE ON ANACODA BUG (now fixed in AnaCoDA_fixed/AnaCoDa):
+# The original segfault (address 0x29) when withPhi=TRUE was caused by a missing
+# argument in Trace::initializeROCTrace() — it passed estimateSynthesisRate (bool)
+# in the position of numObservedPhiSets, initializing SynthesisOffset traces with
+# size 1 instead of the actual number of phi groupings. This has been fixed in
+# AnaCoDA_fixed/AnaCoDa/src/Trace.cpp. Once the fixed package is installed, the
+# phi-only model (withPhi=TRUE, est.phi=TRUE) will work correctly.
 # ******************************************************************************
 use.fixed.phi.workaround <- with.phi && fix.dM
 
 if (use.fixed.phi.workaround) {
   message("")
   message("============================================================")
-  message("  WORKAROUND MODE: Fixed dM with expression data detected   ")
+  message("  FIXED-PHI MODE: Fixed dM with expression data detected    ")
   message("============================================================")
-  message("Due to an AnaCoDa bug, phi will be FIXED at empirical values")
-  message("(not estimated). Selection coefficients will be estimated")
-  message("conditional on these fixed phi values.")
+  message("Phi will be FIXED at empirical expression values (modeling")
+  message("choice). Only CSP and hyperparameters will be estimated.")
   message("============================================================")
   message("")
-  
+
   # Override est.phi to FALSE - phi will not be estimated
   est.phi <- FALSE
 }
