@@ -308,6 +308,21 @@ if (with.phi && !is.null(obs.phi)) {
   genome <- initializeGenomeObject(file = input)
 }
 
+# Remove organellar genes from the genome object (gene IDs matching .O followed by digits).
+# These genes may be present in the FASTA and are incompatible with the nuclear ROC model:
+# their extreme expression values (e.g., O006900 up to 6792 TPM) cause exp(phi*selection)
+# overflow -> NaN in calculateLogCodonProbabilityVector during MCMC.
+gene_names_all <- getNames(genome)
+organellar_in_genome <- grepl("\\.O[0-9]", gene_names_all)
+if (any(organellar_in_genome)) {
+  n_removed <- sum(organellar_in_genome)
+  removed_ids <- gene_names_all[organellar_in_genome]
+  message(sprintf("Removing %d organellar gene(s) from genome: %s",
+                  n_removed, paste(removed_ids, collapse = ", ")))
+  nuclear_indices <- which(!organellar_in_genome)  # 1-indexed for AnaCoDa
+  genome <- genome$getGenomeForGeneIndices(nuclear_indices)
+}
+
 size <- length(genome)
 message(paste("Genome loaded with", size, "genes"))
 
