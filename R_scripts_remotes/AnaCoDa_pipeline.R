@@ -308,6 +308,22 @@ if (with.phi && !is.null(obs.phi)) {
   message(sprintf("Normalized phi by mean of non-zero values (%.4f); max phi after norm: %.2f",
                   phi_norm_mean, max(phi_raw[, phi_cols])))
 
+  # Replace zero-CPM entries with AnaCoDa's "no observation" sentinel (-1.0).
+  # Zero CPM means no reads detected: log(0) = -Inf in the observation likelihood,
+  # which causes probabilities[k] = exp(-Inf) = 0, and with a single mixture,
+  # normalizingProbabilityConstant = 0 → 0/0 = NaN → logPosterior = NaN by
+  # iteration 20 (the first thinned sample, thinning=20 by default).
+  # AnaCoDa skips genes where obsPhi <= -1.0 via the check `if (obsPhi > -1.0)`.
+  # NOTE: zeros remain exactly 0 after dividing by phi_norm_mean, so this
+  # replacement must happen AFTER normalization.
+  zero_mask <- phi_raw[, phi_cols, drop = FALSE] == 0
+  n_zero <- sum(zero_mask)
+  if (n_zero > 0) {
+    phi_raw[, phi_cols][zero_mask] <- -1.0
+    message(sprintf("Replaced %d zero-CPM values (%.1f%%) with sentinel -1 (AnaCoDa 'no observation')",
+                    n_zero, 100 * n_zero / (nrow(phi_raw) * length(phi_cols))))
+  }
+
   # Write as CSV — AnaCoDa's C++ readObservedPhiValues requires comma-delimited input
   obs.phi.filtered <- tempfile(fileext = ".csv")
   on.exit(unlink(obs.phi.filtered), add = TRUE)
