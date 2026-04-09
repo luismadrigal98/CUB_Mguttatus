@@ -270,18 +270,40 @@ if (with.phi && !is.null(obs.phi)) {
   if (!file.exists(obs.phi)) {
     stop(paste("Expression file not found:", obs.phi))
   }
-  
-  # Validate that expression file has correct format
-  exp_check <- read.csv(obs.phi, nrows = 5, header = TRUE)
-  if (ncol(exp_check) < 2) {
+
+  # Read phi file using fread (auto-detects TSV or CSV)
+  phi_raw <- tryCatch(
+    data.table::fread(obs.phi, header = TRUE, data.table = FALSE),
+    error = function(e) stop(paste("Failed to read expression file:", e$message))
+  )
+  if (ncol(phi_raw) < 2) {
     stop("Expression file must have at least 2 columns (GeneID + expression values)")
   }
-  message(paste("Expression file has", ncol(exp_check) - 1, "expression column(s)"))
-  
-  # Initialize genome with expression data
+
+  # Filter organellar genes (gene IDs with .O followed by digits).
+  # These genes have codon usage and expression levels incompatible with the
+  # nuclear ROC model: e.g., O006900 has phi up to 6792 TPM, which causes
+  # exp(phi * selection) overflow -> NaN in calculateLogCodonProbabilityVector.
+  organellar_mask <- grepl("\\.O[0-9]", phi_raw[[1]])
+  if (any(organellar_mask)) {
+    n_org <- sum(organellar_mask)
+    org_ids <- phi_raw[[1]][organellar_mask]
+    message(sprintf("Filtering %d organellar gene(s) from phi file: %s",
+                    n_org, paste(org_ids, collapse = ", ")))
+    phi_raw <- phi_raw[!organellar_mask, , drop = FALSE]
+  }
+
+  message(paste("Expression file has", ncol(phi_raw) - 1, "expression column(s),",
+                nrow(phi_raw), "genes after filtering"))
+
+  # Write as CSV — AnaCoDa's C++ readObservedPhiValues requires comma-delimited input
+  obs.phi.filtered <- tempfile(fileext = ".csv")
+  data.table::fwrite(phi_raw, obs.phi.filtered)
+
+  # Initialize genome with filtered expression data
   genome <- initializeGenomeObject(file = input,
                                    match.expression.by.id = TRUE,
-                                   observed.expression.file = obs.phi)
+                                   observed.expression.file = obs.phi.filtered)
 } else {
   genome <- initializeGenomeObject(file = input)
 }
