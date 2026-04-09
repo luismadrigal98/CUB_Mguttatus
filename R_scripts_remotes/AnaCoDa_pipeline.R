@@ -310,6 +310,7 @@ if (with.phi && !is.null(obs.phi)) {
 
   # Write as CSV — AnaCoDa's C++ readObservedPhiValues requires comma-delimited input
   obs.phi.filtered <- tempfile(fileext = ".csv")
+  on.exit(unlink(obs.phi.filtered), add = TRUE)
   data.table::fwrite(phi_raw, obs.phi.filtered)
 
   # Initialize genome with filtered expression data
@@ -394,7 +395,7 @@ if (!is.null(sepsilon.init)) {
 } else if (!is.null(obs.phi)) {
   # Auto-detect number of columns if no sepsilon provided
   # Read just the header to count columns efficiently
-  temp_df <- read.csv(obs.phi, nrows = 1, header = TRUE)
+  temp_df <- data.table::fread(obs.phi, nrows = 1, header = TRUE, data.table = FALSE)
   n_sources <- ncol(temp_df) - 1 # Minus GeneID column
   s_eps <- rep(0.1, n_sources)
 } else {
