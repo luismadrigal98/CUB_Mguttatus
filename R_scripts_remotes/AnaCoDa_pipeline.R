@@ -296,6 +296,18 @@ if (with.phi && !is.null(obs.phi)) {
   message(paste("Expression file has", ncol(phi_raw) - 1, "expression column(s),",
                 nrow(phi_raw), "genes after filtering"))
 
+  # Normalize phi values so their mean ≈ 1 (consistent with AnaCoDa's LogNormal prior,
+  # which has mean = exp(-sigma^2/2) ≈ 1).  Without normalization, CPM values up to
+  # ~37 000 cause numerical instability: extreme phi enters calculateLogCodonProbability-
+  # Vector and calculateLogLikelihoodRatioForHyperParameters in ways the overflow guards
+  # do not fully cover (log(phi) → -Inf when phi ≈ 0 → NaN via -Inf - (-Inf)).
+  phi_cols <- 2:ncol(phi_raw)
+  all_phi_vals <- unlist(phi_raw[, phi_cols])
+  phi_norm_mean <- mean(all_phi_vals[all_phi_vals > 0])
+  phi_raw[, phi_cols] <- phi_raw[, phi_cols] / phi_norm_mean
+  message(sprintf("Normalized phi by mean of non-zero values (%.4f); max phi after norm: %.2f",
+                  phi_norm_mean, max(phi_raw[, phi_cols])))
+
   # Write as CSV — AnaCoDa's C++ readObservedPhiValues requires comma-delimited input
   obs.phi.filtered <- tempfile(fileext = ".csv")
   data.table::fwrite(phi_raw, obs.phi.filtered)
