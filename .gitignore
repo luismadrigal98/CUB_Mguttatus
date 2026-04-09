@@ -32,3 +32,5 @@ tests/validation_log.txt
 tests/validation_results.csv
 CLAUDE.md
 .claude/settings.json
+AnaCoDA_fixed/AnaCoDa/src/Makevars
+AnaCoDA_fixed/AnaCoDa/config.status
