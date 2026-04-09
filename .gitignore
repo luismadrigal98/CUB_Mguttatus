@@ -31,3 +31,4 @@ tests/validation_log.txt
 .gitignore
 tests/validation_results.csv
 CLAUDE.md
+.claude/settings.json
