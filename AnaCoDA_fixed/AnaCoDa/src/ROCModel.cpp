@@ -593,9 +593,15 @@ void ROCModel::updateGibbsSampledHyperParameters(Genome &genome)
 	{
 		if(!fix_sEpsilon)
 		{
-			double shape = ((double)genome.getGenomeSize() - 1.0) / 2.0;
 			for (unsigned i = 0; i < parameter->getNumObservedPhiSets(); i++)
 			{
+				// shape must be re-initialised for each phi set: missing-observation
+				// adjustments (shape -= 0.5) must not accumulate across tissue columns.
+				// Bug: placing shape before the loop caused it to decrease by ~2335 per
+				// tissue with 20.7% missing data.  After ~5 tissues shape went negative,
+				// making randGamma() return NaN and poisoning every subsequent gene's
+				// log-likelihood.
+				double shape = ((double)genome.getGenomeSize() - 1.0) / 2.0;
 				double rate = 0.0; //Prior on s_epsilon goes here?
 				unsigned mixtureAssignment;
 				double noiseOffset = getNoiseOffset(i);
