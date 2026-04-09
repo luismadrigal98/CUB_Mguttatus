@@ -320,7 +320,7 @@ if (any(organellar_in_genome)) {
   message(sprintf("Removing %d organellar gene(s) from genome: %s",
                   n_removed, paste(removed_ids, collapse = ", ")))
   nuclear_indices <- which(!organellar_in_genome)  # 1-indexed for AnaCoDa
-  genome <- genome$getGenomeForGeneIndices(nuclear_indices)
+  genome <- genome$getGenomeForGeneIndices(nuclear_indices, FALSE)
 }
 
 size <- length(genome)
