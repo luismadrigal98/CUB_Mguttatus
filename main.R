@@ -1650,7 +1650,7 @@ U_emp   <- UV_emp["U"]; V_emp <- UV_emp["V"]
 cat(sprintf("[Branch B] Empirical U = %.4f, V = %.4f, V/U = %.3f\n",
             U_emp, V_emp, V_emp / U_emp))
 
-# Empirical Q(S) and pi(S) curves -------------------------------------------
+# Empirical Q(S) and pi(S) curves ----
 S_grid_emp  <- seq(0, max(8, 2.5 * max(msd_data$S_ROC, na.rm = TRUE)), length.out = 200)
 wright_emp  <- data.frame(
   S       = S_grid_emp,
@@ -1658,7 +1658,7 @@ wright_emp  <- data.frame(
   pi_site = wright_pi(S_grid_emp, U = U_emp, V = V_emp)
 )
 
-# --- Calibrate alpha: bin genes by S_ROC, fit Q(alpha * S_ROC; U, V) -------
+# Calibrate alpha: bin genes by S_ROC, fit Q(alpha * S_ROC; U, V) ----
 n_bins_alpha <- 25
 msd_data <- msd_data |>
   dplyr::arrange(S_ROC) |>
