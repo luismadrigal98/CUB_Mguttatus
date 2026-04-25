@@ -1534,9 +1534,239 @@ combined_plot <- (p1 | p2) / (p3 | p4) + plot_annotation(tag_levels = 'A')
 # Saved with a larger dimension to accommodate the 2x2 grid nicely
 ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, height = 12)
 
+# 8.3.4) Wright's mutation-selection-drift framework: defensible S_ROC threshold ----
+#
+# Motivation: the conventional S = 1 "drift threshold" derives from population-
+# genetic theory for the scaled selection coefficient S = 2 N s. The AnaCoDa
+# S_ROC statistic is a per-codon mean of |Delta_eta|, which is on a related but
+# not identical scale. Below we (A) replicate the closed-form Wright predictions
+# the advisor produced in Mathematica with fiducial mutation parameters, then
+# (B) estimate those mutation parameters directly from the M. guttatus 4-fold
+# polymorphism data and calibrate a scale factor alpha so that S_Wright =
+# alpha * S_ROC. The threshold for "selection beats mutation" is then derived
+# from the Wright Q(S) curve and converted to the S_ROC scale.
+
+source("./src/wright_msd_framework.R")
+
+# --- Per-gene preferred-codon frequency at 4-fold sites -------------------
+# (Used as the empirical Q for both the neutral solver and the alpha fit.)
+
+fourfold_families_msd <- c("Ala", "Gly", "Pro", "Thr", "Val",
+                           "Leu_4", "Ser_4", "Arg_4")
+fourfold_codons_msd <- names(genetic_code_dna_long)[
+  genetic_code_dna_long %in% fourfold_families_msd
+]
+preferred_4fold_msd <- preferred_codons_roc |>
+  dplyr::filter(Family %in% fourfold_families_msd) |>
+  dplyr::pull(Preferred_Codons)
+
+codon_4fold_counts <- as.data.frame(
+  codon_usage[, c("Gene_name", fourfold_codons_msd), with = FALSE]
+)
+total_4fold      <- rowSums(codon_4fold_counts[, fourfold_codons_msd])
+preferred_4fold  <- rowSums(
+  codon_4fold_counts[, intersect(preferred_4fold_msd, fourfold_codons_msd),
+                     drop = FALSE]
+)
+gene_Q_4fold <- data.frame(
+  Gene_name        = codon_4fold_counts$Gene_name,
+  N_4fold_codons   = total_4fold,
+  N_preferred      = preferred_4fold,
+  Q_pref_4fold     = ifelse(total_4fold > 0, preferred_4fold / total_4fold, NA_real_)
+)
+
+msd_data <- integrated_data |>
+  dplyr::select(Gene_name, S_ROC, Pi_mean_4fold, Mean_Log10_Exp) |>
+  dplyr::inner_join(gene_Q_4fold, by = "Gene_name") |>
+  dplyr::filter(!is.na(Q_pref_4fold), !is.na(Pi_mean_4fold), N_4fold_codons >= 20)
+
+cat(sprintf(
+  "[Wright MSD] %d genes with usable 4-fold Q and pi (>=20 4-fold codons).\n",
+  nrow(msd_data)
+))
+
+# --- Branch A: replicate advisor's Mathematica predictions ----------------
+# Fiducial parameters from the email: U = 0.075, V = 0.25 * U = 0.01875.
+# Sanity: Q(S = 0) should equal V/(U+V) = 0.20 and pi(S = 0) ~ 0.027.
+
+U_fid <- 0.075
+V_fid <- 0.25 * U_fid
+S_grid_fid <- seq(0, 2.5, by = 0.1)
+wright_fid <- data.frame(
+  S       = S_grid_fid,
+  Q       = wright_Q(S_grid_fid,  U = U_fid, V = V_fid),
+  pi_site = wright_pi(S_grid_fid, U = U_fid, V = V_fid)
+)
+cat(sprintf("[Branch A] Fiducial: Q(0) = %.3f (expect 0.200), pi(0) = %.4f (expect ~0.027)\n",
+            wright_fid$Q[1], wright_fid$pi_site[1]))
+
+p_advisor_Q <- ggplot(wright_fid, aes(x = S, y = Q)) +
+  geom_line(color = "#1f6f8b", linewidth = 0.6) +
+  geom_point(color = "#1f6f8b", size = 2.5) +
+  scale_y_continuous(limits = c(0, 0.8), breaks = seq(0, 0.8, 0.1)) +
+  labs(x = "S (Wright)", y = "Preferred base freq",
+       title = "Wright Q(S) — fiducial U = 0.075, V = U/4") +
+  theme_custom()
+
+p_advisor_pi <- ggplot(wright_fid, aes(x = S, y = pi_site)) +
+  geom_line(color = "#1f6f8b", linewidth = 0.6) +
+  geom_point(color = "#1f6f8b", size = 2.5) +
+  scale_y_continuous(limits = c(0.025, 0.041)) +
+  labs(x = "S (Wright)", y = "Nucleotide Diversity",
+       title = "Wright pi(S) — fiducial U = 0.075, V = U/4") +
+  theme_custom()
+
+ggsave("./results/Wright_advisor_replication_Q.pdf",
+       p_advisor_Q,  width = 6, height = 4)
+ggsave("./results/Wright_advisor_replication_pi.pdf",
+       p_advisor_pi, width = 6, height = 4)
+
+# --- Branch B: estimate U, V empirically from low-S_ROC pool --------------
+# Define a "near-neutral" pool as the bottom S_ROC quartile. Use site-weighted
+# Q to reduce small-gene noise, and gene-mean pi (weighted by 4-fold sites).
+
+S_ROC_q25     <- quantile(msd_data$S_ROC, 0.25, na.rm = TRUE)
+neutral_pool  <- msd_data |> dplyr::filter(S_ROC <= S_ROC_q25)
+
+Q_neutral_obs  <- with(neutral_pool, sum(N_preferred) / sum(N_4fold_codons))
+pi_neutral_obs <- with(
+  integrated_data |>
+    dplyr::filter(Gene_name %in% neutral_pool$Gene_name),
+  sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE)
+)
+
+cat(sprintf(
+  "[Branch B] Near-neutral pool (S_ROC <= %.3f, n = %d): Q_obs = %.3f, pi_obs = %.4f\n",
+  S_ROC_q25, nrow(neutral_pool), Q_neutral_obs, pi_neutral_obs
+))
+
+UV_emp  <- wright_solve_UV(Q_neutral_obs, pi_neutral_obs)
+U_emp   <- UV_emp["U"]; V_emp <- UV_emp["V"]
+cat(sprintf("[Branch B] Empirical U = %.4f, V = %.4f, V/U = %.3f\n",
+            U_emp, V_emp, V_emp / U_emp))
+
+# Empirical Q(S) and pi(S) curves -------------------------------------------
+S_grid_emp  <- seq(0, max(8, 2.5 * max(msd_data$S_ROC, na.rm = TRUE)), length.out = 200)
+wright_emp  <- data.frame(
+  S       = S_grid_emp,
+  Q       = wright_Q(S_grid_emp,  U = U_emp, V = V_emp),
+  pi_site = wright_pi(S_grid_emp, U = U_emp, V = V_emp)
+)
+
+# --- Calibrate alpha: bin genes by S_ROC, fit Q(alpha * S_ROC; U, V) -------
+n_bins_alpha <- 25
+msd_data <- msd_data |>
+  dplyr::arrange(S_ROC) |>
+  dplyr::mutate(S_bin = ntile(S_ROC, n_bins_alpha))
+
+bin_Q <- msd_data |>
+  dplyr::group_by(S_bin) |>
+  dplyr::summarize(
+    n_genes      = dplyr::n(),
+    mean_S_ROC   = mean(S_ROC, na.rm = TRUE),
+    sites_total  = sum(N_4fold_codons),
+    Q_obs        = sum(N_preferred) / sum(N_4fold_codons),
+    .groups = "drop"
+  )
+
+alpha_fit <- wright_calibrate_alpha(
+  S_ROC_bin = bin_Q$mean_S_ROC,
+  Q_obs_bin = bin_Q$Q_obs,
+  weights   = bin_Q$sites_total,
+  U = U_emp, V = V_emp,
+  alpha_init = 1
+)
+alpha_hat <- alpha_fit$alpha
+cat(sprintf("[Branch B] Calibration: S_Wright = %.3f * S_ROC (residual sd = %.4f)\n",
+            alpha_hat, alpha_fit$residual_sd))
+
+# Diagnostic plot: empirical binned Q vs Wright Q(alpha * S_ROC) -----------
+S_ROC_grid_plot <- seq(0, max(bin_Q$mean_S_ROC) * 1.05, length.out = 300)
+fit_curve <- data.frame(
+  S_ROC = S_ROC_grid_plot,
+  Q_fit = wright_Q(alpha_hat * S_ROC_grid_plot, U = U_emp, V = V_emp)
+)
+
+p_alpha <- ggplot() +
+  geom_point(data = bin_Q,
+             aes(x = mean_S_ROC, y = Q_obs, size = n_genes),
+             color = "#377EB8", alpha = 0.85) +
+  geom_line(data = fit_curve,
+            aes(x = S_ROC, y = Q_fit),
+            color = "#E41A1C", linewidth = 0.8) +
+  geom_hline(yintercept = Q_neutral_obs,
+             linetype = "dashed", color = "grey40") +
+  annotate("text", x = max(bin_Q$mean_S_ROC) * 0.6, y = Q_neutral_obs - 0.02,
+           label = sprintf("Q_neutral = %.3f", Q_neutral_obs),
+           color = "grey30", size = 3.2) +
+  scale_size_continuous(name = "Genes / bin", range = c(2, 6)) +
+  labs(
+    title = sprintf("Calibration: S_Wright = %.2f * S_ROC", alpha_hat),
+    subtitle = sprintf("U_emp = %.4f, V_emp = %.4f (V/U = %.2f)",
+                       U_emp, V_emp, V_emp / U_emp),
+    x = expression(S[ROC]),
+    y = expression("Preferred-codon freq Q at 4-fold sites")
+  ) +
+  theme_custom()
+
+ggsave("./results/Wright_alpha_calibration.pdf",
+       p_alpha, width = 7, height = 5)
+
+# --- Threshold selection ---------------------------------------------------
+# Map three biologically-meaningful Q targets back to the S_ROC scale.
+
+cands_Wright <- wright_threshold_candidates(U = U_emp, V = V_emp)
+cands_Wright$S_ROC_threshold <- cands_Wright$S_Wright / alpha_hat
+cands_Wright$Q_check         <- vapply(cands_Wright$S_Wright,
+                                       wright_Q, numeric(1),
+                                       U = U_emp, V = V_emp)
+cat("\n=== Defensible S_ROC threshold candidates ===\n")
+print(cands_Wright[, c("name", "Q_target", "S_Wright",
+                       "S_ROC_threshold", "rationale")],
+      row.names = FALSE)
+
+# Also report the legacy S = 1 cutoff in the empirical scale, for comparison.
+legacy_thr_SROC <- 1 / alpha_hat
+legacy_Q        <- wright_Q(1, U = U_emp, V = V_emp)
+cat(sprintf(
+  "Legacy 'drift threshold' S_Wright = 1 corresponds to S_ROC = %.3f (Q = %.3f).\n",
+  legacy_thr_SROC, legacy_Q
+))
+
+# Pick the Q-midpoint criterion: it is symmetric in distance to the neutral
+# expectation and to fixation, and is robust to the shape of Q(S) far from
+# neutral.  Update `thr_sel` (downstream sections continue to use this name).
+thr_sel <- cands_Wright$S_ROC_threshold[cands_Wright$name == "Q_midpoint"]
+attr(thr_sel, "criterion")   <- "Q_midpoint"
+attr(thr_sel, "U_empirical") <- U_emp
+attr(thr_sel, "V_empirical") <- V_emp
+attr(thr_sel, "alpha")       <- alpha_hat
+
+cat(sprintf("\n>>> Adopted threshold: S_ROC > %.3f (Q_midpoint criterion)\n",
+            as.numeric(thr_sel)))
+cat(sprintf("    %d / %d genes (%.1f%%) above threshold.\n",
+            sum(integrated_data$S_ROC > thr_sel, na.rm = TRUE),
+            nrow(integrated_data),
+            100 * mean(integrated_data$S_ROC > thr_sel, na.rm = TRUE)))
+
+# Persist artefacts so downstream/manuscript work can cite specific numbers.
+write.csv(wright_fid,
+          "./results/Wright_curve_advisor_fiducial.csv", row.names = FALSE)
+write.csv(wright_emp,
+          "./results/Wright_curve_empirical.csv",        row.names = FALSE)
+write.csv(bin_Q,
+          "./results/Wright_alpha_binned_data.csv",      row.names = FALSE)
+write.csv(cands_Wright,
+          "./results/Wright_threshold_candidates.csv",   row.names = FALSE)
+
+# Memory cleanup
+rm(codon_4fold_counts, total_4fold, preferred_4fold, gene_Q_4fold,
+   p_advisor_Q, p_advisor_pi, p_alpha, fit_curve, S_ROC_grid_plot,
+   S_grid_fid, S_grid_emp, neutral_pool)
+gc()
+
 # 8.4) GO-enrichment analysis of genes with a massive selection load ----
 
-thr_sel <- 1
 
 subset_strongly_shaped_by_s <- integrated_data |>
   dplyr::filter(S_ROC > thr_sel) |>
@@ -2540,7 +2770,7 @@ has_mutation_types <- all(paste0("Pi_sum_4fold_", mutation_types) %in%
 
 # Rank genes by Mean_Log10_Exp and create bins
 pi_by_expression <- integrated_data |>
-  dplyr::filter(S_ROC < 1) |>
+  dplyr::filter(S_ROC < thr_sel) |>
   dplyr::arrange(Mean_Log10_Exp) |>
   dplyr::mutate(
     Rank = dplyr::row_number(),
@@ -2561,7 +2791,7 @@ pi_by_expression <- integrated_data |>
   )
 
 sel_cat <- integrated_data |>
-  dplyr::filter(S_ROC > 1) |> 
+  dplyr::filter(S_ROC > thr_sel) |> 
   dplyr::summarize(
     Exp_Bin = 24,
     n_genes = n(),
@@ -2577,7 +2807,7 @@ sel_cat <- integrated_data |>
   )
 
 pi_by_expression <- pi_by_expression |>
-  rbind(sel_cat) # Bin 24 is the one where genes with S_ROC > 1 are
+  rbind(sel_cat) # Bin 24 holds genes with S_ROC > thr_sel (Wright-calibrated)
 
 cat("\n=== 4-fold π by Expression Rank (groups of ~1000 genes) ===\n")
 print(pi_by_expression)
@@ -2612,7 +2842,7 @@ if (has_mutation_types) {
   # Calculate per-mutation-type pi component within each expression bin
   # Component = sum(Pi_sum_type) / sum(Sites_4fold) → additive decomposition
   pi_by_mutation <- integrated_data |>
-    dplyr::filter(S_ROC < 1) |>
+    dplyr::filter(S_ROC < thr_sel) |>
     dplyr::arrange(Mean_Log10_Exp) |>
     dplyr::mutate(
       Rank = dplyr::row_number(),
@@ -2633,7 +2863,7 @@ if (has_mutation_types) {
     )
   
   pi_sel_group <- integrated_data |>
-    dplyr::filter(S_ROC > 1) |>
+    dplyr::filter(S_ROC > thr_sel) |>
     dplyr::summarize(
       Exp_Bin = 24,
       n_genes = n(),
@@ -3069,7 +3299,7 @@ rm(preferred_raw, pref_by_ending, contour_split)
 #   (a) Overall 4-fold pi (linked selection signal)
 #   (b) 4-fold pi at the first 300 bp of CDS (ramp / Hill-Robertson zone)
 #   (c) 4-fold pi after the first 300 bp (gene body)
-# The "selection group" (S_ROC > 1) is isolated as an independent point.
+# The "selection group" (S_ROC > thr_sel) is isolated as an independent point.
 
 cat("\n=== Background Selection: Nonsynonymous Pi vs Expression ===\n")
 
@@ -3085,7 +3315,7 @@ cat(sprintf("Spearman rho (Pi_0fold ~ Expression): %.4f (p = %.2e, n = %d)\n",
             cor_0fold$estimate, cor_0fold$p.value, nrow(bgs_data)))
 
 # --- Binned analysis: expression-ranked bins (excluding selection group) ---
-bgs_nonsel <- bgs_data |> dplyr::filter(S_ROC < 1)
+bgs_nonsel <- bgs_data |> dplyr::filter(S_ROC < thr_sel)
 
 bgs_binned <- bgs_nonsel |>
   dplyr::arrange(Mean_Log10_Exp) |>
@@ -3106,8 +3336,8 @@ bgs_binned <- bgs_nonsel |>
     .groups = "drop"
   )
 
-# --- Selection group (S_ROC > 1) as isolated point ---
-bgs_sel <- bgs_data |> dplyr::filter(S_ROC > 1)
+# --- Selection group (S_ROC > thr_sel) as isolated point ---
+bgs_sel <- bgs_data |> dplyr::filter(S_ROC > thr_sel)
 
 sel_point <- bgs_sel |>
   dplyr::summarize(
@@ -3121,7 +3351,8 @@ sel_point <- bgs_sel |>
                         sum(Sites_4fold_after300, na.rm = TRUE)
   )
 
-cat(sprintf("Selection group (S_ROC > 1): n = %d, mean_exp = %.2f\n",
+cat(sprintf("Selection group (S_ROC > thr_sel = %.3f): n = %d, mean_exp = %.2f\n",
+            as.numeric(thr_sel),
             sel_point$n_genes, sel_point$mean_expression))
 
 # Compute pi_0fold / pi_4fold ratio
