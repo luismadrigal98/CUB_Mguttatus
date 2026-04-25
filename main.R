@@ -1546,8 +1546,6 @@ ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, heigh
 # alpha * S_ROC. The threshold for "selection beats mutation" is then derived
 # from the Wright Q(S) curve and converted to the S_ROC scale.
 
-source("./src/wright_msd_framework.R")
-
 # --- Per-gene preferred-codon frequency at 4-fold sites -------------------
 # (Used as the empirical Q for both the neutral solver and the alpha fit.)
 
@@ -1556,17 +1554,24 @@ fourfold_families_msd <- c("Ala", "Gly", "Pro", "Thr", "Val",
 fourfold_codons_msd <- names(genetic_code_dna_long)[
   genetic_code_dna_long %in% fourfold_families_msd
 ]
+# NOTE: in preferred_codons_roc, `Amino_Acid` holds the family label (e.g.
+# "Ala", "Leu_4") from genetic_code_dna_long, while `Family` holds AnaCoDa's
+# 1-letter AA code. We filter on Amino_Acid to match fourfold_families_msd.
 preferred_4fold_msd <- preferred_codons_roc |>
-  dplyr::filter(Family %in% fourfold_families_msd) |>
+  dplyr::filter(Amino_Acid %in% fourfold_families_msd) |>
   dplyr::pull(Preferred_Codons)
+preferred_4fold_msd <- intersect(preferred_4fold_msd, fourfold_codons_msd)
+stopifnot(length(preferred_4fold_msd) >= 1)
+cat(sprintf("[Wright MSD] Preferred 4-fold codons identified: %d (%s)\n",
+            length(preferred_4fold_msd),
+            paste(preferred_4fold_msd, collapse = ", ")))
 
 codon_4fold_counts <- as.data.frame(
   codon_usage[, c("Gene_name", fourfold_codons_msd), with = FALSE]
 )
 total_4fold      <- rowSums(codon_4fold_counts[, fourfold_codons_msd])
 preferred_4fold  <- rowSums(
-  codon_4fold_counts[, intersect(preferred_4fold_msd, fourfold_codons_msd),
-                     drop = FALSE]
+  codon_4fold_counts[, preferred_4fold_msd, drop = FALSE]
 )
 gene_Q_4fold <- data.frame(
   Gene_name        = codon_4fold_counts$Gene_name,
@@ -1585,8 +1590,8 @@ cat(sprintf(
   nrow(msd_data)
 ))
 
-# --- Branch A: replicate advisor's Mathematica predictions ----------------
-# Fiducial parameters from the email: U = 0.075, V = 0.25 * U = 0.01875.
+# Branch A: replicate Mathematica predictions ----
+# Fiducial parameters: U = 0.075, V = 0.25 * U = 0.01875.
 # Sanity: Q(S = 0) should equal V/(U+V) = 0.20 and pi(S = 0) ~ 0.027.
 
 U_fid <- 0.075
@@ -1617,18 +1622,18 @@ p_advisor_pi <- ggplot(wright_fid, aes(x = S, y = pi_site)) +
   theme_custom()
 
 ggsave("./results/Wright_advisor_replication_Q.pdf",
-       p_advisor_Q,  width = 6, height = 4)
+       p_advisor_Q,  width = 6, height = 4, device = cairo_pdf)
 ggsave("./results/Wright_advisor_replication_pi.pdf",
-       p_advisor_pi, width = 6, height = 4)
+       p_advisor_pi, width = 6, height = 4, device = cairo_pdf)
 
-# --- Branch B: estimate U, V empirically from low-S_ROC pool --------------
+# Branch B: estimate U, V empirically from low-S_ROC pool ----
 # Define a "near-neutral" pool as the bottom S_ROC quartile. Use site-weighted
 # Q to reduce small-gene noise, and gene-mean pi (weighted by 4-fold sites).
 
-S_ROC_q25     <- quantile(msd_data$S_ROC, 0.25, na.rm = TRUE)
-neutral_pool  <- msd_data |> dplyr::filter(S_ROC <= S_ROC_q25)
+S_ROC_q25 <- quantile(msd_data$S_ROC, 0.25, na.rm = TRUE)
+neutral_pool <- msd_data |> dplyr::filter(S_ROC <= S_ROC_q25)
 
-Q_neutral_obs  <- with(neutral_pool, sum(N_preferred) / sum(N_4fold_codons))
+Q_neutral_obs <- with(neutral_pool, sum(N_preferred) / sum(N_4fold_codons))
 pi_neutral_obs <- with(
   integrated_data |>
     dplyr::filter(Gene_name %in% neutral_pool$Gene_name),
