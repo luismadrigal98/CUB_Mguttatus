@@ -131,12 +131,18 @@ wright_calibrate_alpha <- function(S_ROC_bin, Q_obs_bin,
 #' Used to map a chosen Q-criterion (e.g. midpoint, half-fixation) to the
 #' corresponding S in the Wright scale.  Once alpha is estimated, the
 #' equivalent S_ROC threshold is S_target / alpha.
-wright_invert_Q <- function(Q_target, U, V, S_lower = 0, S_upper = 50) {
+wright_invert_Q <- function(Q_target, U, V, S_lower = 0, S_upper = 50,
+                            S_upper_max = 400) {
   q_low  <- wright_Q(S_lower, U, V)
+  if (Q_target <= q_low) return(NA_real_)
+  # If Q_target sits above the current upper bound, expand S_upper adaptively
+  # so high-Q outlier genes can still be inverted (slowly-saturating regime).
   q_high <- wright_Q(S_upper, U, V)
-  if (Q_target <= q_low || Q_target >= q_high) {
-    return(NA_real_)
+  while (Q_target >= q_high && S_upper < S_upper_max) {
+    S_upper <- min(S_upper * 2, S_upper_max)
+    q_high  <- wright_Q(S_upper, U, V)
   }
+  if (Q_target >= q_high) return(NA_real_)
   uniroot(function(s) wright_Q(s, U, V) - Q_target,
           interval = c(S_lower, S_upper), tol = 1e-6)$root
 }

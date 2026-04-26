@@ -318,6 +318,29 @@ if (n_sig > 0) {
 }
 
 ## *****************************************************************************
+## 5.5) Polymorphism data preload (Pi_mean_4fold needed by Section 6+) ----
+## _____________________________________________________________________________
+# Section 12 historically loaded polymorphism data and joined it into
+# integrated_data. Section 6 GAMs and Section 8.3.4 msd_data filter on
+# Pi_mean_4fold, so the join is hoisted here. Section 12 keeps the per-feature
+# positional decomposition and downstream analyses; only the by-gene join is
+# moved.
+
+pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
+
+pi_data <- pi_data |>
+  dplyr::select(Chr, Gene, contains("mean"),
+                contains("Sites"), contains("Pi_sum"), contains("Poly")) |>
+  dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
+  dplyr::rename(Gene_name = Gene)
+
+integrated_data <- integrated_data |>
+  dplyr::left_join(pi_data, by = "Gene_name") |>
+  na.exclude()
+
+rm(pi_data)
+
+## *****************************************************************************
 ## 6) Modeling relationship between CDC and Expression profiles ----
 ## _____________________________________________________________________________
 
@@ -1340,14 +1363,14 @@ Lprime_ROC <- L_ROC / n_synonymous_codons
 # Empirically Spearman(S_eta, S_Wright) ~ +0.67 in the M. guttatus data,
 # vs Spearman(S_ROC, S_Wright) ~ -0.25, because S_eta lacks the phi factor
 # that drags S_ROC into the load-vs-strength duality.
-eta_unscaled <- read.csv(
-  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv",
-  stringsAsFactors = FALSE)
+# eta_data was already read from the canonical cluster Cluster_1_Selection.csv
+# at the start of Section 8.3 — reuse it directly to avoid drift if the file
+# is ever swapped.
 eta_vec <- setNames(rep(0, length(common_codons)), common_codons)
-m_eta   <- match(common_codons, eta_unscaled$Codon)
-eta_vec[!is.na(m_eta)] <- eta_unscaled$Mean[m_eta[!is.na(m_eta)]]
+m_eta   <- match(common_codons, eta_data$Codon)
+eta_vec[!is.na(m_eta)] <- eta_data$Mean[m_eta[!is.na(m_eta)]]
 
-# Per-gene: -mean over synonymous codons of (count * eta_unscaled).
+# Per-gene: -mean over synonymous codons of (count * eta_unscaled_signed).
 # Restrict to synonymous codons aligned to the count matrix.
 eta_syn <- eta_vec[synonymous_codons_aligned]
 S_eta   <- -as.numeric(counts_aligned[, synonymous_codons_aligned] %*% eta_syn) /
@@ -1358,8 +1381,9 @@ selection_metrics <- data.frame(
   Gene_name = common_genes,
 
   # Use this for Drift Barrier Plots (The "Hump" x-axis).
-  # Threshold S_ROC > 1 captures genes paying high translational selection
-  # cost (load-paying group; Rubisco/photosynthesis enrichment).
+  # Threshold S_ROC > thr_sel (data-driven via GAM inflection; Section 8.3.4)
+  # captures genes paying high translational selection cost (load-paying
+  # group; Rubisco/photosynthesis enrichment).
   S_ROC = S_ROC,
 
   # Sign-aware efficacy companion (no phi factor; positive = preferred-rich).
@@ -1451,8 +1475,8 @@ gc()
 # 8.3.2) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
 integrated_data <- integrated_data |>
-  left_join(selection_metrics) |>
-  na.exclude()
+  dplyr::left_join(selection_metrics, by = "Gene_name") |>
+  dplyr::filter(!is.na(S_ROC), !is.na(S_eta))
 
 # Correlation between selection metric and CUB metrics
 # Run in parallel for S_ROC (load) and S_eta (efficacy) so we see both
@@ -1730,7 +1754,8 @@ gene_Q_4fold <- data.frame(
 
 msd_data <- integrated_data |>
   dplyr::select(Gene_name, S_ROC, S_eta, Pi_mean_4fold, Mean_Log10_Exp,
-                Exp_breadth, CDS_length_nt, Sites_4fold, Pi_sum_4fold) |>
+                Max_Log10_Exp, Exp_breadth, CDS_length_nt, Sites_4fold,
+                Pi_sum_4fold) |>
   dplyr::inner_join(gene_Q_4fold, by = "Gene_name") |>
   dplyr::filter(!is.na(Q_pref_base), !is.na(Pi_mean_4fold),
                 !is.na(Mean_Log10_Exp), !is.na(Exp_breadth),
@@ -1822,9 +1847,9 @@ msd_data <- msd_data |>
   )
 
 gam_Q_pref <- mgcv::gam(
-  Q_pref_base_clipped ~ s(Mean_Log10_Exp, k = 10) +
-                        s(log10_length,   k = 5)  +
-                        s(Exp_breadth,    k = 5),
+  Q_pref_base_clipped ~ s(Max_Log10_Exp, k = 10) +
+                        s(log10_length,  k = 5)  +
+                        s(Exp_breadth,   k = 5),
   data    = msd_data,
   family  = mgcv::betar(link = "logit"),
   weights = N_4fold_sites,
@@ -1833,14 +1858,16 @@ gam_Q_pref <- mgcv::gam(
 cat("\n=== GAM(Q_pref_base) summary ===\n")
 print(summary(gam_Q_pref))
 
-# Predict the partial expression curve at median confounders.
-exp_grid <- seq(min(msd_data$Mean_Log10_Exp, na.rm = TRUE),
-                max(msd_data$Mean_Log10_Exp, na.rm = TRUE),
+# Predict the partial expression curve at median confounders. Project
+# convention: when Exp_breadth is in the formula, anchor expression to
+# Max_Log10_Exp (Mean_Log10_Exp is unstable once breadth is controlled).
+exp_grid <- seq(min(msd_data$Max_Log10_Exp, na.rm = TRUE),
+                max(msd_data$Max_Log10_Exp, na.rm = TRUE),
                 length.out = 401)
 gam_grid <- data.frame(
-  Mean_Log10_Exp = exp_grid,
-  log10_length   = median(msd_data$log10_length, na.rm = TRUE),
-  Exp_breadth    = median(msd_data$Exp_breadth,  na.rm = TRUE)
+  Max_Log10_Exp = exp_grid,
+  log10_length  = median(msd_data$log10_length, na.rm = TRUE),
+  Exp_breadth   = median(msd_data$Exp_breadth,  na.rm = TRUE)
 )
 gam_pred <- predict(gam_Q_pref, newdata = gam_grid,
                     type = "response", se.fit = TRUE)
@@ -1848,21 +1875,21 @@ gam_grid$Q_hat <- gam_pred$fit
 gam_grid$Q_se  <- gam_pred$se.fit
 
 # Inflection of a sigmoid-like curve: the expression at which dQ/dExp peaks.
-dx  <- diff(gam_grid$Mean_Log10_Exp)
+dx  <- diff(gam_grid$Max_Log10_Exp)
 dQ  <- diff(gam_grid$Q_hat) / dx
-exp_mid <- gam_grid$Mean_Log10_Exp[-length(gam_grid$Mean_Log10_Exp)] + dx / 2
+exp_mid <- gam_grid$Max_Log10_Exp[-length(gam_grid$Max_Log10_Exp)] + dx / 2
 inflection_idx <- which.max(dQ)
 inflection_exp <- exp_mid[inflection_idx]
-inflection_Q   <- approx(gam_grid$Mean_Log10_Exp, gam_grid$Q_hat,
+inflection_Q   <- approx(gam_grid$Max_Log10_Exp, gam_grid$Q_hat,
                          xout = inflection_exp)$y
 cat(sprintf(
-  "[Branch C] Inflection of GAM-controlled Q vs expression at Mean_Log10_Exp = %.3f (Q_hat = %.3f).\n",
+  "[Branch C] Inflection of GAM-controlled Q vs expression at Max_Log10_Exp = %.3f (Q_hat = %.3f).\n",
   inflection_exp, inflection_Q
 ))
 
 # Threshold rule: use the GAM inflection of the preferred-base partial
 # expression smooth as the threshold-expression e*, then
-#   thr_sel = min(S_ROC | Mean_Log10_Exp > e*).
+#   thr_sel = min(S_ROC | Max_Log10_Exp > e*).
 # No hand-set constants; the inflection comes from the data via the GAM.
 #
 # Robustness guard: if the inflection lands near the data boundary (i.e.
@@ -1871,14 +1898,14 @@ cat(sprintf(
 # Q_neutral_obs and the maximum observed Q_hat. This protects against
 # GAM extrapolation at the upper end of the expression distribution.
 
-exp_max_obs <- max(msd_data$Mean_Log10_Exp, na.rm = TRUE)
-exp_p95     <- quantile(msd_data$Mean_Log10_Exp, 0.95, na.rm = TRUE)
+exp_max_obs <- max(msd_data$Max_Log10_Exp, na.rm = TRUE)
+exp_p95     <- quantile(msd_data$Max_Log10_Exp, 0.95, na.rm = TRUE)
 boundary_inflection <- inflection_exp >= exp_p95
 
 if (boundary_inflection) {
   Q_max_observed <- max(gam_grid$Q_hat, na.rm = TRUE)
   Q_target_mid   <- (Q_neutral_obs + Q_max_observed) / 2
-  inflection_exp_fallback <- approx(gam_grid$Q_hat, gam_grid$Mean_Log10_Exp,
+  inflection_exp_fallback <- approx(gam_grid$Q_hat, gam_grid$Max_Log10_Exp,
                                     xout = Q_target_mid)$y
   cat(sprintf(
     "[Branch C] WARNING: inflection (%.3f) is in the top 5%% of expression range; using midpoint fallback at exp = %.3f (Q_target = %.3f).\n",
@@ -1890,12 +1917,12 @@ if (boundary_inflection) {
 }
 
 threshold_pool <- integrated_data |>
-  dplyr::filter(Mean_Log10_Exp > inflection_exp_used, !is.na(S_ROC))
+  dplyr::filter(Max_Log10_Exp > inflection_exp_used, !is.na(S_ROC))
 
 stopifnot("threshold_pool empty — check inflection_exp_used" =
             nrow(threshold_pool) > 0)
 thr_sel <- min(threshold_pool$S_ROC, na.rm = TRUE)
-inflection_Q_used <- approx(gam_grid$Mean_Log10_Exp, gam_grid$Q_hat,
+inflection_Q_used <- approx(gam_grid$Max_Log10_Exp, gam_grid$Q_hat,
                             xout = inflection_exp_used)$y
 
 attr(thr_sel, "criterion")          <- "min_S_ROC_at_GAM_inflection_exp"
@@ -1921,7 +1948,7 @@ cat(sprintf("    %d / %d genes (%.1f%%) above thr_sel.\n",
 # of S_eta among genes above the GAM inflection. (Direction is positive: high
 # S_eta = preferred-rich; threshold isolates the upper tail.)
 S_eta_pool <- integrated_data |>
-  dplyr::filter(Mean_Log10_Exp > inflection_exp_used, !is.na(S_eta))
+  dplyr::filter(Max_Log10_Exp > inflection_exp_used, !is.na(S_eta))
 thr_eta <- if (nrow(S_eta_pool) >= 20) {
   unname(quantile(S_eta_pool$S_eta, 0.95, na.rm = TRUE))
 } else {
@@ -1937,7 +1964,7 @@ cat(sprintf(
 # Diagnostic plots: GAM partial curve with inflection marker, and the
 # resulting S_ROC distribution among above-threshold genes.
 
-p_gam_Q <- ggplot(gam_grid, aes(x = Mean_Log10_Exp, y = Q_hat)) +
+p_gam_Q <- ggplot(gam_grid, aes(x = Max_Log10_Exp, y = Q_hat)) +
   geom_ribbon(aes(ymin = Q_hat - 2 * Q_se, ymax = Q_hat + 2 * Q_se),
               fill = "#1f6f8b", alpha = 0.2) +
   geom_line(color = "#1f6f8b", linewidth = 0.8) +
@@ -1954,7 +1981,7 @@ p_gam_Q <- ggplot(gam_grid, aes(x = Mean_Log10_Exp, y = Q_hat)) +
     title = "Partial effect of expression on preferred-base freq at 4-fold sites",
     subtitle = sprintf("GAM controls for log10(CDS length) and Exp_breadth; n = %d genes",
                        nrow(msd_data)),
-    x = expression(Mean ~ Log[10] ~ Expression),
+    x = expression(Max ~ Log[10] ~ Expression),
     y = expression("Q (preferred-base freq, 4-fold sites)")
   ) +
   theme_custom()
@@ -2169,7 +2196,7 @@ write.csv(bin_compare,
           "./results/Wright_S_ROC_vs_S_Wright_binned.csv", row.names = FALSE)
 write.csv(
   msd_data |> dplyr::select(Gene_name, S_ROC, Q_pref_base, S_Wright_raw,
-                            Mean_Log10_Exp, N_4fold_sites),
+                            Mean_Log10_Exp, Max_Log10_Exp, N_4fold_sites),
   "./results/Wright_per_gene_S_ROC_S_Wright.csv", row.names = FALSE
 )
 write.csv(
@@ -3153,21 +3180,9 @@ gc()
 ## *****************************************************************************
 ## 12) Polymorphism data integration ----
 ## _____________________________________________________________________________
-
-pi_data <- fread(input = "data/all_chromosomes.bygene.pi.txt")
-
-# Homogenizing gene names to match the previous convention
-
-pi_data <- pi_data |>
-  dplyr::select(Chr, Gene, contains("mean"),
-                contains("Sites"), contains("Pi_sum"), contains("Poly")) |>
-  dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
-  dplyr::rename(Gene_name = Gene)
-
-# Join polymorphism data to integrated_data
-integrated_data <- integrated_data |>
-  dplyr::left_join(pi_data, by = "Gene_name") |>
-  na.exclude()
+# By-gene polymorphism (Pi_mean_4fold etc.) was preloaded in Section 5.5 because
+# Section 6 GAMs and Section 8.3.4 msd_data depend on those columns. This
+# section continues with the per-feature positional and decomposed analyses.
 
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
@@ -3264,10 +3279,14 @@ pi_by_expression <- integrated_data |>
     .groups = "drop"
   )
 
+# Selection group lives in the bin immediately after the last expression bin,
+# so the index stays correct under any upstream filter changes.
+sel_bin_id <- max(pi_by_expression$Exp_Bin) + 1L
+
 sel_cat <- integrated_data |>
-  dplyr::filter(S_ROC > thr_sel) |> 
+  dplyr::filter(S_ROC > thr_sel) |>
   dplyr::summarize(
-    Exp_Bin = 24,
+    Exp_Bin = sel_bin_id,
     n_genes = n(),
     mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
     # Weighted mean π at 4-fold sites: total π_sum / total sites
@@ -3281,7 +3300,7 @@ sel_cat <- integrated_data |>
   )
 
 pi_by_expression <- pi_by_expression |>
-  rbind(sel_cat) # Bin 24 holds genes with S_ROC > thr_sel (Wright-calibrated)
+  rbind(sel_cat) # Final bin holds genes with S_ROC > thr_sel (Wright-calibrated)
 
 cat("\n=== 4-fold π by Expression Rank (groups of ~1000 genes) ===\n")
 print(pi_by_expression)
@@ -3339,7 +3358,7 @@ if (has_mutation_types) {
   pi_sel_group <- integrated_data |>
     dplyr::filter(S_ROC > thr_sel) |>
     dplyr::summarize(
-      Exp_Bin = 24,
+      Exp_Bin = sel_bin_id,
       n_genes = n(),
       mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
       total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
@@ -3860,7 +3879,7 @@ sel_long <- sel_point |>
       "pi_4fold_first300" = "4-fold (first 300 bp)",
       "pi_4fold_after300" = "4-fold (after 300 bp)"
     ),
-    Source = "Selection group (S > 1)"
+    Source = "Selection group (S > thr_sel)"
   )
 
 bgs_colors <- c("0-fold (nonsynonymous)" = "#E41A1C",
@@ -3879,7 +3898,7 @@ p_bgs <- ggplot(bgs_long,
   scale_color_manual(values = bgs_colors) +
   labs(
     title = expression("Linked Selection: " * pi * " at 0-fold and 4-fold Sites vs Expression"),
-    subtitle = "4-fold decomposed: first 300 bp (ramp/HRI zone) vs gene body | Diamonds = selection group (S > 1)",
+    subtitle = "4-fold decomposed: first 300 bp (ramp/HRI zone) vs gene body | Diamonds = selection group (S > thr_sel)",
     x = expression(Mean~log[10](Expression)),
     y = expression("Weighted " * pi),
     color = NULL
@@ -3926,7 +3945,7 @@ if (has_mutation_types) {
       pi_CT = sum(Pi_sum_4fold_CT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
       pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE)
     ) |>
-    dplyr::mutate(Source = "Selection group (S > 1)")
+    dplyr::mutate(Source = "Selection group (S > thr_sel)")
 
   bgs_mut_all <- dplyr::bind_rows(bgs_mut_binned, sel_mut)
 
@@ -3939,7 +3958,7 @@ if (has_mutation_types) {
     ) |>
     dplyr::mutate(
       Involves_C = ifelse(grepl("C", Mutation_Type), "C-involving", "Non-C"),
-      Is_Selection = (Source == "Selection group (S > 1)")
+      Is_Selection = (Source == "Selection group (S > thr_sel)")
     )
 
   # Stacked area by C-involvement
@@ -3949,7 +3968,7 @@ if (has_mutation_types) {
 
   # Split for bins vs selection group
   bgs_c_bins <- bgs_c_summary |> dplyr::filter(Source == "Expression bins")
-  bgs_c_sel  <- bgs_c_summary |> dplyr::filter(Source == "Selection group (S > 1)")
+  bgs_c_sel  <- bgs_c_summary |> dplyr::filter(Source == "Selection group (S > thr_sel)")
 
   p_c_contrib <- ggplot(bgs_c_bins,
                         aes(x = mean_expression, y = Pi_total, fill = Involves_C)) +
@@ -3962,7 +3981,7 @@ if (has_mutation_types) {
     labs(
       title = expression("Decomposition of 4-fold " * pi *
                           ": C-involving vs Non-C Segregating Pairs"),
-      subtitle = "Bar at right = selection group (S > 1); C-involvement drives pi increase under selection",
+      subtitle = "Bar at right = selection group (S > thr_sel); C-involvement drives pi increase under selection",
       x = expression(Mean~log[10](Expression)),
       y = expression(pi * " component (4-fold)"),
       fill = NULL
@@ -3987,7 +4006,7 @@ if (has_mutation_types) {
     scale_color_brewer(palette = "Set2", name = "Segregating\nBases") +
     labs(
       title = expression("4-fold " * pi * " by Mutation Type: Expression Bins + Selection Group"),
-      subtitle = "Diamonds = selection group (S > 1); note elevated AC, CG, CT (C-involving pairs)",
+      subtitle = "Diamonds = selection group (S > thr_sel); note elevated AC, CG, CT (C-involving pairs)",
       x = expression(Mean~log[10](Expression)),
       y = expression(pi * " component (4-fold)")
     ) +
@@ -4393,6 +4412,7 @@ clean_data <- binary_preferred |>
 
 # Subsampling genes to make MCMC manageable
 
+set.seed(1998)
 target_genes <- sample(unique(clean_data$GeneID), 3000)
 model_data <- clean_data |> dplyr::filter(GeneID %in% target_genes)
 
