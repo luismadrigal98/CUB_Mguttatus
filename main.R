@@ -1331,16 +1331,18 @@ Lprime_ROC <- L_ROC / n_synonymous_codons
 
 # --- S_eta: sign-aware "selection efficacy" companion to S_ROC ------------
 # Built from the unscaled, signed AnaCoDa Delta_eta posterior means in
-# Cluster_1_Selection.csv (reference codon = 0; preferred = negative;
-# disfavored = positive). The negative sign in the formula flips this so:
+# Cluster_1_Selection.csv from the cluster MCMC output (reference codon = 0;
+# preferred = negative; disfavored = positive). The negative sign in the
+# formula flips this so:
 #     S_eta > 0  -> gene uses preferred codons (efficacy success)
 #     S_eta = 0  -> gene uses reference codons (neutral composition)
 #     S_eta < 0  -> gene uses disfavored codons
 # Empirically Spearman(S_eta, S_Wright) ~ +0.67 in the M. guttatus data,
 # vs Spearman(S_ROC, S_Wright) ~ -0.25, because S_eta lacks the phi factor
 # that drags S_ROC into the load-vs-strength duality.
-eta_unscaled <- read.csv("./data/Cluster_1_Selection.csv",
-                         stringsAsFactors = FALSE)
+eta_unscaled <- read.csv(
+  "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/Parameter_est/Cluster_1_Selection.csv",
+  stringsAsFactors = FALSE)
 eta_vec <- setNames(rep(0, length(common_codons)), common_codons)
 m_eta   <- match(common_codons, eta_unscaled$Codon)
 eta_vec[!is.na(m_eta)] <- eta_unscaled$Mean[m_eta[!is.na(m_eta)]]
