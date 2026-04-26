@@ -35,3 +35,7 @@ CLAUDE.md
 AnaCoDA_fixed/AnaCoDa/src/Makevars
 AnaCoDA_fixed/AnaCoDa/config.status
 .positai
+data/integrated_data.csv
+data/sel_coeff.txt
+data/Cluster_1_Selection.csv
+data/codon_counts_from_fasta.rds
