@@ -1287,7 +1287,10 @@ ggsave(file = "./results/Codon_Selection_Inefficiency_Estimates.pdf",
        plot = p, width = 12, 
        height = 10)
 
-# Get selection coefficients which extracted as log(s)
+# Get per-gene per-codon ROC selection intensities (Delta_eta * phi) from the
+# posterior. The reference codon for each AA family has Delta_eta = 0, so its
+# per-gene selection coefficient is 0; all other synonymous codons have
+# Delta_eta < 0 (phi-scaled cost relative to the preferred codon).
 
 selection_coeff <- getSelectionCoefficients(genome = genome, 
                                             parameter = parameter_object, 
@@ -1332,8 +1335,16 @@ for (aa in unique(aa_for_aligned)) {
   load_matrix_per_codon[, aa_cols] <- 1 - exp(relative_S)
 }
 
-# Total selection intensity
-total_selection_intensity <- rowSums(counts_aligned * abs(sel_aligned), na.rm = TRUE)
+# Total selection intensity — restricted to synonymous codons so that the
+# numerator and denominator of S_ROC both cover the same set of sites.
+# (Non-synonymous single-codon families have sel = 0 by AnaCoDa convention,
+# so the restriction is numerically inert but makes the intent explicit and
+# guards against edge cases where those columns might be non-zero.)
+total_selection_intensity <- rowSums(
+  counts_aligned[, synonymous_codons_aligned] *
+    abs(sel_aligned[, synonymous_codons_aligned]),
+  na.rm = TRUE
+)
 
 # S_ROC: per-gene mean |Delta_eta * phi| over synonymous codons.
 #
@@ -1346,8 +1357,13 @@ total_selection_intensity <- rowSums(counts_aligned * abs(sel_aligned), na.rm = 
 # "high selection efficacy"; the sign-aware companion S_eta below tracks that.
 S_ROC <- total_selection_intensity / n_synonymous_codons
 
-# L_ROC: Total Load (The total fitness cost of this gene's sequence)
-L_ROC <- rowSums(counts_aligned * load_matrix_per_codon, na.rm = TRUE)
+# L_ROC: Total Load (The total fitness cost of this gene's sequence).
+# Restricted to synonymous codons to match the denominator of Lprime_ROC.
+L_ROC <- rowSums(
+  counts_aligned[, synonymous_codons_aligned] *
+    load_matrix_per_codon[, synonymous_codons_aligned],
+  na.rm = TRUE
+)
 
 # Lprime_ROC: Average Load per site (Length-corrected)
 Lprime_ROC <- L_ROC / n_synonymous_codons
