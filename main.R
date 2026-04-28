@@ -1973,6 +1973,67 @@ cat(sprintf(
   cor_eta_gam_spearman, cor_eta_gam_pearson
 ))
 
+# --- Parallel GAM branch: smooth π first, then invert to S_Wright ---------
+# This branch uses the advisor's two-allele π transformation. Each 4-fold
+# site is encoded as preferred (1) vs unpreferred (0), and π is computed as
+# per-gene heterozygosity across these binary sites. We then fit a GAM on
+# π(covariates) and invert back to S using wright_invert_pi().
+
+pi_data <- read.csv("data/Two_allele_pi.csv")
+colnames(pi_data) <- c("Gene_name", "pi_2allele")
+
+gam_pi_pool <- msd_data |>
+  dplyr::inner_join(pi_data, by = "Gene_name") |>
+  dplyr::filter(!is.na(pi_2allele), pi_2allele > 0,
+                !is.na(Max_Log10_Exp), !is.na(Exp_breadth),
+                !is.na(CDS_length_nt),
+                N_4fold_sites >= 20) |>
+  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
+
+if (nrow(gam_pi_pool) < 30) {
+  stop(sprintf(
+    "Not enough genes to fit the π GAM branch: n = %d.",
+    nrow(gam_pi_pool)
+  ))
+}
+
+gam_pi_wright <- mgcv::gam(
+  pi_2allele ~
+    s(Max_Log10_Exp, k = 8) +
+    s(Exp_breadth, k = 8) +
+    s(Log_CDS_length_nt, k = 8),
+  data = gam_pi_pool,
+  family = gaussian(link = "identity"),
+  method = "REML"
+)
+
+gam_pi_pool$pi_GAM <- as.numeric(predict(gam_pi_wright, newdata = gam_pi_pool,
+                                         type = "response"))
+gam_pi_pool$S_Wright_pi_signed <- vapply(gam_pi_pool$pi_GAM, function(pi_val) {
+  tryCatch(wright_invert_pi(pi_val, U = U_emp, V = V_emp),
+           error = function(e) NA_real_)
+}, numeric(1))
+gam_pi_pool$S_Wright_pi_raw <- pmax(gam_pi_pool$S_Wright_pi_signed, 0)
+
+cor_eta_pi_spearman <- cor(gam_pi_pool$S_eta, gam_pi_pool$S_Wright_pi_signed,
+                           method = "spearman", use = "complete.obs")
+cor_eta_pi_pearson  <- cor(gam_pi_pool$S_eta, gam_pi_pool$S_Wright_pi_signed,
+                           method = "pearson", use = "complete.obs")
+
+msd_data <- msd_data |>
+  dplyr::left_join(
+    gam_pi_pool |>
+      dplyr::select(Gene_name, pi_2allele, pi_GAM,
+                    S_Wright_pi_signed, S_Wright_pi_raw),
+    by = "Gene_name"
+  )
+
+cat(sprintf(
+  "[Wright MSD] π-GAM branch: n = %d genes, Spearman = %.3f, Pearson = %.3f for cor(S_eta, S_Wright_pi_signed)\n",
+  nrow(gam_pi_pool),
+  cor_eta_pi_spearman, cor_eta_pi_pearson
+))
+
 # --- Per-gene S_Wright -----------------------------------------------------
 # Compute the SIGNED inversion first (full-information diagnostic), then
 # floor at zero for the operational column used downstream.
@@ -2400,6 +2461,8 @@ write.csv(
   msd_data |> dplyr::select(Gene_name, S_ROC, Q_pref_base,
                             S_Wright_signed, S_Wright_raw, is_drift,
                             Q_GAM, S_Wright_GAM_signed, S_Wright_GAM_raw,
+                            pi_2allele, pi_GAM,
+                            S_Wright_pi_signed, S_Wright_pi_raw,
                             Mean_Log10_Exp, Max_Log10_Exp, N_4fold_sites),
   "./results/Wright_per_gene_S_ROC_S_Wright.csv", row.names = FALSE
 )
@@ -2456,8 +2519,10 @@ rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    p_advisor_Q, p_advisor_pi,
    S_grid_fid, S_grid_emp,
    neutral_pool,
-  gam_Q_pool, gam_Q_wright,
-  cor_eta_gam_spearman, cor_eta_gam_pearson,
+   gam_Q_pool, gam_Q_wright,
+   cor_eta_gam_spearman, cor_eta_gam_pearson,
+   gam_pi_pool, gam_pi_wright, pi_data,
+   cor_eta_pi_spearman, cor_eta_pi_pearson,
    gam_eta_pool, gam_eta_swright, seta_grid, sw_pred, gam_crossings,
    crossings_bin, thr_eta_band, crossing_genes,
    chi2_pi_terms, sel_bins,
