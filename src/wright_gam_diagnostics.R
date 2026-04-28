@@ -306,6 +306,71 @@
 }
 
 # --------------------------------------------------------------------------
+# Tier 1.4 — Bulmer/Li closed-form approximation vs exact Wright -----------
+# --------------------------------------------------------------------------
+#
+# When U, V << 1 (M. guttatus: U_emp ≈ 0.07, V_emp ≈ 0.025), Wright's
+# stationary distribution concentrates at p = 0 and p = 1, and the
+# equilibrium preferred-base frequency reduces to the Bulmer/Li form:
+#
+#     Q ≈ (V/U) * exp(S) / (1 + (V/U) * exp(S))
+#
+# which inverts in closed form:
+#
+#     S ≈ logit(Q) - log(V/U)
+#
+# If S_Bulmer agrees with the exact Wright inversion across the bulk of the
+# data, we can adopt the closed-form expression as the canonical operational
+# mapping, citing Bulmer (1991), with this panel as the validation against
+# the exact 1F1 machinery.
+
+.compute_S_bulmer <- function(Q, U, V) {
+  Q_clip <- pmin(pmax(Q, 1e-9), 1 - 1e-9)
+  log(Q_clip / (1 - Q_clip)) - log(V / U)
+}
+
+.plot_bulmer_check <- function(msd_data, U_emp, V_emp) {
+  d <- msd_data |>
+    dplyr::filter(is.finite(Q_GAM), is.finite(S_Wright_GAM_signed))
+  if (nrow(d) < 30) {
+    return(list(plot = NULL, cor_bulmer_gam = NA_real_,
+                slope = NA_real_, intercept = NA_real_,
+                max_abs_diff = NA_real_, mean_abs_diff = NA_real_))
+  }
+  d$S_Bulmer <- .compute_S_bulmer(d$Q_GAM, U_emp, V_emp)
+  d$abs_diff <- abs(d$S_Bulmer - d$S_Wright_GAM_signed)
+
+  cor_bg    <- stats::cor(d$S_Bulmer, d$S_Wright_GAM_signed,
+                          method = "pearson", use = "complete.obs")
+  fit       <- stats::lm(S_Bulmer ~ S_Wright_GAM_signed, data = d)
+  slope     <- unname(stats::coef(fit)[2])
+  intercept <- unname(stats::coef(fit)[1])
+
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = S_Wright_GAM_signed,
+                                       y = S_Bulmer,
+                                       color = abs_diff)) +
+    ggplot2::geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+                         color = "grey50") +
+    ggplot2::geom_point(size = 0.5, alpha = 0.5) +
+    ggplot2::scale_color_viridis_c(name = "|Δ|", option = "plasma") +
+    ggplot2::labs(
+      x = "S_Wright_GAM (exact 1F1 inversion)",
+      y = "S_Bulmer = logit(Q_GAM) − log(V/U)",
+      title = sprintf(
+        "Tier 1.4 — Bulmer/Li closed form vs exact Wright\nr = %.4f, slope = %.3f, intercept = %.3f, max |Δ| = %.3f, mean |Δ| = %.3f",
+        cor_bg, slope, intercept,
+        max(d$abs_diff, na.rm = TRUE), mean(d$abs_diff, na.rm = TRUE))
+    ) +
+    theme_custom()
+
+  list(plot = p,
+       cor_bulmer_gam = cor_bg,
+       slope = slope, intercept = intercept,
+       max_abs_diff  = max(d$abs_diff, na.rm = TRUE),
+       mean_abs_diff = mean(d$abs_diff, na.rm = TRUE))
+}
+
+# --------------------------------------------------------------------------
 # Tier 2 — Model-fit sanity ------------------------------------------------
 # --------------------------------------------------------------------------
 
@@ -456,6 +521,9 @@ run_wright_gam_diagnostics <- function(
                                 S_BARRIER, n_boot)
   thr_x   <- .plot_threshold_robustness(thr_raw, thr_shr, S_BARRIER)
 
+  cat("[GAM diagnostics] Tier 1.4 — Bulmer closed form vs exact Wright...\n")
+  bulmer_x <- .plot_bulmer_check(msd_data, U_emp, V_emp)
+
   cat("[GAM diagnostics] Tier 2 — model-fit panels...\n")
   blup_Q   <- .plot_re_blup_qq(gam_Q_wright, "Q")
   blup_pi  <- .plot_re_blup_qq(gam_pi_wright, "π")
@@ -504,6 +572,10 @@ run_wright_gam_diagnostics <- function(
              shr_ci$median >= raw_ci$lo && shr_ci$median <= raw_ci$hi)
   }
 
+  pass_bulmer <- !is.null(bulmer_x$plot) &&
+                 isTRUE(bulmer_x$cor_bulmer_gam > 0.99) &&
+                 isTRUE(bulmer_x$slope >= 0.95 && bulmer_x$slope <= 1.05)
+
   cat("\n=========================================================\n")
   cat("[GAM diagnostics] Tier 1 pass/fail summary\n")
   cat("=========================================================\n")
@@ -519,6 +591,10 @@ run_wright_gam_diagnostics <- function(
               bin_pi$pearson, bin_pi$slope))
   cat(sprintf("1.3 thr_eta robustness (shrunk median in raw 95%% CI): %s\n",
               if (pass_thr) "PASS" else "FAIL"))
+  cat(sprintf("1.4 Bulmer vs exact Wright (r>0.99, slope∈[0.95,1.05]): %s  (r=%.4f, slope=%.3f, max|Δ|=%.3f)\n",
+              if (pass_bulmer) "PASS" else "FAIL",
+              bulmer_x$cor_bulmer_gam, bulmer_x$slope,
+              bulmer_x$max_abs_diff))
 
   cat(sprintf("\n[Tier 2] Q-GAM dispersion (binomial, target ≈ 1):    %.3f\n",
               disp_Q))
@@ -543,12 +619,12 @@ run_wright_gam_diagnostics <- function(
   cat("=========================================================\n\n")
 
   # Save multi-panel PDF -----------------------------------------------------
-  panels <- list(sim_Qx$plot, sim_pix$plot,
-                 bin_Q$plot,  bin_pi$plot,
-                 thr_x$plot,  patchwork::plot_spacer(),
-                 blup_Q$plot, blup_pi$plot,
-                 shrink_Q$plot, shrink_pi$plot,
-                 rank_Q$plot,   rank_pi$plot)
+  panels <- list(sim_Qx$plot,    sim_pix$plot,
+                 bin_Q$plot,     bin_pi$plot,
+                 thr_x$plot,     bulmer_x$plot,
+                 blup_Q$plot,    blup_pi$plot,
+                 shrink_Q$plot,  shrink_pi$plot,
+                 rank_Q$plot,    rank_pi$plot)
   panels <- panels[!vapply(panels, is.null, logical(1))]
 
   if (length(panels) > 0) {
@@ -564,13 +640,15 @@ run_wright_gam_diagnostics <- function(
     sim_Q = sim_Qx, sim_pi = sim_pix,
     bin_Q = bin_Q,  bin_pi = bin_pi,
     thr_raw = thr_raw, thr_shr = thr_shr, thr = thr_x,
+    bulmer = bulmer_x,
     blup_Q = blup_Q, blup_pi = blup_pi,
     shrink_Q = shrink_Q, shrink_pi = shrink_pi,
     rank_Q = rank_Q, rank_pi = rank_pi,
     disp_Q = disp_Q, disp_pi = disp_pi,
     pass = list(sim_Q = pass_sim_Q, sim_pi = pass_sim_pi,
                 bin_Q = pass_bin_Q, bin_pi = pass_bin_pi,
-                thr   = pass_thr),
+                thr   = pass_thr,
+                bulmer = pass_bulmer),
     spear = list(eta_raw = spear_eta_raw,
                  eta_gam = spear_eta_gam,
                  eta_pi  = spear_eta_pi),
