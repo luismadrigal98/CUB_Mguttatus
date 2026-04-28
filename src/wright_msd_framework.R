@@ -31,9 +31,9 @@
 ##' which we use to solve for U and V given empirical Q and pi at putatively
 ##' neutral genes (lowest-S_ROC bin).
 
-## ---------------------------------------------------------------------------
-## Core moments of the Wright stationary distribution
-## ---------------------------------------------------------------------------
+## ***************************************************************************
+## Core moments of the Wright stationary distribution ----
+## ___________________________________________________________________________
 
 #' Q(S) = E[p] under Wright's stationary distribution
 #'
@@ -59,9 +59,9 @@ wright_pi <- function(S, U, V) {
   prefactor * num / den
 }
 
-## ---------------------------------------------------------------------------
+## ***************************************************************************
 ## Closed-form neutral solver: recover (U, V) from observed Q and pi at S = 0
-## ---------------------------------------------------------------------------
+## ___________________________________________________________________________
 
 #' Recover scaled mutation parameters from observed neutral Q and pi
 #'
@@ -88,9 +88,9 @@ wright_solve_UV <- function(Q_neutral, pi_neutral) {
   c(U = U, V = V, W = W)
 }
 
-## ---------------------------------------------------------------------------
+## ***************************************************************************
 ## Calibrate S_ROC -> S_Wright via a single proportional scale factor alpha
-## ---------------------------------------------------------------------------
+## ___________________________________________________________________________
 
 #' Fit alpha such that Q(alpha * S_ROC; U, V) approximates observed Q
 #'
@@ -122,9 +122,9 @@ wright_calibrate_alpha <- function(S_ROC_bin, Q_obs_bin,
   list(alpha = alpha_hat, residual_sd = resid_sd, fit = fit)
 }
 
-## ---------------------------------------------------------------------------
+## ***************************************************************************
 ## Threshold derivation on the Wright Q(S) curve
-## ---------------------------------------------------------------------------
+## ___________________________________________________________________________
 
 #' Solve S such that Q(S; U, V) = Q_target
 #'
@@ -175,9 +175,9 @@ wright_invert_Q <- function(Q_target, U, V,
           interval = c(S_lower, S_upper), tol = 1e-6)$root
 }
 
-## ---------------------------------------------------------------------------
+## ***************************************************************************
 ## Dynamic drift-barrier threshold on the Wright pi(S) curve
-## ---------------------------------------------------------------------------
+## ___________________________________________________________________________
 
 #' Solve S such that pi(S; U, V) = (1 + fraction) * pi_neutral
 #' on the rising flank of Wright's pi(S).

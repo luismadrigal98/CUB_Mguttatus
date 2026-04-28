@@ -1917,6 +1917,62 @@ cat(sprintf(
   S_BARRIER, S_BARRIER_advisor
 ))
 
+# --- Parallel GAM branch: smooth Q first, then invert to S_Wright ---------
+# This branch follows the advisor's suggestion: estimate Q with a GAM on the
+# gene-level covariates, then plug the smoothed Q into the Wright inversion.
+# It is less sensitive to small per-gene codon counts because the GAM pools
+# signal across genes before solving for S.
+
+gam_Q_pool <- msd_data |>
+  dplyr::filter(!is.na(Q_pref_base), !is.na(Max_Log10_Exp),
+                !is.na(Exp_breadth), !is.na(CDS_length_nt),
+                N_4fold_sites >= 20) |>
+  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
+
+if (nrow(gam_Q_pool) < 30) {
+  stop(sprintf(
+    "Not enough genes to fit the Q GAM branch: n = %d.",
+    nrow(gam_Q_pool)
+  ))
+}
+
+gam_Q_wright <- mgcv::gam(
+  cbind(N_preferred_base, N_4fold_sites - N_preferred_base) ~
+    s(Max_Log10_Exp, k = 8) +
+    s(Exp_breadth, k = 8) +
+    s(Log_CDS_length_nt, k = 8),
+  data = gam_Q_pool,
+  family = binomial(link = "logit"),
+  method = "REML"
+)
+
+gam_Q_pool$Q_GAM <- as.numeric(predict(gam_Q_wright, newdata = gam_Q_pool,
+                                       type = "response"))
+gam_Q_pool$S_Wright_GAM_signed <- vapply(gam_Q_pool$Q_GAM, function(q) {
+  tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),
+           error = function(e) NA_real_)
+}, numeric(1))
+gam_Q_pool$S_Wright_GAM_raw <- pmax(gam_Q_pool$S_Wright_GAM_signed, 0)
+
+cor_eta_gam_spearman <- cor(gam_Q_pool$S_eta, gam_Q_pool$S_Wright_GAM_signed,
+                            method = "spearman", use = "complete.obs")
+cor_eta_gam_pearson  <- cor(gam_Q_pool$S_eta, gam_Q_pool$S_Wright_GAM_signed,
+                            method = "pearson", use = "complete.obs")
+
+msd_data <- msd_data |>
+  dplyr::left_join(
+    gam_Q_pool |>
+      dplyr::select(Gene_name, Q_GAM,
+                    S_Wright_GAM_signed, S_Wright_GAM_raw),
+    by = "Gene_name"
+  )
+
+cat(sprintf(
+  "[Wright MSD] Q-GAM branch: n = %d genes, Spearman = %.3f, Pearson = %.3f for cor(S_eta, S_Wright_GAM_signed)\n",
+  nrow(gam_Q_pool),
+  cor_eta_gam_spearman, cor_eta_gam_pearson
+))
+
 # --- Per-gene S_Wright -----------------------------------------------------
 # Compute the SIGNED inversion first (full-information diagnostic), then
 # floor at zero for the operational column used downstream.
@@ -2343,6 +2399,7 @@ write.csv(bin_eta |> dplyr::select(Seta_bin, n_genes, mean_S_eta, sites_total,
 write.csv(
   msd_data |> dplyr::select(Gene_name, S_ROC, Q_pref_base,
                             S_Wright_signed, S_Wright_raw, is_drift,
+                            Q_GAM, S_Wright_GAM_signed, S_Wright_GAM_raw,
                             Mean_Log10_Exp, Max_Log10_Exp, N_4fold_sites),
   "./results/Wright_per_gene_S_ROC_S_Wright.csv", row.names = FALSE
 )
@@ -2372,6 +2429,9 @@ write.csv(
     n_drift_genes            = sum(msd_data$is_drift, na.rm = TRUE),
     frac_drift_genes         = mean(msd_data$is_drift, na.rm = TRUE),
     n_selection_pool_GAM     = nrow(gam_eta_pool),
+    n_Q_GAM_pool             = nrow(gam_Q_pool),
+    cor_S_eta_S_Wright_GAM_spearman = cor_eta_gam_spearman,
+    cor_S_eta_S_Wright_GAM_pearson  = cor_eta_gam_pearson,
     chi2_pi_stat             = chi2_pi_stat,
     chi2_pi_df               = chi2_pi_df,
     chi2_pi_p                = chi2_pi_p,
@@ -2396,6 +2456,8 @@ rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    p_advisor_Q, p_advisor_pi,
    S_grid_fid, S_grid_emp,
    neutral_pool,
+  gam_Q_pool, gam_Q_wright,
+  cor_eta_gam_spearman, cor_eta_gam_pearson,
    gam_eta_pool, gam_eta_swright, seta_grid, sw_pred, gam_crossings,
    crossings_bin, thr_eta_band, crossing_genes,
    chi2_pi_terms, sel_bins,
