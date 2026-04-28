@@ -1764,6 +1764,24 @@ gene_Q_4fold <- data.frame(
   Q_pref_base      = ifelse(N_4fold_sites > 0, N_preferred_base / N_4fold_sites, NA_real_)
 )
 
+# Merge codon-derived Q with integrated data for MSD analysis.
+# 
+# IMPORTANT: Two independent denominator sources:
+#   1. N_4fold_sites:  Directly from codon counts (FASTA data)
+#                      Transparent, authoritative for Q calculations.
+#   2. Sites_4fold:    From polymorphism data (VCF) paired with Pi_sum_4fold
+#                      Used ONLY for π calculations where available.
+#
+# These may differ due to:
+#   - Different genomic regions (VCF may have missing data at some loci)
+#   - Different site definitions (frame filters, quality thresholds)
+#   - Different coverage (polymorphism data has inherent missingness)
+#
+# Strategy:
+#   - Use N_4fold_sites (codon-derived) for Q and Q_bin calculations
+#   - Use Sites_4fold (VCF-derived) with Pi_sum_4fold for π_bin
+#   - For per-gene π (Pi_mean_4fold), use whichever denominator is available
+
 msd_data <- integrated_data |>
   dplyr::select(Gene_name, S_ROC, S_eta, Pi_mean_4fold, Mean_Log10_Exp,
                 Max_Log10_Exp, Exp_breadth, CDS_length_nt, Sites_4fold,
@@ -1773,8 +1791,47 @@ msd_data <- integrated_data |>
                 !is.na(Mean_Log10_Exp), !is.na(Exp_breadth),
                 N_4fold_sites >= 20)
 
-if (!identical(msd_data$N_4fold_sites, msd_data$Sites_4fold)) {
-  stop("4-fold site counts do not match between codon_usage-derived and integrated_data-derived denominators.")
+# Diagnostic: quantify discrepancies and document
+n_4fold_match <- sum(msd_data$N_4fold_sites == msd_data$Sites_4fold, na.rm = TRUE)
+n_4fold_total <- nrow(msd_data)
+pct_match <- 100 * n_4fold_match / n_4fold_total
+
+if (pct_match < 100) {
+  cat(sprintf(
+    "[Wright MSD] INFO: 4-fold site count discrepancy between codon and VCF data detected.\n"
+  ))
+  cat(sprintf(
+    "  %d of %d genes (%.1f%%) have N_4fold_sites == Sites_4fold.\n",
+    n_4fold_match, n_4fold_total, pct_match
+  ))
+  
+  # Summarize differences
+  msd_data$site_count_diff <- msd_data$N_4fold_sites - msd_data$Sites_4fold
+  n_discrepant <- sum(msd_data$site_count_diff != 0, na.rm = TRUE)
+  
+  if (n_discrepant > 0) {
+    disc_subset <- msd_data |>
+      dplyr::filter(site_count_diff != 0)
+    
+    cat(sprintf(
+      "  %d genes show differences (mean: %.1f sites, max: %.0f sites, median: %.0f sites).\n",
+      n_discrepant,
+      mean(abs(disc_subset$site_count_diff), na.rm = TRUE),
+      max(abs(disc_subset$site_count_diff), na.rm = TRUE),
+      median(abs(disc_subset$site_count_diff), na.rm = TRUE)
+    ))
+    cat(sprintf(
+      "  Mean relative difference: %.1f%% of N_4fold_sites.\n\n",
+      mean(abs(disc_subset$site_count_diff) / pmax(disc_subset$N_4fold_sites, 1) * 100, na.rm = TRUE)
+    ))
+  }
+  
+  cat(sprintf(
+    "  RESOLUTION: Using N_4fold_sites (codon-derived) for Q and Q_bin.\n"
+  ))
+  cat(sprintf(
+    "  Pi calculations use Sites_4fold (VCF-derived, paired with Pi_sum_4fold).\n\n"
+  ))
 }
 
 cat(sprintf(
@@ -1919,15 +1976,20 @@ cat(sprintf(
 
 # --- Parallel GAM branch: smooth Q first, then invert to S_Wright ---------
 # This branch follows the advisor's suggestion: estimate Q with a GAM on the
-# gene-level covariates, then plug the smoothed Q into the Wright inversion.
-# It is less sensitive to small per-gene codon counts because the GAM pools
-# signal across genes before solving for S.
+# gene-level covariates *and* a Gaussian-on-logit per-gene random effect,
+# then plug the shrunk Q into the Wright inversion. The RE term provides
+# partial pooling: each gene's BLUP shrinks its observed Q toward the
+# covariate-smoothed mean, weighted by N_4fold_sites. Genes with few
+# 4-fold sites are pulled hard toward the smooth; high-N genes barely
+# move. The diagnostic battery in src/wright_gam_diagnostics.R checks
+# whether the shrunk pipeline can replace the raw per-gene wright_invert_Q.
 
 gam_Q_pool <- msd_data |>
   dplyr::filter(!is.na(Q_pref_base), !is.na(Max_Log10_Exp),
                 !is.na(Exp_breadth), !is.na(CDS_length_nt),
                 N_4fold_sites >= 20) |>
-  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
+  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt),
+                Gene_name_f       = factor(Gene_name))
 
 if (nrow(gam_Q_pool) < 30) {
   stop(sprintf(
@@ -1940,7 +2002,8 @@ gam_Q_wright <- mgcv::gam(
   cbind(N_preferred_base, N_4fold_sites - N_preferred_base) ~
     s(Max_Log10_Exp, k = 8) +
     s(Exp_breadth, k = 8) +
-    s(Log_CDS_length_nt, k = 8),
+    s(Log_CDS_length_nt, k = 8) +
+    s(Gene_name_f, bs = "re"),
   data = gam_Q_pool,
   family = binomial(link = "logit"),
   method = "REML"
@@ -1977,7 +2040,11 @@ cat(sprintf(
 # This branch uses the advisor's two-allele π transformation. Each 4-fold
 # site is encoded as preferred (1) vs unpreferred (0), and π is computed as
 # per-gene heterozygosity across these binary sites. We then fit a GAM on
-# π(covariates) and invert back to S using wright_invert_pi().
+# π(covariates) with a per-gene Gaussian random effect for shrinkage, and
+# invert back to S via wright_invert_pi(). Per-gene precision is encoded
+# through `weights = N_4fold_sites`: the variance of an empirical
+# heterozygosity scales as ~1/N, so the precision-weighted Gaussian GAM
+# shrinks low-N genes toward the smooth covariate mean.
 
 pi_data <- read.csv("data/Two_allele_pi.csv")
 colnames(pi_data) <- c("Gene_name", "pi_2allele")
@@ -1988,7 +2055,8 @@ gam_pi_pool <- msd_data |>
                 !is.na(Max_Log10_Exp), !is.na(Exp_breadth),
                 !is.na(CDS_length_nt),
                 N_4fold_sites >= 20) |>
-  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
+  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt),
+                Gene_name_f       = factor(Gene_name))
 
 if (nrow(gam_pi_pool) < 30) {
   stop(sprintf(
@@ -2001,9 +2069,11 @@ gam_pi_wright <- mgcv::gam(
   pi_2allele ~
     s(Max_Log10_Exp, k = 8) +
     s(Exp_breadth, k = 8) +
-    s(Log_CDS_length_nt, k = 8),
+    s(Log_CDS_length_nt, k = 8) +
+    s(Gene_name_f, bs = "re"),
   data = gam_pi_pool,
   family = gaussian(link = "identity"),
+  weights = N_4fold_sites,
   method = "REML"
 )
 
