@@ -175,6 +175,58 @@ wright_invert_Q <- function(Q_target, U, V,
           interval = c(S_lower, S_upper), tol = 1e-6)$root
 }
 
+#' Solve S such that pi(S; U, V) = pi_target
+#'
+#' pi(S; U, V) is non-monotone: it rises from pi(0) to a maximum (typically
+#' near S ~ ln(U/V)) and then decays as selection drives the preferred
+#' allele toward fixation and heterozygosity collapses. This solver finds
+#' the *rising-flank* crossing (low S, selection-favoring regime), which
+#' is appropriate for per-gene π values observed in the data.
+#'
+#' The solver uses a log-spaced grid to locate the first sign change on the
+#' rising flank, then refines with uniroot. This is analogous to
+#' derive_S_barrier() but inverts individual per-gene π values rather than
+#' computing a population-level threshold.
+#'
+#' If `floor_at_zero = TRUE`, the solver reports S = 0 for any pi_target
+#' below the neutral π(0) = 2*V*U/((U+V)*(U+V+1)), matching the operational
+#' drift-cap logic of wright_invert_Q(). Otherwise, returns NA if pi_target
+#' falls outside the feasible range or no rising-flank crossing is found.
+#'
+#' @param pi_target  Target nucleotide diversity, pi_target > 0.
+#' @param U,V        Wright mutation parameters (must be > 0).
+#' @param S_grid_max Upper end of the log-spaced search grid (default 50).
+#' @param S_grid_n   Resolution of the search grid (default 1000).
+#' @param floor_at_zero  If TRUE, return 0 (not NA) when pi_target falls
+#'        below the neutral π(0). Default FALSE.
+#' @param tol        uniroot tolerance.
+#' @return Numeric S at which pi(S; U, V) first crosses pi_target on the
+#'         rising flank, or NA_real_ if pi_target is outside the feasible
+#'         range or no rising-flank crossing exists.
+wright_invert_pi <- function(pi_target, U, V,
+                             S_grid_max = 50, S_grid_n = 1000,
+                             floor_at_zero = FALSE,
+                             tol = 1e-6) {
+  if (!is.finite(pi_target) || pi_target <= 0) return(NA_real_)
+  pi_neutral <- wright_pi(0, U, V)
+  if (floor_at_zero && pi_target <= pi_neutral) return(0)
+  # Log-spaced grid to find rising-flank crossing
+  s_grid    <- exp(seq(log(max(tol, 1e-5)), log(S_grid_max),
+                       length.out = S_grid_n))
+  pi_grid   <- wright_pi(s_grid, U, V)
+  diff_grid <- pi_grid - pi_target
+  # First grid index where pi_grid > pi_target -> rising-flank crossing
+  first_pos <- which(diff_grid > 0)[1]
+  if (is.na(first_pos)) return(NA_real_)
+  s_lo <- if (first_pos == 1) 0 else s_grid[first_pos - 1]
+  s_hi <- s_grid[first_pos]
+  tryCatch(
+    uniroot(function(s) wright_pi(s, U, V) - pi_target,
+            interval = c(s_lo, s_hi), tol = tol)$root,
+    error = function(e) NA_real_
+  )
+}
+
 ## ***************************************************************************
 ## Dynamic drift-barrier threshold on the Wright pi(S) curve
 ## ___________________________________________________________________________
