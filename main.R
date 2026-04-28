@@ -1722,6 +1722,14 @@ if (!"Arg_4" %in% preferred_per_AA$AA) {
   cat("[Wright MSD] Arg_4 absent from ROC output; using CGC (preferred base = C) as default.\n")
 }
 
+missing_fourfold_families <- setdiff(fourfold_families_msd, preferred_per_AA$AA)
+if (length(missing_fourfold_families) > 0) {
+  stop(sprintf(
+    "Missing preferred-base mapping for 4-fold families: %s",
+    paste(missing_fourfold_families, collapse = ", ")
+  ))
+}
+
 cat("[Wright MSD] Per-AA preferred 3rd-position base:\n")
 print(preferred_per_AA, row.names = FALSE)
 
@@ -1736,6 +1744,10 @@ fourfold_codon_table <- data.frame(
   dplyr::left_join(preferred_per_AA |> dplyr::select(AA, Preferred_Base),
                    by = "AA") |>
   dplyr::mutate(is_preferred = Base3 == Preferred_Base)
+
+if (anyNA(fourfold_codon_table$Preferred_Base)) {
+  stop("Preferred-base mapping is incomplete for one or more fourfold codons.")
+}
 
 # Per-gene preferred-base count over 4-fold sites.
 codon_4fold_counts <- as.data.frame(
@@ -1760,6 +1772,10 @@ msd_data <- integrated_data |>
   dplyr::filter(!is.na(Q_pref_base), !is.na(Pi_mean_4fold),
                 !is.na(Mean_Log10_Exp), !is.na(Exp_breadth),
                 N_4fold_sites >= 20)
+
+if (!identical(msd_data$N_4fold_sites, msd_data$Sites_4fold)) {
+  stop("4-fold site counts do not match between codon_usage-derived and integrated_data-derived denominators.")
+}
 
 cat(sprintf(
   "[Wright MSD] %d genes with usable 4-fold per-base Q and pi (>=20 4-fold sites).\n",
@@ -2012,6 +2028,9 @@ thr_eta_bin <- if (length(crossings_bin) > 0) {
 # --- Adopt GAM crossing as canonical thr_eta ------------------------------
 
 thr_eta <- thr_eta_gam
+if (!is.finite(thr_eta)) {
+  stop("thr_eta could not be determined because the GAM crossing is missing or undefined.")
+}
 attr(thr_eta, "criterion")        <- "S_eta_at_S_Wright_eq_barrier_GAM"
 attr(thr_eta, "S_Wright_target")  <- S_BARRIER
 attr(thr_eta, "thr_eta_bin_diag") <- thr_eta_bin
@@ -2019,6 +2038,13 @@ attr(thr_eta, "max_S_Wright_bin") <- max(bin_eta$S_Wright_bin, na.rm = TRUE)
 attr(thr_eta, "U_empirical")      <- U_emp
 attr(thr_eta, "V_empirical")      <- V_emp
 attr(thr_eta, "Q_neutral_obs")    <- Q_neutral_obs
+
+if (is.finite(thr_eta_bin) && abs(thr_eta - thr_eta_bin) > 0.5) {
+  stop(sprintf(
+    "thr_eta GAM crossing (%.6f) and binned diagnostic crossing (%.6f) disagree by more than 0.5 S_eta units.",
+    thr_eta, thr_eta_bin
+  ))
+}
 
 cat(sprintf(
   "\n>>> thr_eta = %.6f  (S_eta at S_Wright = %.2f; per-gene GAM crossing)\n",
@@ -2047,6 +2073,12 @@ thr_sel <- if (nrow(crossing_genes) >= 5) {
   median(crossing_genes$S_ROC, na.rm = TRUE)
 } else {
   NA_real_
+}
+if (!is.finite(thr_sel)) {
+  stop(sprintf(
+    "thr_sel could not be determined: only %d genes fall within +/- 10%% of thr_eta.",
+    nrow(crossing_genes)
+  ))
 }
 attr(thr_sel, "criterion")      <- "median_S_ROC_at_thr_eta_pm10pct"
 attr(thr_sel, "thr_eta")        <- as.numeric(thr_eta)
@@ -2158,18 +2190,18 @@ ggsave("./results/Wright_pi_vs_S_Wright_binned.pdf",
        p_pi_validation, width = 7, height = 5, device = cairo_pdf)
 
 # --- Per-gene S_eta vs S_Wright validation figure -------------------------
-# Binned points overlaid on the per-gene GAM smoother E[S_Wright | S_eta]
+# Binned points overlaid on the per-gene GAM smoother E[S_Wright_signed | S_eta]
 # (the same smoother whose S_BARRIER crossing defined thr_eta).  No fitted
 # alpha; the smoother IS the model link between the two axes.
 
 per_gene_pool <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_raw), !is.na(S_eta), N_4fold_sites >= 50)
-cor_eta_spearman <- cor(per_gene_pool$S_eta, per_gene_pool$S_Wright_raw,
+  dplyr::filter(!is.na(S_Wright_signed), !is.na(S_eta), N_4fold_sites >= 50)
+cor_eta_spearman <- cor(per_gene_pool$S_eta, per_gene_pool$S_Wright_signed,
                         method = "spearman")
-cor_eta_pearson  <- cor(per_gene_pool$S_eta, per_gene_pool$S_Wright_raw,
+cor_eta_pearson  <- cor(per_gene_pool$S_eta, per_gene_pool$S_Wright_signed,
                         method = "pearson")
 cat(sprintf(
-  "[Validation] cor(S_eta, S_Wright_raw): Spearman = %+.3f, Pearson = %+.3f (n = %d, >=50 4-fold sites)\n",
+  "[Validation] cor(S_eta, S_Wright_signed): Spearman = %+.3f, Pearson = %+.3f (n = %d, >=50 4-fold sites)\n",
   cor_eta_spearman, cor_eta_pearson, nrow(per_gene_pool)
 ))
 
