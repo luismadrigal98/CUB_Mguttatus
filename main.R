@@ -1998,15 +1998,16 @@ if (nrow(gam_Q_pool) < 30) {
   ))
 }
 
-gam_Q_wright <- mgcv::gam(
+gam_Q_wright <- mgcv::bam(
   cbind(N_preferred_base, N_4fold_sites - N_preferred_base) ~
     s(Max_Log10_Exp, k = 8) +
     s(Exp_breadth, k = 8) +
     s(Log_CDS_length_nt, k = 8) +
     s(Gene_name_f, bs = "re"),
-  data = gam_Q_pool,
-  family = binomial(link = "logit"),
-  method = "REML"
+  data     = gam_Q_pool,
+  family   = binomial(link = "logit"),
+  method   = "fREML",
+  discrete = TRUE
 )
 
 gam_Q_pool$Q_GAM <- as.numeric(predict(gam_Q_wright, newdata = gam_Q_pool,
@@ -2065,16 +2066,17 @@ if (nrow(gam_pi_pool) < 30) {
   ))
 }
 
-gam_pi_wright <- mgcv::gam(
+gam_pi_wright <- mgcv::bam(
   pi_2allele ~
     s(Max_Log10_Exp, k = 8) +
     s(Exp_breadth, k = 8) +
     s(Log_CDS_length_nt, k = 8) +
     s(Gene_name_f, bs = "re"),
-  data = gam_pi_pool,
-  family = gaussian(link = "identity"),
-  weights = N_4fold_sites,
-  method = "REML"
+  data     = gam_pi_pool,
+  family   = gaussian(link = "identity"),
+  weights  = N_4fold_sites,
+  method   = "fREML",
+  discrete = TRUE
 )
 
 gam_pi_pool$pi_GAM <- as.numeric(predict(gam_pi_wright, newdata = gam_pi_pool,
@@ -2163,6 +2165,28 @@ bin_eta <- msd_data |>
 # Per-bin pi standard error (binomial-style heterozygosity SE).
 bin_eta$pi_se <- sqrt(bin_eta$pi_bin * (1 - bin_eta$pi_bin / 2) /
                       pmax(bin_eta$sites_total, 1))
+
+# --- GAM-RE diagnostic battery --------------------------------------------
+# Tier 1-3 checks for adopting the GAM-RE-shrunk Q (and π) inversion as
+# the canonical per-gene S_Wright pipeline. Generates a multi-panel PDF
+# and prints a pass/fail summary against the Tier-1 adoption criteria.
+
+source("./src/wright_gam_diagnostics.R")
+gam_diagnostics <- run_wright_gam_diagnostics(
+  msd_data       = msd_data,
+  gam_Q_pool     = gam_Q_pool,
+  gam_Q_wright   = gam_Q_wright,
+  gam_pi_pool    = gam_pi_pool,
+  gam_pi_wright  = gam_pi_wright,
+  bin_eta        = bin_eta,
+  U_emp          = U_emp,
+  V_emp          = V_emp,
+  S_BARRIER      = S_BARRIER,
+  output_pdf     = "results/Wright_GAM_diagnostics.pdf",
+  n_sim_reps     = 3,
+  n_boot         = 200,
+  seed           = 42L
+)
 
 # --- Primary thr_eta: GAM crossing of S_Wright = S_BARRIER ----------------
 # Fit on the FULL per-gene pool with sign-aware S_Wright_signed (NOT the
