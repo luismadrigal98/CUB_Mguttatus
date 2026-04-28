@@ -1833,392 +1833,542 @@ wright_emp <- data.frame(
   pi_site = wright_pi(S_grid_emp, U = U_emp, V = V_emp)
 )
 
-# Branch C: data-driven threshold via GAM inflection ----
-# Fit Q_pref_base as a smooth function of expression while controlling for
-# CDS length and expression breadth (the two confounders the marginal
-# Q-vs-expression plot conflates with the selection effect). Locate the
-# inflection of the partial expression smooth at median confounders, then
-# define thr_sel as a robust min of S_ROC for genes above that inflection.
+# ===========================================================================
+# Canonical thresholds (v11): anchor thr_eta to the Wright pi-rise barrier
+# at S_Wright = S_BARRIER on the S_eta axis.
+# ===========================================================================
+#
+# Rationale (revised 2026-04-27):
+#   * Per-gene S_Wright is computed from each gene's Q at 4-fold sites by
+#     inverting the Wright Q(S; U_emp, V_emp) curve.  The inversion is
+#     intrinsically signed (Q below neutral mean -> S < 0), but we floor
+#     S_Wright at 0 for downstream operational use: sub-neutral Q values
+#     are interpreted as "drift acting" (no detectable selection pulling
+#     Q above neutral) rather than as inferred negative-selection
+#     coefficients on the preferred base.  We retain the signed value
+#     as `S_Wright_signed` for diagnostics, and flag drift genes with
+#     `is_drift = TRUE`.
+#   * S_BARRIER is derived dynamically from (U_emp, V_emp): it is the
+#     value of S at which Wright's pi(S) rises 1% above its neutral
+#     plateau (rising-flank crossing).  This replaces the hand-set 0.1
+#     from JK's Mathematica pi-rise simulation.  For (U_emp = 0.0698,
+#     V_emp = 0.0245) the dynamic value is S = 0.044; JK's prior 0.10
+#     corresponds to roughly a 2.3% rise on the same curve.  We retain
+#     S_BARRIER_advisor as a sensitivity reference.
+#   * Primary thr_eta: GAM crossing of E[S_Wright_signed | S_eta] = S_BARRIER.
+#     Fit on the FULL per-gene pool (no positivity filter): the smoother
+#     correctly reports near-zero average S_Wright in the drift regime
+#     and crosses S_BARRIER on its rising flank.  Using sign-aware
+#     S_Wright_signed (not the floored S_Wright_raw) ensures the smooth
+#     captures the drift-to-selection transition.
+#   * Bin-level S_Wright_bin (sign-preserving) is retained as a
+#     diagnostic to expose any neutral-pool bias in (U_emp, V_emp).
+#   * Validation: bin-level pi consistency.  For each bin we predict
+#     pi from S_Wright_bin via wright_pi(.; U_emp, V_emp) -- no fitted
+#     parameter -- and compare to the site-weighted observed pi_bin.
+#     The previous alpha-calibration test was both circular and
+#     intrinsically nonlinear (S_Wright_bin / mean_S_eta drops ~3x
+#     across S_eta bins, so no scalar alpha can fit) and is dropped.
+#   * thr_sel (S_ROC scale): unchanged -- median S_ROC among genes
+#     within +/- 10% of thr_eta on the S_eta axis.
 
-msd_data <- msd_data |>
-  dplyr::mutate(
-    log10_length = log10(CDS_length_nt),
-    Q_pref_base_clipped = pmin(pmax(Q_pref_base, 1e-4), 1 - 1e-4)
-  )
+# --- Dynamic operational drift-barrier ------------------------------------
 
-gam_Q_pref <- mgcv::gam(
-  Q_pref_base_clipped ~ s(Max_Log10_Exp, k = 10) +
-                        s(log10_length,  k = 5)  +
-                        s(Exp_breadth,   k = 5),
-  data    = msd_data,
-  family  = mgcv::betar(link = "logit"),
-  weights = N_4fold_sites,
-  method  = "REML"
+pi_neutral_theory <- wright_pi(0, U = U_emp, V = V_emp)
+S_BARRIER_advisor <- 0.1   # JK's hand-set Mathematica pi-rise reference.
+S_BARRIER_dyn <- tryCatch(
+  derive_S_barrier(U = U_emp, V = V_emp,
+                   pi_neutral = pi_neutral_theory, fraction = 0.01),
+  error = function(e) {
+    cat(sprintf("[Wright MSD] derive_S_barrier failed: %s\n",
+                conditionMessage(e)))
+    NA_real_
+  }
 )
-cat("\n=== GAM(Q_pref_base) summary ===\n")
-print(summary(gam_Q_pref))
-
-# Predict the partial expression curve at median confounders. Project
-# convention: when Exp_breadth is in the formula, anchor expression to
-# Max_Log10_Exp (Mean_Log10_Exp is unstable once breadth is controlled).
-exp_grid <- seq(min(msd_data$Max_Log10_Exp, na.rm = TRUE),
-                max(msd_data$Max_Log10_Exp, na.rm = TRUE),
-                length.out = 401)
-gam_grid <- data.frame(
-  Max_Log10_Exp = exp_grid,
-  log10_length  = median(msd_data$log10_length, na.rm = TRUE),
-  Exp_breadth   = median(msd_data$Exp_breadth,  na.rm = TRUE)
-)
-gam_pred <- predict(gam_Q_pref, newdata = gam_grid,
-                    type = "response", se.fit = TRUE)
-gam_grid$Q_hat <- gam_pred$fit
-gam_grid$Q_se  <- gam_pred$se.fit
-
-# Inflection of a sigmoid-like curve: the expression at which dQ/dExp peaks.
-dx  <- diff(gam_grid$Max_Log10_Exp)
-dQ  <- diff(gam_grid$Q_hat) / dx
-exp_mid <- gam_grid$Max_Log10_Exp[-length(gam_grid$Max_Log10_Exp)] + dx / 2
-inflection_idx <- which.max(dQ)
-inflection_exp <- exp_mid[inflection_idx]
-inflection_Q   <- approx(gam_grid$Max_Log10_Exp, gam_grid$Q_hat,
-                         xout = inflection_exp)$y
-cat(sprintf(
-  "[Branch C] Inflection of GAM-controlled Q vs expression at Max_Log10_Exp = %.3f (Q_hat = %.3f).\n",
-  inflection_exp, inflection_Q
-))
-
-# Threshold rule: use the GAM inflection of the preferred-base partial
-# expression smooth as the threshold-expression e*, then
-#   thr_sel = min(S_ROC | Max_Log10_Exp > e*).
-# No hand-set constants; the inflection comes from the data via the GAM.
-#
-# Robustness guard: if the inflection lands near the data boundary (i.e.
-# the curve hasn't truly turned within the observed expression range),
-# fall back to the expression at which Q_hat reaches the midpoint between
-# Q_neutral_obs and the maximum observed Q_hat. This protects against
-# GAM extrapolation at the upper end of the expression distribution.
-
-exp_max_obs <- max(msd_data$Max_Log10_Exp, na.rm = TRUE)
-exp_p95     <- quantile(msd_data$Max_Log10_Exp, 0.95, na.rm = TRUE)
-boundary_inflection <- inflection_exp >= exp_p95
-
-if (boundary_inflection) {
-  Q_max_observed <- max(gam_grid$Q_hat, na.rm = TRUE)
-  Q_target_mid   <- (Q_neutral_obs + Q_max_observed) / 2
-  inflection_exp_fallback <- approx(gam_grid$Q_hat, gam_grid$Max_Log10_Exp,
-                                    xout = Q_target_mid)$y
-  cat(sprintf(
-    "[Branch C] WARNING: inflection (%.3f) is in the top 5%% of expression range; using midpoint fallback at exp = %.3f (Q_target = %.3f).\n",
-    inflection_exp, inflection_exp_fallback, Q_target_mid
-  ))
-  inflection_exp_used <- inflection_exp_fallback
-} else {
-  inflection_exp_used <- inflection_exp
+if (!is.finite(S_BARRIER_dyn)) {
+  stop("derive_S_barrier returned NA -- empirical (U, V) is outside the ",
+       "regime where Wright's pi(S) admits a 1% rising-flank crossing. ",
+       "Investigate before falling back to the advisor value.")
 }
-
-threshold_pool <- integrated_data |>
-  dplyr::filter(Max_Log10_Exp > inflection_exp_used, !is.na(S_ROC))
-
-stopifnot("threshold_pool empty — check inflection_exp_used" =
-            nrow(threshold_pool) > 0)
-thr_sel <- min(threshold_pool$S_ROC, na.rm = TRUE)
-inflection_Q_used <- approx(gam_grid$Max_Log10_Exp, gam_grid$Q_hat,
-                            xout = inflection_exp_used)$y
-
-attr(thr_sel, "criterion")          <- "min_S_ROC_at_GAM_inflection_exp"
-attr(thr_sel, "inflection_exp")     <- inflection_exp_used
-attr(thr_sel, "inflection_Q_hat")   <- inflection_Q_used
-attr(thr_sel, "inflection_exp_raw") <- inflection_exp
-attr(thr_sel, "boundary_inflection")<- boundary_inflection
-attr(thr_sel, "U_empirical")        <- U_emp
-attr(thr_sel, "V_empirical")        <- V_emp
+S_BARRIER <- S_BARRIER_dyn
 
 cat(sprintf(
-  "\n>>> thr_sel = %.4f  (min S_ROC among %d genes with log10_exp > %.3f)\n",
-  as.numeric(thr_sel), nrow(threshold_pool), inflection_exp_used
+  "\n[Wright MSD] pi_neutral_theory = %.5f, pi_neutral_obs = %.5f\n",
+  pi_neutral_theory, pi_neutral_obs
 ))
-cat(sprintf("    Q_hat at inflection = %.3f (Q_neutral = %.3f)\n",
-            inflection_Q_used, Q_neutral_obs))
-cat(sprintf("    %d / %d genes (%.1f%%) above thr_sel.\n",
-            sum(integrated_data$S_ROC > thr_sel, na.rm = TRUE),
-            nrow(integrated_data),
-            100 * mean(integrated_data$S_ROC > thr_sel, na.rm = TRUE)))
-
-# Sister threshold for the sign-aware S_eta efficacy metric: 95th percentile
-# of S_eta among genes above the GAM inflection. (Direction is positive: high
-# S_eta = preferred-rich; threshold isolates the upper tail.)
-S_eta_pool <- integrated_data |>
-  dplyr::filter(Max_Log10_Exp > inflection_exp_used, !is.na(S_eta))
-thr_eta <- if (nrow(S_eta_pool) >= 20) {
-  unname(quantile(S_eta_pool$S_eta, 0.95, na.rm = TRUE))
-} else {
-  NA_real_
-}
-attr(thr_eta, "criterion")      <- "q95_S_eta_at_GAM_inflection_exp"
-attr(thr_eta, "inflection_exp") <- inflection_exp_used
 cat(sprintf(
-  "    thr_eta = %.5f (q95 of S_eta in same expression pool; %d genes above)\n",
-  thr_eta, sum(integrated_data$S_eta > thr_eta, na.rm = TRUE)
+  "[Wright MSD] S_BARRIER (1%% pi-rise, dynamic) = %.4f  (advisor reference: %.2f)\n",
+  S_BARRIER, S_BARRIER_advisor
 ))
 
-# Diagnostic plots: GAM partial curve with inflection marker, and the
-# resulting S_ROC distribution among above-threshold genes.
+# --- Per-gene S_Wright -----------------------------------------------------
+# Compute the SIGNED inversion first (full-information diagnostic), then
+# floor at zero for the operational column used downstream.
 
-p_gam_Q <- ggplot(gam_grid, aes(x = Max_Log10_Exp, y = Q_hat)) +
-  geom_ribbon(aes(ymin = Q_hat - 2 * Q_se, ymax = Q_hat + 2 * Q_se),
-              fill = "#1f6f8b", alpha = 0.2) +
-  geom_line(color = "#1f6f8b", linewidth = 0.8) +
-  geom_vline(xintercept = inflection_exp,
-             linetype = "dashed", color = "#E41A1C") +
-  geom_hline(yintercept = Q_neutral_obs,
-             linetype = "dotted", color = "grey40") +
-  annotate("text",
-           x = inflection_exp + 0.05, y = inflection_Q,
-           label = sprintf("inflection: log10_exp = %.2f\nQ_hat = %.3f",
-                           inflection_exp, inflection_Q),
-           hjust = 0, vjust = 0, size = 3.2, color = "#E41A1C") +
-  labs(
-    title = "Partial effect of expression on preferred-base freq at 4-fold sites",
-    subtitle = sprintf("GAM controls for log10(CDS length) and Exp_breadth; n = %d genes",
-                       nrow(msd_data)),
-    x = expression(Max ~ Log[10] ~ Expression),
-    y = expression("Q (preferred-base freq, 4-fold sites)")
-  ) +
-  theme_custom()
-
-ggsave("./results/Wright_GAM_partial_Q_inflection.pdf",
-       p_gam_Q, width = 7, height = 5, device = cairo_pdf)
-
-# Branch D: per-gene S_Wright and the S_ROC vs S_Wright plot ----
-#
-# Wright's S can be obtained per gene by inverting Q(S; U, V) at the gene's
-# observed Q at 4-fold sites. We use the *raw* per-gene Q_pref_base — not the
-# GAM-smoothed Q_hat — so S_Wright stays a direct gene-level observable
-# (independent of the covariate structure baked into the GAM). Per-gene Q is
-# noisy (~100 sites/gene -> binomial SE ~0.05), so we restrict the scatter
-# to genes with >= 50 four-fold sites and add a 30-bin S_ROC summary using
-# site-weighted aggregation (>10^4 sites/bin -> well-determined Q per bin).
-#
-# Genes with Q_obs <= Q_neutral get S_Wright = 0 under Wright's two-allele
-# framework (Q below the mutational equilibrium = no positive selection
-# detectable per site).
-
-msd_data$S_Wright_raw <- vapply(msd_data$Q_pref_base, function(q) {
-  if (is.na(q) || q <= Q_neutral_obs) return(0)
+msd_data$S_Wright_signed <- vapply(msd_data$Q_pref_base, function(q) {
   tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),
            error = function(e) NA_real_)
 }, numeric(1))
+msd_data$is_drift     <- !is.na(msd_data$S_Wright_signed) &
+                          msd_data$S_Wright_signed < 0
+msd_data$S_Wright_raw <- pmax(msd_data$S_Wright_signed, 0)   # operational
 
 cat(sprintf(
-  "[Branch D] Per-gene raw S_Wright: median = %.3f, 95th percentile = %.3f, max = %.3f\n",
-  median(msd_data$S_Wright_raw, na.rm = TRUE),
-  quantile(msd_data$S_Wright_raw, 0.95, na.rm = TRUE),
-  max(msd_data$S_Wright_raw, na.rm = TRUE)
+  "\n[Wright MSD] Per-gene S_Wright_signed: min = %.3f, q05 = %.3f, median = %.3f, q95 = %.3f, max = %.3f, NA = %d / %d\n",
+  min(msd_data$S_Wright_signed, na.rm = TRUE),
+  quantile(msd_data$S_Wright_signed, 0.05, na.rm = TRUE),
+  median(msd_data$S_Wright_signed, na.rm = TRUE),
+  quantile(msd_data$S_Wright_signed, 0.95, na.rm = TRUE),
+  max(msd_data$S_Wright_signed, na.rm = TRUE),
+  sum(is.na(msd_data$S_Wright_signed)), nrow(msd_data)
+))
+cat(sprintf(
+  "[Wright MSD] %d / %d genes (%.1f%%) flagged is_drift (Q < Q_neutral; floored to S_Wright_raw = 0).\n",
+  sum(msd_data$is_drift, na.rm = TRUE), nrow(msd_data),
+  100 * mean(msd_data$is_drift, na.rm = TRUE)
 ))
 
-# Per-gene scatter (high-N genes only).
-plot_data_compare <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_raw), !is.na(S_ROC), N_4fold_sites >= 50)
+# --- Binned S_eta -> (Q_bin, S_Wright_bin, pi_bin) curve ------------------
+# Site-weighted aggregation in 30 ntile-bins of S_eta.  Sign-preserving
+# (no floor) so bins with Q_bin below Q_neutral_obs surface as negative
+# S_Wright_bin -- this exposes any residual selection in the empirical
+# neutral pool that biases (U_emp, V_emp).  Workhorse table for the
+# bin-level pi consistency test, the binned-crossing diagnostic, and the
+# diversity-hump figure.
 
-cor_spearman <- cor(plot_data_compare$S_ROC, plot_data_compare$S_Wright_raw,
-                    method = "spearman")
-cor_pearson  <- cor(plot_data_compare$S_ROC, plot_data_compare$S_Wright_raw,
-                    method = "pearson")
-cat(sprintf("[Branch D] cor(S_ROC, S_Wright): Spearman = %.3f, Pearson = %.3f (n = %d)\n",
-            cor_spearman, cor_pearson, nrow(plot_data_compare)))
-
-p_SROC_vs_SWright <- ggplot(plot_data_compare,
-                            aes(x = S_ROC, y = S_Wright_raw)) +
-  geom_hex(bins = 60) +
-  scale_fill_viridis_c(option = "magma", trans = "log10",
-                       name = "Genes / hex") +
-  geom_smooth(method = "gam", formula = y ~ s(x, k = 6),
-              color = "#E41A1C", linewidth = 0.7, se = FALSE) +
-  geom_vline(xintercept = as.numeric(thr_sel),
-             linetype = "dashed", color = "red") +
-  labs(
-    title = expression(paste("Per-gene ", S[ROC], " vs ", S[Wright],
-                             " (raw per-gene Q at 4-fold sites)")),
-    subtitle = sprintf(
-      "U_emp = %.4f, V_emp = %.4f | rho_Spearman = %.2f, r_Pearson = %.2f | thr_sel = %.3f",
-      U_emp, V_emp, cor_spearman, cor_pearson, as.numeric(thr_sel)
-    ),
-    x = expression(S[ROC]),
-    y = expression(S[Wright])
-  ) +
-  theme_custom()
-
-ggsave("./results/Wright_per_gene_S_ROC_vs_S_Wright.pdf",
-       p_SROC_vs_SWright, width = 7.5, height = 5.5, device = cairo_pdf)
-
-# Binned cross-check using site-weighted Q per S_ROC bin -> invert -> S_Wright.
-bin_compare <- msd_data |>
-  dplyr::filter(!is.na(S_ROC), !is.na(Q_pref_base)) |>
-  dplyr::arrange(S_ROC) |>
-  dplyr::mutate(SROC_bin = ntile(S_ROC, 30)) |>
-  dplyr::group_by(SROC_bin) |>
-  dplyr::summarize(
-    n_genes      = dplyr::n(),
-    mean_S_ROC   = mean(S_ROC),
-    sites_total  = sum(N_4fold_sites),
-    Q_bin        = sum(N_preferred_base) / sum(N_4fold_sites),
-    .groups = "drop"
-  ) |>
-  dplyr::mutate(
-    S_Wright_bin = vapply(Q_bin, function(q) {
-      if (is.na(q) || q <= Q_neutral_obs) return(0)
-      tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),
-               error = function(e) NA_real_)
-    }, numeric(1))
-  )
-
-p_SROC_vs_SWright_bin <- ggplot(bin_compare,
-                                aes(x = mean_S_ROC, y = S_Wright_bin)) +
-  geom_point(aes(size = sites_total), color = "#377EB8", alpha = 0.85) +
-  scale_size_continuous(name = "4-fold sites / bin",
-                        range = c(2, 6),
-                        labels = scales::comma_format()) +
-  geom_smooth(method = "loess", color = "#E41A1C", se = FALSE,
-              linewidth = 0.6) +
-  geom_vline(xintercept = as.numeric(thr_sel),
-             linetype = "dashed", color = "red") +
-  labs(
-    title = "Binned S_ROC vs S_Wright (30 S_ROC bins, site-weighted Q)",
-    subtitle = sprintf("U_emp = %.4f, V_emp = %.4f, V/U = %.2f | thr_sel = %.3f (red dashed)",
-                       U_emp, V_emp, V_emp / U_emp, as.numeric(thr_sel)),
-    x = expression(mean(S[ROC])),
-    y = expression(S[Wright] ~ "(from binned Q)")
-  ) +
-  theme_custom()
-
-ggsave("./results/Wright_binned_S_ROC_vs_S_Wright.pdf",
-       p_SROC_vs_SWright_bin, width = 7, height = 5, device = cairo_pdf)
-
-# ---- Sister panel: S_eta vs S_Wright (sign-aware efficacy alignment) -----
-# This is the positive-slope companion that the advisor's "S_ROC vs S_Wright"
-# request reduces to once the load/efficacy distinction is recognised.
-
-cor_eta_spearman <- cor(plot_data_compare$S_eta, plot_data_compare$S_Wright_raw,
-                        method = "spearman")
-cor_eta_pearson  <- cor(plot_data_compare$S_eta, plot_data_compare$S_Wright_raw,
-                        method = "pearson")
-cat(sprintf("[Branch D] cor(S_eta, S_Wright): Spearman = %.3f, Pearson = %.3f (n = %d)\n",
-            cor_eta_spearman, cor_eta_pearson, nrow(plot_data_compare)))
-
-p_Seta_vs_SWright <- ggplot(plot_data_compare,
-                            aes(x = S_eta, y = S_Wright_raw)) +
-  geom_hex(bins = 60) +
-  scale_fill_viridis_c(option = "viridis", trans = "log10",
-                       name = "Genes / hex") +
-  geom_smooth(method = "gam", formula = y ~ s(x, k = 6),
-              color = "#377EB8", linewidth = 0.7, se = FALSE) +
-  geom_vline(xintercept = as.numeric(thr_eta),
-             linetype = "dashed", color = "blue") +
-  labs(
-    title = expression(paste("Per-gene ", S[eta], " vs ", S[Wright],
-                             " (sign-aware efficacy)")),
-    subtitle = sprintf(
-      "rho_Spearman = %+.2f, r_Pearson = %+.2f | thr_eta = %.4f",
-      cor_eta_spearman, cor_eta_pearson, as.numeric(thr_eta)
-    ),
-    x = expression(S[eta]),
-    y = expression(S[Wright])
-  ) +
-  theme_custom()
-
-ggsave("./results/Wright_per_gene_S_eta_vs_S_Wright.pdf",
-       p_Seta_vs_SWright, width = 7.5, height = 5.5, device = cairo_pdf)
-
-# Combined 2-panel figure: S_ROC (load, negative slope) | S_eta (efficacy, positive slope).
-combined_SWright <- p_SROC_vs_SWright + p_Seta_vs_SWright +
-  plot_annotation(
-    title = "Reconciling S_ROC and Wright's S: load vs efficacy duality",
-    subtitle = sprintf(
-      "Same per-gene S_Wright on the y-axis. S_ROC anti-correlates (load); S_eta correlates positively (efficacy). U_emp = %.4f, V_emp = %.4f.",
-      U_emp, V_emp
-    ),
-    tag_levels = "A"
-  )
-ggsave("./results/Wright_S_ROC_and_S_eta_vs_S_Wright.pdf",
-       combined_SWright, width = 14, height = 5.5, device = cairo_pdf)
-
-# Binned cross-check for S_eta as well (mean per bin).
 bin_eta <- msd_data |>
   dplyr::filter(!is.na(S_eta), !is.na(Q_pref_base)) |>
   dplyr::arrange(S_eta) |>
   dplyr::mutate(Seta_bin = ntile(S_eta, 30)) |>
   dplyr::group_by(Seta_bin) |>
   dplyr::summarize(
-    n_genes      = dplyr::n(),
-    mean_S_eta   = mean(S_eta),
-    sites_total  = sum(N_4fold_sites),
-    Q_bin        = sum(N_preferred_base) / sum(N_4fold_sites),
+    n_genes     = dplyr::n(),
+    mean_S_eta  = mean(S_eta),
+    sites_total = sum(N_4fold_sites),
+    Q_bin       = sum(N_preferred_base) / sum(N_4fold_sites),
+    pi_bin      = sum(Pi_sum_4fold, na.rm = TRUE) /
+                  sum(Sites_4fold,  na.rm = TRUE),
     .groups = "drop"
   ) |>
   dplyr::mutate(
     S_Wright_bin = vapply(Q_bin, function(q) {
-      if (is.na(q) || q <= Q_neutral_obs) return(0)
-      tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),
+      tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),  # signed
                error = function(e) NA_real_)
     }, numeric(1))
   )
 
-p_Seta_vs_SWright_bin <- ggplot(bin_eta,
-                                aes(x = mean_S_eta, y = S_Wright_bin)) +
-  geom_point(aes(size = sites_total), color = "#377EB8", alpha = 0.85) +
+# Per-bin pi standard error (binomial-style heterozygosity SE).
+bin_eta$pi_se <- sqrt(bin_eta$pi_bin * (1 - bin_eta$pi_bin / 2) /
+                      pmax(bin_eta$sites_total, 1))
+
+# --- Primary thr_eta: GAM crossing of S_Wright = S_BARRIER ----------------
+# Fit on the FULL per-gene pool with sign-aware S_Wright_signed (NOT the
+# floored S_Wright_raw, and NOT filtered to S_Wright_signed > 0).  The
+# selection-only filter is incorrect: it shrinks the smoother's S_eta
+# support to a region where the smooth is already saturated above the
+# barrier, collapsing the crossing to the smallest in-pool S_eta.  With
+# the full signed pool, E[S_Wright | S_eta] reports near-zero in the
+# drift regime and crosses S_BARRIER cleanly on its rising flank.
+
+gam_eta_pool <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_signed), !is.na(S_eta), N_4fold_sites >= 20)
+cat(sprintf(
+  "[Wright MSD] GAM fit pool (full signed pool, >= 20 4-fold sites): n = %d / %d (%.1f%%)\n",
+  nrow(gam_eta_pool), nrow(msd_data),
+  100 * nrow(gam_eta_pool) / nrow(msd_data)
+))
+gam_eta_swright <- mgcv::gam(S_Wright_signed ~ s(S_eta, k = 8),
+                             data = gam_eta_pool, method = "REML")
+seta_grid <- seq(min(gam_eta_pool$S_eta, na.rm = TRUE),
+                 max(gam_eta_pool$S_eta, na.rm = TRUE), length.out = 401)
+sw_pred  <- as.numeric(predict(gam_eta_swright,
+                               newdata = data.frame(S_eta = seta_grid)))
+gam_crossings <- which(sw_pred >= S_BARRIER)
+thr_eta_gam <- if (length(gam_crossings) > 0) {
+  i <- gam_crossings[1]
+  if (i > 1) {
+    sw_lo <- sw_pred[i - 1]; sw_hi <- sw_pred[i]
+    e_lo  <- seta_grid[i - 1]; e_hi <- seta_grid[i]
+    e_lo + (e_hi - e_lo) * (S_BARRIER - sw_lo) / (sw_hi - sw_lo)
+  } else {
+    seta_grid[i]
+  }
+} else NA_real_
+
+# --- Diagnostic: binned crossing of S_Wright_bin = S_BARRIER --------------
+
+crossings_bin <- which(bin_eta$S_Wright_bin >= S_BARRIER)
+thr_eta_bin <- if (length(crossings_bin) > 0) {
+  i <- crossings_bin[1]
+  if (i > 1) {
+    s_lo <- bin_eta$S_Wright_bin[i - 1]; s_hi <- bin_eta$S_Wright_bin[i]
+    e_lo <- bin_eta$mean_S_eta[i - 1];   e_hi <- bin_eta$mean_S_eta[i]
+    e_lo + (e_hi - e_lo) * (S_BARRIER - s_lo) / (s_hi - s_lo)
+  } else {
+    bin_eta$mean_S_eta[i]
+  }
+} else NA_real_
+
+# --- Adopt GAM crossing as canonical thr_eta ------------------------------
+
+thr_eta <- thr_eta_gam
+attr(thr_eta, "criterion")        <- "S_eta_at_S_Wright_eq_barrier_GAM"
+attr(thr_eta, "S_Wright_target")  <- S_BARRIER
+attr(thr_eta, "thr_eta_bin_diag") <- thr_eta_bin
+attr(thr_eta, "max_S_Wright_bin") <- max(bin_eta$S_Wright_bin, na.rm = TRUE)
+attr(thr_eta, "U_empirical")      <- U_emp
+attr(thr_eta, "V_empirical")      <- V_emp
+attr(thr_eta, "Q_neutral_obs")    <- Q_neutral_obs
+
+cat(sprintf(
+  "\n>>> thr_eta = %.6f  (S_eta at S_Wright = %.2f; per-gene GAM crossing)\n",
+  thr_eta, S_BARRIER
+))
+cat(sprintf(
+  "    Diagnostic binned crossing thr_eta_bin = %s (max bin S_Wright = %.3f)\n",
+  if (is.finite(thr_eta_bin)) sprintf("%.6f", thr_eta_bin) else "NA",
+  max(bin_eta$S_Wright_bin, na.rm = TRUE)
+))
+cat(sprintf(
+  "    %d / %d genes (%.1f%%) above thr_eta.\n",
+  sum(integrated_data$S_eta > thr_eta, na.rm = TRUE),
+  nrow(integrated_data),
+  100 * mean(integrated_data$S_eta > thr_eta, na.rm = TRUE)
+))
+
+# --- thr_sel anchored to the same drift-barrier event ---------------------
+
+thr_eta_band <- abs(thr_eta) * 0.10
+crossing_genes <- integrated_data |>
+  dplyr::filter(!is.na(S_eta), !is.na(S_ROC),
+                S_eta >= thr_eta - thr_eta_band,
+                S_eta <= thr_eta + thr_eta_band)
+thr_sel <- if (nrow(crossing_genes) >= 5) {
+  median(crossing_genes$S_ROC, na.rm = TRUE)
+} else {
+  NA_real_
+}
+attr(thr_sel, "criterion")      <- "median_S_ROC_at_thr_eta_pm10pct"
+attr(thr_sel, "thr_eta")        <- as.numeric(thr_eta)
+attr(thr_sel, "n_window_genes") <- nrow(crossing_genes)
+attr(thr_sel, "U_empirical")    <- U_emp
+attr(thr_sel, "V_empirical")    <- V_emp
+
+cat(sprintf(
+  "    thr_sel = %.4f  (median S_ROC for genes within +/- 10%% of thr_eta; n = %d)\n",
+  as.numeric(thr_sel), nrow(crossing_genes)
+))
+cat(sprintf(
+  "    %d / %d genes (%.1f%%) above thr_sel.\n",
+  sum(integrated_data$S_ROC > thr_sel, na.rm = TRUE),
+  nrow(integrated_data),
+  100 * mean(integrated_data$S_ROC > thr_sel, na.rm = TRUE)
+))
+
+# ===========================================================================
+# Bin-level pi consistency test (parameter-free Wright validation)
+# ===========================================================================
+#
+# Replaces the v10 alpha-calibration goodness-of-fit, which fit a single
+# proportional scale alpha so Q_bin ~= Q(alpha * mean_S_eta; U_emp, V_emp)
+# and reported chi^2.  That test was both intrinsically nonlinear (Wright's
+# Q -> S map is not a single multiplicative scaling, so one alpha cannot
+# thread bin points across the full S_eta range) and circular (it asked
+# whether S_eta projects to Wright's S after we already derived thr_eta
+# from the S_Wright -> S_eta GAM crossing).
+#
+# Replacement is a parameter-free check: does Wright's Q -> pi map predict
+# pi_bin from the bin-level S_Wright_bin (already inverted from Q_bin)?
+#
+#   pi_pred_wright = wright_pi(S_Wright_bin; U_emp, V_emp)
+#   pi_residual    = pi_bin - pi_pred_wright
+#   chi2_pi        = sum( pi_residual^2 / pi_se^2 )
+#
+# No fitted parameter, so df = n_bins.  Drift bins (negative S_Wright_bin)
+# reflect residual selection in the empirical neutral pool that nudges
+# (U_emp, V_emp) -- they surface as inflated pi_residual at low S_eta.
+# We therefore also report the chi^2 restricted to the selection regime
+# (S_Wright_bin >= S_BARRIER), the regime where the model is identifiable.
+
+bin_eta$pi_pred_wright <- wright_pi(bin_eta$S_Wright_bin,
+                                    U = U_emp, V = V_emp)
+bin_eta$pi_residual    <- bin_eta$pi_bin - bin_eta$pi_pred_wright
+
+chi2_pi_terms <- (bin_eta$pi_residual)^2 /
+                 pmax(bin_eta$pi_se, .Machine$double.eps)^2
+chi2_pi_stat  <- sum(chi2_pi_terms, na.rm = TRUE)
+chi2_pi_df    <- sum(!is.na(chi2_pi_terms))   # no fitted parameter
+chi2_pi_p     <- pchisq(chi2_pi_stat, df = chi2_pi_df, lower.tail = FALSE)
+cat(sprintf(
+  "\n[Validation] Bin-level pi consistency: chi^2 = %.2f / df = %d -> p = %.3g (parameter-free; small p = systematic deviation of observed pi from Wright pi(S_Wright_bin)).\n",
+  chi2_pi_stat, chi2_pi_df, chi2_pi_p
+))
+
+# Selection-regime subset: bins above the drift barrier ------------------
+sel_bins <- bin_eta |>
+  dplyr::filter(!is.na(S_Wright_bin), S_Wright_bin >= S_BARRIER)
+chi2_pi_sel_stat <- if (nrow(sel_bins) > 0) {
+  sum((sel_bins$pi_residual)^2 /
+      pmax(sel_bins$pi_se, .Machine$double.eps)^2,
+      na.rm = TRUE)
+} else NA_real_
+chi2_pi_sel_df   <- nrow(sel_bins)
+chi2_pi_sel_p    <- if (chi2_pi_sel_df > 0 && is.finite(chi2_pi_sel_stat)) {
+  pchisq(chi2_pi_sel_stat, df = chi2_pi_sel_df, lower.tail = FALSE)
+} else NA_real_
+cat(sprintf(
+  "[Validation] Selection-regime subset (S_Wright_bin >= %.4f): chi^2 = %s / df = %d -> p = %s\n",
+  S_BARRIER,
+  if (is.finite(chi2_pi_sel_stat)) sprintf("%.2f", chi2_pi_sel_stat) else "NA",
+  chi2_pi_sel_df,
+  if (is.finite(chi2_pi_sel_p))    sprintf("%.3g", chi2_pi_sel_p)    else "NA"
+))
+
+# Bin-level pi consistency figure ----------------------------------------
+p_pi_validation <- ggplot(bin_eta, aes(x = mean_S_eta, y = pi_bin)) +
+  geom_errorbar(aes(ymin = pi_bin - 2 * pi_se,
+                    ymax = pi_bin + 2 * pi_se),
+                width = 0, color = "#377EB8", alpha = 0.6) +
+  geom_point(aes(size = sites_total),
+             color = "#377EB8", alpha = 0.85) +
+  geom_line(aes(y = pi_pred_wright),
+            color = "#E41A1C", linewidth = 0.8) +
+  geom_hline(yintercept = pi_neutral_obs,
+             linetype = "dotted", color = "grey40") +
+  geom_vline(xintercept = as.numeric(thr_eta),
+             linetype = "dashed", color = "blue") +
   scale_size_continuous(name = "4-fold sites / bin",
                         range = c(2, 6),
                         labels = scales::comma_format()) +
-  geom_smooth(method = "loess", color = "#377EB8", se = FALSE,
-              linewidth = 0.6) +
+  labs(
+    title    = "Bin-level pi consistency: observed pi vs Wright pi(S_Wright_bin)",
+    subtitle = sprintf(
+      paste0("All-bin chi^2 = %.1f / df %d (p = %.2g) | sel-only chi^2 = %s / df %d (p = %s) | ",
+             "red: Wright pi(S_Wright_bin); dotted: pi_neutral; dashed: thr_eta"),
+      chi2_pi_stat, chi2_pi_df, chi2_pi_p,
+      if (is.finite(chi2_pi_sel_stat)) sprintf("%.1f", chi2_pi_sel_stat) else "NA",
+      chi2_pi_sel_df,
+      if (is.finite(chi2_pi_sel_p))    sprintf("%.2g", chi2_pi_sel_p)    else "NA"
+    ),
+    x = expression(mean(S[eta]) ~ "(per bin)"),
+    y = expression(pi[4*fold] ~ "(site-weighted)")
+  ) +
+  theme_custom()
+ggsave("./results/Wright_pi_vs_S_Wright_binned.pdf",
+       p_pi_validation, width = 7, height = 5, device = cairo_pdf)
+
+# --- Per-gene S_eta vs S_Wright validation figure -------------------------
+# Binned points overlaid on the per-gene GAM smoother E[S_Wright | S_eta]
+# (the same smoother whose S_BARRIER crossing defined thr_eta).  No fitted
+# alpha; the smoother IS the model link between the two axes.
+
+per_gene_pool <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_raw), !is.na(S_eta), N_4fold_sites >= 50)
+cor_eta_spearman <- cor(per_gene_pool$S_eta, per_gene_pool$S_Wright_raw,
+                        method = "spearman")
+cor_eta_pearson  <- cor(per_gene_pool$S_eta, per_gene_pool$S_Wright_raw,
+                        method = "pearson")
+cat(sprintf(
+  "[Validation] cor(S_eta, S_Wright_raw): Spearman = %+.3f, Pearson = %+.3f (n = %d, >=50 4-fold sites)\n",
+  cor_eta_spearman, cor_eta_pearson, nrow(per_gene_pool)
+))
+
+# Smoother frame for the theory line (reuses gam_eta_swright predictions
+# already computed for the thr_eta_gam crossing).
+sw_smoother <- data.frame(mean_S_eta = seta_grid, S_Wright = sw_pred)
+
+p_Seta_vs_SWright <- ggplot(bin_eta,
+                            aes(x = mean_S_eta, y = S_Wright_bin)) +
+  geom_point(aes(size = sites_total),
+             color = "#377EB8", alpha = 0.85) +
+  geom_line(data = sw_smoother,
+            aes(x = mean_S_eta, y = S_Wright),
+            color = "#E41A1C", linewidth = 0.7, inherit.aes = FALSE) +
+  geom_hline(yintercept = S_BARRIER, linetype = "dotted", color = "grey40") +
+  geom_hline(yintercept = 0,         linetype = "dotted", color = "grey60") +
   geom_vline(xintercept = as.numeric(thr_eta),
              linetype = "dashed", color = "blue") +
+  scale_size_continuous(name = "4-fold sites / bin",
+                        range = c(2, 6),
+                        labels = scales::comma_format()) +
   labs(
-    title = "Binned S_eta vs S_Wright (30 S_eta bins, site-weighted Q)",
-    subtitle = sprintf("U_emp = %.4f, V_emp = %.4f | thr_eta = %.4f",
-                       U_emp, V_emp, as.numeric(thr_eta)),
+    title = expression(paste("Binned ", S[eta], " vs ", S[Wright],
+                             "  (per-gene GAM smoother)")),
+    subtitle = sprintf(
+      "S_BARRIER = %.4f | thr_eta = %.5f | per-gene rho_S = %+.2f, r = %+.2f",
+      S_BARRIER, as.numeric(thr_eta), cor_eta_spearman, cor_eta_pearson
+    ),
     x = expression(mean(S[eta])),
-    y = expression(S[Wright] ~ "(from binned Q)")
+    y = expression(S[Wright])
   ) +
   theme_custom()
 
-ggsave("./results/Wright_binned_S_eta_vs_S_Wright.pdf",
-       p_Seta_vs_SWright_bin, width = 7, height = 5, device = cairo_pdf)
+ggsave("./results/Wright_S_eta_vs_S_Wright_binned.pdf",
+       p_Seta_vs_SWright, width = 7, height = 5, device = cairo_pdf)
+
+# 8.3.5) Diversity hump figure: pi at 4-fold sites vs S_eta ----
+#
+# Predictive test of the McVean / weak-selection hump under the load/efficacy
+# framing.  Wright's pi(S) under biased mutation is non-monotone: a plateau
+# at S = 0, a small rise as Sv begins to oppose drift (the "hump"), and a
+# collapse as selection drives the preferred allele to fixation.  Because
+# S_eta is the SIGN-AWARE per-gene mirror of S_Wright (Spearman ~+0.67),
+# this prediction should also be visible on the S_eta axis.
+#
+# Single-panel design (replaces the v10 three-panel hexbin/binned/theory
+# layout, which Luis flagged as too noisy):
+#   * Site-weighted pi_bin from `bin_eta` (already computed in 8.3.4) with
+#     binomial-style standard errors -- avoids the per-gene hexbin scatter.
+#   * Theory curve: a monotone (Hyman / Fritsch-Carlson) smoother of the
+#     bin-level (mean_S_eta, max(0, S_Wright_bin)) frame produces a smooth
+#     S_eta -> S_Wright link, then Wright pi(.) is applied to the smoothed
+#     S_Wright.  No fitted parameter beyond what the bin frame encodes;
+#     replaces the v10 alpha-calibrated curve, which assumed a single
+#     proportional scale that Wright's nonlinear Q -> S map can't support.
+#   * pi_neutral_obs as the horizontal baseline.
+#   * Vertical thr_eta annotation (S_BARRIER on the S_eta axis).
+#
+# Note: bin_eta$pi_se was added in 8.3.4 right after bin_eta is built; no
+# need to recompute it here.
+
+# Smooth S_eta -> S_Wright link (monotone, floor at 0).  splinefun with
+# method = "monoH.FC" gives the Fritsch-Carlson piecewise-cubic Hermite
+# interpolant, which preserves monotonicity in the underlying bin data.
+
+bin_for_smoother <- bin_eta |>
+  dplyr::filter(!is.na(mean_S_eta), !is.na(S_Wright_bin)) |>
+  dplyr::arrange(mean_S_eta) |>
+  dplyr::mutate(S_Wright_floor = pmax(S_Wright_bin, 0))
+sm_eta_to_SW <- splinefun(x = bin_for_smoother$mean_S_eta,
+                          y = bin_for_smoother$S_Wright_floor,
+                          method = "monoH.FC")
+seta_curve   <- seq(min(bin_eta$mean_S_eta), max(bin_eta$mean_S_eta),
+                    length.out = 401)
+SW_curve     <- pmax(sm_eta_to_SW(seta_curve), 0)
+pi_curve_th  <- wright_pi(SW_curve, U = U_emp, V = V_emp)
+hump_theory  <- data.frame(mean_S_eta      = seta_curve,
+                           S_Wright_smooth = SW_curve,
+                           pi_theory       = pi_curve_th)
+
+p_hump <- ggplot(bin_eta, aes(x = mean_S_eta, y = pi_bin)) +
+  geom_hline(yintercept = pi_neutral_obs,
+             linetype = "dotted", color = "grey40") +
+  geom_vline(xintercept = as.numeric(thr_eta),
+             linetype = "dashed", color = "blue") +
+  geom_errorbar(aes(ymin = pi_bin - 2 * pi_se,
+                    ymax = pi_bin + 2 * pi_se),
+                width = 0, color = "#377EB8", alpha = 0.6) +
+  geom_point(aes(size = sites_total),
+             color = "#377EB8", alpha = 0.9) +
+  geom_line(data = hump_theory,
+            aes(x = mean_S_eta, y = pi_theory),
+            color = "#E41A1C", linewidth = 0.8, inherit.aes = FALSE) +
+  scale_size_continuous(name = "4-fold sites / bin",
+                        range = c(2, 6),
+                        labels = scales::comma_format()) +
+  labs(
+    title = expression(paste("Diversity-hump test: ", pi[4*fold],
+                             " vs ", S[eta])),
+    subtitle = sprintf(
+      paste0("Red: Wright pi(S_smooth(S_eta); U_emp = %.4f, V_emp = %.4f) ",
+             "via monotone smoother. Dotted: pi_neutral = %.5f. ",
+             "Dashed: thr_eta = %.5f (S_Wright = %.4f)."),
+      U_emp, V_emp, pi_neutral_obs, as.numeric(thr_eta), S_BARRIER
+    ),
+    x = expression(mean(S[eta]) ~ "(per bin, 30 site-weighted bins)"),
+    y = expression(pi[4*fold] ~ "(site-weighted)")
+  ) +
+  theme_custom()
+
+ggsave("./results/Diversity_hump_pi_vs_S_eta.pdf",
+       p_hump, width = 7.5, height = 5, device = cairo_pdf)
+
+# Persist hump-figure underlying data for the manuscript.
+write.csv(bin_eta |> dplyr::select(Seta_bin, n_genes, mean_S_eta, sites_total,
+                                   Q_bin, S_Wright_bin, pi_bin, pi_se,
+                                   pi_pred_wright, pi_residual),
+          "./results/Diversity_hump_pi_vs_S_eta_binned.csv",
+          row.names = FALSE)
+
+# Memory cleanup for hump-figure intermediates ----------------------------
+rm(p_hump, hump_theory, seta_curve, SW_curve, pi_curve_th,
+   bin_for_smoother, sm_eta_to_SW)
+gc()
 
 # Persist artefacts.
 write.csv(wright_fid,
           "./results/Wright_curve_advisor_fiducial.csv", row.names = FALSE)
 write.csv(wright_emp,
           "./results/Wright_curve_empirical.csv",        row.names = FALSE)
-write.csv(gam_grid,
-          "./results/Wright_GAM_partial_curve.csv",      row.names = FALSE)
-write.csv(bin_compare,
-          "./results/Wright_S_ROC_vs_S_Wright_binned.csv", row.names = FALSE)
+# GAM partial curve: S_eta grid -> predicted S_Wright (used to derive thr_eta)
+write.csv(data.frame(S_eta = seta_grid, S_Wright_pred = sw_pred),
+          "./results/Wright_GAM_S_eta_to_S_Wright.csv",  row.names = FALSE)
+# Full bin_eta table: every column the manuscript hump/validation figures use
+write.csv(bin_eta |> dplyr::select(Seta_bin, n_genes, mean_S_eta, sites_total,
+                                   Q_bin, S_Wright_bin, pi_bin, pi_se,
+                                   pi_pred_wright, pi_residual),
+          "./results/Wright_S_eta_binned.csv",           row.names = FALSE)
 write.csv(
-  msd_data |> dplyr::select(Gene_name, S_ROC, Q_pref_base, S_Wright_raw,
+  msd_data |> dplyr::select(Gene_name, S_ROC, Q_pref_base,
+                            S_Wright_signed, S_Wright_raw, is_drift,
                             Mean_Log10_Exp, Max_Log10_Exp, N_4fold_sites),
   "./results/Wright_per_gene_S_ROC_S_Wright.csv", row.names = FALSE
 )
+# GAM-vs-bin agreement on thr_eta (cross-check that the canonical GAM
+# crossing is robust to estimator choice).
+gam_bin_agreement_pct <- if (is.finite(thr_eta_gam) && is.finite(thr_eta_bin) &&
+                             thr_eta_bin != 0) {
+  100 * abs(thr_eta_gam - thr_eta_bin) / abs(thr_eta_bin)
+} else NA_real_
 write.csv(
   data.frame(
-    criterion       = "min_S_ROC_at_GAM_inflection_exp",
-    inflection_exp  = inflection_exp_used,
-    inflection_Q    = inflection_Q_used,
-    S_ROC_threshold = as.numeric(thr_sel),
-    n_above         = sum(integrated_data$S_ROC > as.numeric(thr_sel),
-                          na.rm = TRUE)
+    criterion                = "S_eta_at_S_Wright_eq_barrier_GAM",
+    S_BARRIER                = S_BARRIER,
+    S_BARRIER_advisor        = S_BARRIER_advisor,
+    U_empirical              = U_emp,
+    V_empirical              = V_emp,
+    Q_neutral_obs            = Q_neutral_obs,
+    pi_neutral_obs           = pi_neutral_obs,
+    pi_neutral_theory        = pi_neutral_theory,
+    thr_eta                  = as.numeric(thr_eta),
+    thr_eta_gam              = thr_eta_gam,
+    thr_eta_bin_diag         = if (is.finite(thr_eta_bin)) thr_eta_bin else NA_real_,
+    gam_bin_agreement_pct    = gam_bin_agreement_pct,
+    max_S_Wright_bin         = max(bin_eta$S_Wright_bin, na.rm = TRUE),
+    thr_sel                  = as.numeric(thr_sel),
+    thr_sel_n_window_genes   = nrow(crossing_genes),
+    n_drift_genes            = sum(msd_data$is_drift, na.rm = TRUE),
+    frac_drift_genes         = mean(msd_data$is_drift, na.rm = TRUE),
+    n_selection_pool_GAM     = nrow(gam_eta_pool),
+    chi2_pi_stat             = chi2_pi_stat,
+    chi2_pi_df               = chi2_pi_df,
+    chi2_pi_p                = chi2_pi_p,
+    chi2_pi_sel_stat         = if (is.finite(chi2_pi_sel_stat)) chi2_pi_sel_stat else NA_real_,
+    chi2_pi_sel_df           = chi2_pi_sel_df,
+    chi2_pi_sel_p            = if (is.finite(chi2_pi_sel_p))    chi2_pi_sel_p    else NA_real_,
+    cor_S_eta_S_Wright_spearman = cor_eta_spearman,
+    cor_S_eta_S_Wright_pearson  = cor_eta_pearson,
+    n_above_thr_eta          = sum(integrated_data$S_eta > as.numeric(thr_eta),
+                                   na.rm = TRUE),
+    n_above_thr_sel          = sum(integrated_data$S_ROC > as.numeric(thr_sel),
+                                   na.rm = TRUE)
   ),
   "./results/Wright_threshold_adopted.csv", row.names = FALSE
 )
 
-# Memory cleanup
+# Memory cleanup -- keep: thr_eta, thr_sel, U_emp, V_emp, Q_neutral_obs,
+# pi_neutral_obs, pi_neutral_theory, S_BARRIER, S_BARRIER_advisor,
+# msd_data, bin_eta, integrated_data.
 rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
-   p_advisor_Q, p_advisor_pi, p_gam_Q, gam_pred, gam_grid,
-   exp_grid, dx, dQ, exp_mid, S_grid_fid, S_grid_emp,
-   neutral_pool, threshold_pool,
-   plot_data_compare, bin_compare,
-   p_SROC_vs_SWright, p_SROC_vs_SWright_bin)
+   p_advisor_Q, p_advisor_pi,
+   S_grid_fid, S_grid_emp,
+   neutral_pool,
+   gam_eta_pool, gam_eta_swright, seta_grid, sw_pred, gam_crossings,
+   crossings_bin, thr_eta_band, crossing_genes,
+   chi2_pi_terms, sel_bins,
+   sw_smoother, gam_bin_agreement_pct,
+   per_gene_pool, p_pi_validation, p_Seta_vs_SWright)
 gc()
 
 # 8.4) GO-enrichment for the two complementary "selection groups" ----

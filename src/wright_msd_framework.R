@@ -128,15 +128,43 @@ wright_calibrate_alpha <- function(S_ROC_bin, Q_obs_bin,
 
 #' Solve S such that Q(S; U, V) = Q_target
 #'
-#' Used to map a chosen Q-criterion (e.g. midpoint, half-fixation) to the
-#' corresponding S in the Wright scale.  Once alpha is estimated, the
-#' equivalent S_ROC threshold is S_target / alpha.
-wright_invert_Q <- function(Q_target, U, V, S_lower = 0, S_upper = 50,
-                            S_upper_max = 400) {
-  q_low  <- wright_Q(S_lower, U, V)
+#' Q(S; U, V) is strictly monotone-increasing on the whole real line:
+#' Q(-Inf) = 0, Q(0) = V/(U+V) (the neutral mean), Q(+Inf) = 1.  So *any*
+#' Q_target in (0, 1) has a unique S in R.  This solver searches a signed
+#' bracket and adaptively expands it on either side, so genes with
+#' Q_obs < Q_neutral correctly return a *negative* S_Wright (selection
+#' against the preferred allele) instead of being floored to zero or NA.
+#'
+#' If `floor_at_zero = TRUE`, the solver reports S = 0 for any Q_target
+#' below the neutral mean Q(0) = V/(U+V).  This is the operational
+#' "drift cap" used in main.R §8.3.4: per-gene Q below Q_neutral is
+#' interpreted as drift acting (no detectable selection FOR the preferred
+#' allele) rather than as an inferred selection coefficient against it.
+#' The signed value remains the right thing to compute when probing the
+#' empirical (U, V) calibration (e.g. for `bin_eta$S_Wright_bin`).
+#'
+#' @param Q_target  Target preferred-base frequency, in (0, 1).
+#' @param U,V       Wright mutation parameters (must be > 0).
+#' @param S_lower,S_upper  Initial bracket; expanded outward as needed.
+#' @param S_lower_min,S_upper_max  Hard limits on the expansion.
+#' @param floor_at_zero  If TRUE, return 0 (not a negative S) when
+#'        Q_target falls below the neutral mean V/(U+V).  Default FALSE.
+#' @return Numeric S, or NA_real_ if Q_target falls outside (0, 1) or
+#'         the expansion cannot bracket the root within the hard limits.
+wright_invert_Q <- function(Q_target, U, V,
+                            S_lower = -50, S_upper = 50,
+                            S_lower_min = -400, S_upper_max = 400,
+                            floor_at_zero = FALSE) {
+  if (!is.finite(Q_target) || Q_target <= 0 || Q_target >= 1) return(NA_real_)
+  if (floor_at_zero && Q_target <= V / (U + V)) return(0)
+  # Expand the lower bracket outward until Q(S_lower) < Q_target
+  q_low <- wright_Q(S_lower, U, V)
+  while (Q_target <= q_low && S_lower > S_lower_min) {
+    S_lower <- max(S_lower * 2, S_lower_min)
+    q_low   <- wright_Q(S_lower, U, V)
+  }
   if (Q_target <= q_low) return(NA_real_)
-  # If Q_target sits above the current upper bound, expand S_upper adaptively
-  # so high-Q outlier genes can still be inverted (slowly-saturating regime).
+  # Expand the upper bracket outward until Q(S_upper) > Q_target
   q_high <- wright_Q(S_upper, U, V)
   while (Q_target >= q_high && S_upper < S_upper_max) {
     S_upper <- min(S_upper * 2, S_upper_max)
@@ -145,6 +173,64 @@ wright_invert_Q <- function(Q_target, U, V, S_lower = 0, S_upper = 50,
   if (Q_target >= q_high) return(NA_real_)
   uniroot(function(s) wright_Q(s, U, V) - Q_target,
           interval = c(S_lower, S_upper), tol = 1e-6)$root
+}
+
+## ---------------------------------------------------------------------------
+## Dynamic drift-barrier threshold on the Wright pi(S) curve
+## ---------------------------------------------------------------------------
+
+#' Solve S such that pi(S; U, V) = (1 + fraction) * pi_neutral
+#' on the rising flank of Wright's pi(S).
+#'
+#' pi(S) is non-monotone: it rises from pi(0) to a hump apex (typically
+#' near S ~ ln(U/V)) and then collapses as selection drives the preferred
+#' allele toward fixation.  We want the *first* (low-S, rising-flank)
+#' crossing of (1 + fraction) * pi_neutral, NOT the descending-flank
+#' crossing on the far side of the hump.  We locate the first sign change
+#' on a log-spaced grid, then refine with uniroot inside that bracket.
+#'
+#' This replaces the hand-set S_BARRIER = 0.1 from JK's Mathematica
+#' pi-rise simulation with a value derived directly from the empirical
+#' (U, V).  For the M. guttatus calibration (U_emp = 0.0698, V_emp =
+#' 0.0245), a 1% rise corresponds to S = 0.044, while JK's prior 0.10
+#' value corresponds to roughly a 2.3% rise on the same curve.
+#'
+#' @param U,V         Wright mutation parameters (>0).
+#' @param pi_neutral  Reference pi at S = 0 (typically wright_pi(0, U, V)).
+#' @param fraction    Relative rise over pi_neutral defining the barrier.
+#'                    Default 0.01 (1% rise).
+#' @param S_grid_max  Upper end of the log-spaced search grid (default 50).
+#' @param S_grid_n    Resolution of the search grid (default 1000).
+#' @param tol         uniroot tolerance.
+#' @return Numeric S at which pi crosses (1 + fraction) * pi_neutral on
+#'         its rising flank, or NA_real_ if no rising-flank crossing
+#'         exists within the grid.
+derive_S_barrier <- function(U, V, pi_neutral,
+                             fraction = 0.01,
+                             S_grid_max = 50, S_grid_n = 1000,
+                             tol = 1e-6) {
+  stopifnot(U > 0, V > 0, pi_neutral > 0, fraction > 0)
+  target <- (1 + fraction) * pi_neutral
+  f <- function(s) wright_pi(s, U, V) - target
+  if (f(0) >= 0) {
+    stop(sprintf(
+      "pi(0) = %.5g already at/above target (%.5g); check pi_neutral input.",
+      wright_pi(0, U, V), target
+    ))
+  }
+  # Log-spaced grid (rising flank is concentrated at small S; log-spacing
+  # gives ~3-decade dynamic range without wasting points at large S).
+  s_grid    <- exp(seq(log(max(tol, 1e-5)), log(S_grid_max),
+                       length.out = S_grid_n))
+  pi_grid   <- wright_pi(s_grid, U, V)
+  diff_grid <- pi_grid - target
+  # First grid index where pi_grid > target -> rising-flank crossing
+  # lies between (s_grid[first_pos - 1] or 0, s_grid[first_pos]).
+  first_pos <- which(diff_grid > 0)[1]
+  if (is.na(first_pos)) return(NA_real_)
+  s_lo <- if (first_pos == 1) 0 else s_grid[first_pos - 1]
+  s_hi <- s_grid[first_pos]
+  uniroot(f, interval = c(s_lo, s_hi), tol = tol)$root
 }
 
 #' Three candidate Wright-S thresholds with biological rationale
