@@ -1975,21 +1975,19 @@ cat(sprintf(
 ))
 
 # --- Parallel GAM branch: smooth Q first, then invert to S_Wright ---------
-# This branch follows the advisor's suggestion: estimate Q with a GAM on the
-# gene-level covariates *and* a Gaussian-on-logit per-gene random effect,
-# then plug the shrunk Q into the Wright inversion. The RE term provides
-# partial pooling: each gene's BLUP shrinks its observed Q toward the
-# covariate-smoothed mean, weighted by N_4fold_sites. Genes with few
-# 4-fold sites are pulled hard toward the smooth; high-N genes barely
-# move. The diagnostic battery in src/wright_gam_diagnostics.R checks
-# whether the shrunk pipeline can replace the raw per-gene wright_invert_Q.
+# Same model structure as the codon-usage GAMs in section 5: a binomial GAM
+# with additive smooths on Max_Log10_Exp, Exp_breadth, and Log_CDS_length_nt.
+# The fitted Q_GAM is the conditional mean given covariates (no per-gene
+# random effect — covariate-only smoothing). Two genes with identical
+# covariates therefore get the same Q_GAM, so this branch tests whether
+# covariate structure alone is sufficient to denoise per-gene Q before
+# inversion.
 
 gam_Q_pool <- msd_data |>
   dplyr::filter(!is.na(Q_pref_base), !is.na(Max_Log10_Exp),
                 !is.na(Exp_breadth), !is.na(CDS_length_nt),
                 N_4fold_sites >= 20) |>
-  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt),
-                Gene_name_f       = factor(Gene_name))
+  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
 
 if (nrow(gam_Q_pool) < 30) {
   stop(sprintf(
@@ -1998,16 +1996,14 @@ if (nrow(gam_Q_pool) < 30) {
   ))
 }
 
-gam_Q_wright <- mgcv::bam(
+gam_Q_wright <- mgcv::gam(
   cbind(N_preferred_base, N_4fold_sites - N_preferred_base) ~
     s(Max_Log10_Exp, k = 8) +
     s(Exp_breadth, k = 8) +
-    s(Log_CDS_length_nt, k = 8) +
-    s(Gene_name_f, bs = "re"),
-  data     = gam_Q_pool,
-  family   = binomial(link = "logit"),
-  method   = "fREML",
-  discrete = TRUE
+    s(Log_CDS_length_nt, k = 8),
+  data   = gam_Q_pool,
+  family = binomial(link = "logit"),
+  method = "REML"
 )
 
 gam_Q_pool$Q_GAM <- as.numeric(predict(gam_Q_wright, newdata = gam_Q_pool,
@@ -2038,14 +2034,12 @@ cat(sprintf(
 ))
 
 # --- Parallel GAM branch: smooth π first, then invert to S_Wright ---------
-# This branch uses the advisor's two-allele π transformation. Each 4-fold
-# site is encoded as preferred (1) vs unpreferred (0), and π is computed as
-# per-gene heterozygosity across these binary sites. We then fit a GAM on
-# π(covariates) with a per-gene Gaussian random effect for shrinkage, and
-# invert back to S via wright_invert_pi(). Per-gene precision is encoded
-# through `weights = N_4fold_sites`: the variance of an empirical
-# heterozygosity scales as ~1/N, so the precision-weighted Gaussian GAM
-# shrinks low-N genes toward the smooth covariate mean.
+# Same model structure as the codon-usage GAMs in section 5: a Gaussian GAM
+# with additive smooths on Max_Log10_Exp, Exp_breadth, and Log_CDS_length_nt.
+# Each 4-fold site is encoded as preferred (1) vs unpreferred (0), and
+# pi_2allele is the per-gene heterozygosity across these binary sites. The
+# fitted pi_GAM is the conditional mean given covariates (no per-gene random
+# effect — covariate-only smoothing).
 
 pi_data <- read.csv("data/Two_allele_pi.csv")
 colnames(pi_data) <- c("Gene_name", "pi_2allele")
@@ -2056,8 +2050,7 @@ gam_pi_pool <- msd_data |>
                 !is.na(Max_Log10_Exp), !is.na(Exp_breadth),
                 !is.na(CDS_length_nt),
                 N_4fold_sites >= 20) |>
-  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt),
-                Gene_name_f       = factor(Gene_name))
+  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
 
 if (nrow(gam_pi_pool) < 30) {
   stop(sprintf(
@@ -2066,17 +2059,14 @@ if (nrow(gam_pi_pool) < 30) {
   ))
 }
 
-gam_pi_wright <- mgcv::bam(
+gam_pi_wright <- mgcv::gam(
   pi_2allele ~
     s(Max_Log10_Exp, k = 8) +
     s(Exp_breadth, k = 8) +
-    s(Log_CDS_length_nt, k = 8) +
-    s(Gene_name_f, bs = "re"),
-  data     = gam_pi_pool,
-  family   = gaussian(link = "identity"),
-  weights  = N_4fold_sites,
-  method   = "fREML",
-  discrete = TRUE
+    s(Log_CDS_length_nt, k = 8),
+  data   = gam_pi_pool,
+  family = gaussian(link = "identity"),
+  method = "REML"
 )
 
 gam_pi_pool$pi_GAM <- as.numeric(predict(gam_pi_wright, newdata = gam_pi_pool,

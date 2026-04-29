@@ -1,10 +1,14 @@
-##' @title  Diagnostic battery for GAM-RE-shrunk Wright S inversion
+##' @title  Diagnostic battery for GAM-smoothed Wright S inversion
 ##' @author Luis Javier Madrigal-Roca & John K. Kelly
 ##' @date   2026-04-28
 ##'
-##' Tier 1-3 diagnostics for deciding whether the per-gene GAM-RE-shrunk
-##' inversion can replace the raw per-gene wright_invert_Q (and
-##' wright_invert_pi) pipeline.
+##' Tier 1-3 diagnostics for deciding whether the per-gene GAM-smoothed
+##' inversion (covariate smooths only — no per-gene random effect) can
+##' replace the raw per-gene wright_invert_Q (and wright_invert_pi)
+##' pipeline. The GAM provides covariate-driven denoising of Q (and π);
+##' two genes with identical covariates therefore receive the same
+##' GAM-smoothed estimate, so the diagnostic is asking whether covariate
+##' structure alone is sufficient to denoise per-gene Q before inversion.
 ##'
 ##' Tier 1 (adoption-blocking):
 ##'   1.1 Simulation recovery: known-S simulation drawn from a parametric
@@ -79,14 +83,14 @@
   d$S_raw_recov <- .invert_Q_safe(d$Q_obs_sim, U_emp, V_emp)
 
   gam_sim <- tryCatch(
-    mgcv::bam(
+    mgcv::gam(
       cbind(N_pref_sim, N_other_sim) ~
         s(Max_Log10_Exp, k = 8) + s(Exp_breadth, k = 8) +
-        s(Log_CDS_length_nt, k = 8) + s(Gene_name_f, bs = "re"),
+        s(Log_CDS_length_nt, k = 8),
       data = d, family = stats::binomial(link = "logit"),
-      method = "fREML", discrete = TRUE
+      method = "REML"
     ),
-    error = function(e) { message("[sim Q] bam failed: ", conditionMessage(e)); NULL }
+    error = function(e) { message("[sim Q] gam failed: ", conditionMessage(e)); NULL }
   )
   if (is.null(gam_sim)) {
     d$Q_GAM_sim     <- NA_real_
@@ -122,15 +126,14 @@
   d$S_raw_recov <- .invert_pi_safe(d$pi_obs_sim, U_emp, V_emp)
 
   gam_sim <- tryCatch(
-    mgcv::bam(
+    mgcv::gam(
       pi_obs_sim ~
         s(Max_Log10_Exp, k = 8) + s(Exp_breadth, k = 8) +
-        s(Log_CDS_length_nt, k = 8) + s(Gene_name_f, bs = "re"),
+        s(Log_CDS_length_nt, k = 8),
       data = d, family = stats::gaussian(link = "identity"),
-      weights = N_4fold_sites,
-      method = "fREML", discrete = TRUE
+      method = "REML"
     ),
-    error = function(e) { message("[sim π] bam failed: ", conditionMessage(e)); NULL }
+    error = function(e) { message("[sim π] gam failed: ", conditionMessage(e)); NULL }
   )
   if (is.null(gam_sim)) {
     d$pi_GAM_sim    <- NA_real_
@@ -155,7 +158,7 @@
     data.frame(S_true = sim_data$S_true, S_recov = sim_data$S_raw_recov,
                estimator = "raw", N_strata = sim_data$N_strata),
     data.frame(S_true = sim_data$S_true, S_recov = sim_data$S_shrunk_recov,
-               estimator = "shrunk (GAM-RE)", N_strata = sim_data$N_strata)
+               estimator = "GAM-smoothed", N_strata = sim_data$N_strata)
   ) |> dplyr::filter(is.finite(S_true), is.finite(S_recov))
 
   rmse_table <- long |>
@@ -176,7 +179,7 @@
     ggplot2::geom_smooth(method = "loess", se = FALSE, linewidth = 0.6) +
     ggplot2::facet_wrap(~ N_strata, ncol = 2) +
     ggplot2::scale_color_manual(values = c("raw" = "#d95f02",
-                                           "shrunk (GAM-RE)" = "#1b9e77")) +
+                                           "GAM-smoothed" = "#1b9e77")) +
     ggplot2::labs(x = "True S (simulated)", y = "Recovered S",
                   title = sprintf("Tier 1.1 — Simulation recovery: %s branch",
                                   branch_label),
@@ -227,7 +230,7 @@
                          fill = "#1b9e7733", linewidth = 0.6) +
     ggplot2::labs(
       x = "S_Wright_bin (bin-pooled, low-noise reference)",
-      y = "mean(per-gene shrunk S) within bin",
+      y = "mean(per-gene GAM-smoothed S) within bin",
       title = sprintf(
         "Tier 1.2 — Bin-level consistency: %s\nslope = %.3f, R² = %.3f, r = %.3f",
         branch_label, slope, r2, pearson_r)
@@ -271,7 +274,7 @@
 .plot_threshold_robustness <- function(thr_raw, thr_shr, S_BARRIER) {
   long <- dplyr::bind_rows(
     data.frame(thr = thr_raw, source = "raw (per-gene Q)"),
-    data.frame(thr = thr_shr, source = "shrunk (GAM-RE)")
+    data.frame(thr = thr_shr, source = "GAM-smoothed")
   ) |> dplyr::filter(is.finite(thr))
 
   if (nrow(long) < 20) {
@@ -291,9 +294,9 @@
                         ggplot2::aes(xintercept = median, color = source),
                         linewidth = 0.6, linetype = "dashed") +
     ggplot2::scale_fill_manual(values = c("raw (per-gene Q)" = "#d95f02",
-                                          "shrunk (GAM-RE)" = "#1b9e77")) +
+                                          "GAM-smoothed" = "#1b9e77")) +
     ggplot2::scale_color_manual(values = c("raw (per-gene Q)" = "#d95f02",
-                                           "shrunk (GAM-RE)" = "#1b9e77")) +
+                                           "GAM-smoothed" = "#1b9e77")) +
     ggplot2::labs(x = "thr_eta (bootstrap)", y = "density",
                   title = sprintf(
                     "Tier 1.3 — Threshold robustness (S_BARRIER = %.4f, B = %d)",
@@ -422,7 +425,7 @@
     ggplot2::scale_color_viridis_c(name = "log10(N_4fold)") +
     ggplot2::labs(
       x = sprintf("%s (observed)", q_obs_col),
-      y = sprintf("%s (shrunk GAM-RE)", q_gam_col),
+      y = sprintf("%s (GAM-smoothed)", q_gam_col),
       title = sprintf("Tier 2.5 — Shrinkage pattern: %s", branch_label)
     ) +
     theme_custom()
@@ -547,7 +550,7 @@ run_wright_gam_diagnostics <- function(
                                      "π (vs raw Q)")
 
   # Pass/fail evaluation -----------------------------------------------------
-  shr_col <- "shrunk (GAM-RE)"
+  shr_col <- "GAM-smoothed"
 
   rmse_Q <- sim_Qx$rmse_table |>
     tidyr::pivot_wider(id_cols = N_strata, names_from = estimator,
@@ -566,7 +569,7 @@ run_wright_gam_diagnostics <- function(
 
   pass_thr <- !is.null(thr_x$ci_table) && {
     raw_ci <- thr_x$ci_table |> dplyr::filter(grepl("raw",    source))
-    shr_ci <- thr_x$ci_table |> dplyr::filter(grepl("shrunk", source))
+    shr_ci <- thr_x$ci_table |> dplyr::filter(grepl("GAM",    source))
     isTRUE(is.finite(shr_ci$median) && is.finite(raw_ci$lo) &&
              is.finite(raw_ci$hi) &&
              shr_ci$median >= raw_ci$lo && shr_ci$median <= raw_ci$hi)
