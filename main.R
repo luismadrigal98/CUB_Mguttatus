@@ -2062,8 +2062,12 @@ gam_Q_wright <- mgcv::gam(
 
 gam_Q_pool$Q_GAM <- as.numeric(predict(gam_Q_wright, newdata = gam_Q_pool,
                                        type = "response"))
+## Choose calibration for Q inversion: prefer two-state empirical UV if available
+U_Q_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
+V_Q_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
+
 gam_Q_pool$S_Wright_GAM_signed <- vapply(gam_Q_pool$Q_GAM, function(q) {
-  tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),
+  tryCatch(wright_invert_Q(q, U = U_Q_calib, V = V_Q_calib),
            error = function(e) NA_real_)
 }, numeric(1))
 gam_Q_pool$S_Wright_GAM_raw <- pmax(gam_Q_pool$S_Wright_GAM_signed, 0)
@@ -2160,9 +2164,13 @@ cat(sprintf(
 # --- Per-gene S_Wright -----------------------------------------------------
 # Compute the SIGNED inversion first (full-information diagnostic), then
 # floor at zero for the operational column used downstream.
+# Use two-state calibration if available, otherwise fall back to original calibration.
+
+U_gene_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
+V_gene_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
 
 msd_data$S_Wright_signed <- vapply(msd_data$Q_pref_base, function(q) {
-  tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),
+  tryCatch(wright_invert_Q(q, U = U_gene_calib, V = V_gene_calib),
            error = function(e) NA_real_)
 }, numeric(1))
 msd_data$is_drift     <- !is.na(msd_data$S_Wright_signed) &
@@ -2191,6 +2199,10 @@ cat(sprintf(
 # neutral pool that biases (U_emp, V_emp).  Workhorse table for the
 # bin-level pi consistency test, the binned-crossing diagnostic, and the
 # diversity-hump figure.
+# Use two-state calibration if available.
+
+U_bin_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
+V_bin_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
 
 bin_eta <- msd_data |>
   dplyr::filter(!is.na(S_eta), !is.na(Q_pref_base)) |>
@@ -2208,7 +2220,7 @@ bin_eta <- msd_data |>
   ) |>
   dplyr::mutate(
     S_Wright_bin = vapply(Q_bin, function(q) {
-      tryCatch(wright_invert_Q(q, U = U_emp, V = V_emp),  # signed
+      tryCatch(wright_invert_Q(q, U = U_bin_calib, V = V_bin_calib),  # signed
                error = function(e) NA_real_)
     }, numeric(1))
   )
@@ -2384,8 +2396,9 @@ cat(sprintf(
 # We therefore also report the chi^2 restricted to the selection regime
 # (S_Wright_bin >= S_BARRIER), the regime where the model is identifiable.
 
+# Use same two-state calibration for π prediction consistency
 bin_eta$pi_pred_wright <- wright_pi(bin_eta$S_Wright_bin,
-                                    U = U_emp, V = V_emp)
+                                    U = U_bin_calib, V = V_bin_calib)
 bin_eta$pi_residual    <- bin_eta$pi_bin - bin_eta$pi_pred_wright
 
 chi2_pi_terms <- (bin_eta$pi_residual)^2 /
