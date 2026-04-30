@@ -394,9 +394,9 @@ calculate_expected_pi_from_roc <- function(p_pref, alpha, beta, gamma) {
   calculate_pi_analytical(alpha, beta, gamma)
 }
 
-#' Test 1: Gene-level correlation between S_ROC and per-gene gamma
+#' Test 1: Gene-level correlation between L_ROC and per-gene gamma
 #' 
-#' @param integrated_data Main data frame with S_ROC values
+#' @param integrated_data Main data frame with L_ROC values
 #' @param gamma_gene Data frame with per-gene gamma estimates
 #' @param output_dir Directory to save plots
 #' @return List with correlation results and plot
@@ -406,7 +406,7 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   require(ggplot2)
   
   cat("\n", rep("=", 70), "\n", sep = "")
-  cat("ANALYSIS 1: Gene-Level Correlation Between S_ROC and Gamma\n")
+  cat("ANALYSIS 1: Gene-Level Correlation Between L_ROC and Gamma\n")
   cat(rep("=", 70), "\n\n", sep = "")
   
   # Merge data
@@ -414,7 +414,7 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   if (!is.data.table(gamma_gene)) setDT(gamma_gene)
   
   merged <- merge(
-    integrated_data[, .(Gene_name, S_ROC, Expression_Group, Max_Log10_Exp)],
+    integrated_data[, .(Gene_name, L_ROC, Expression_Group, Max_Log10_Exp)],
     gamma_gene[, .(Gene_name = Gene_name, Gamma_Mean = Gamma_Weighted_Mean,
                    Selection_Intensity_Gamma = Selection_Intensity)],
     by = "Gene_name"
@@ -424,13 +424,13 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   cat(sprintf("Genes in both analyses: %d\n\n", n_genes))
   
   # Filter valid data
-  merged <- merged[!is.na(S_ROC) & !is.na(Gamma_Mean) & S_ROC > 0]
+  merged <- merged[!is.na(L_ROC) & !is.na(Gamma_Mean) & L_ROC > 0]
   cat(sprintf("Genes with valid data: %d\n\n", nrow(merged)))
   
   # Spearman correlation
-  cor_spearman <- cor.test(merged$S_ROC, merged$Gamma_Mean, 
+  cor_spearman <- cor.test(merged$L_ROC, merged$Gamma_Mean, 
                            method = "spearman", exact = FALSE)
-  cor_kendall <- cor.test(merged$S_ROC, merged$Gamma_Mean, 
+  cor_kendall <- cor.test(merged$L_ROC, merged$Gamma_Mean, 
                           method = "kendall", exact = FALSE)
   
   cat("Overall Correlation:\n")
@@ -442,12 +442,12 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   # Stratified by expression
   cat("Stratified Correlations:\n")
   strat_results <- merged[, {
-    cor_test <- cor.test(S_ROC, Gamma_Mean, method = "spearman", exact = FALSE)
+    cor_test <- cor.test(L_ROC, Gamma_Mean, method = "spearman", exact = FALSE)
     list(
       N = .N,
       Rho = cor_test$estimate,
       P_value = cor_test$p.value,
-      Mean_S_ROC = mean(S_ROC, na.rm = TRUE),
+      Mean_S_ROC = mean(L_ROC, na.rm = TRUE),
       Mean_Gamma = mean(Gamma_Mean, na.rm = TRUE)
     )
   }, by = Expression_Group]
@@ -455,7 +455,7 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   print(strat_results)
   
   # Create scatterplot
-  p <- ggplot(merged, aes(x = log10(S_ROC + 0.01), y = Gamma_Mean)) +
+  p <- ggplot(merged, aes(x = log10(L_ROC + 0.01), y = Gamma_Mean)) +
     geom_point(aes(color = Expression_Group), alpha = 0.5, size = 1) +
     geom_smooth(method = "loess", color = "red", se = TRUE) +
     geom_vline(xintercept = log10(1), linetype = "dashed", color = "gray50") +
@@ -486,8 +486,8 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   # Summary table
   summary_by_group <- merged[, .(
     N = .N,
-    Mean_S_ROC = mean(S_ROC, na.rm = TRUE),
-    SD_S_ROC = sd(S_ROC, na.rm = TRUE),
+    Mean_S_ROC = mean(L_ROC, na.rm = TRUE),
+    SD_S_ROC = sd(L_ROC, na.rm = TRUE),
     Mean_Gamma = mean(Gamma_Mean, na.rm = TRUE),
     SD_Gamma = sd(Gamma_Mean, na.rm = TRUE)
   ), by = Expression_Group]
@@ -498,10 +498,10 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   # Interpretation
   cat("\n=== INTERPRETATION ===\n")
   if (cor_spearman$estimate > 0.3 && cor_spearman$p.value < 0.01) {
-    cat("✓ CONSISTENT: Positive correlation between S_ROC and gamma.\n")
+    cat("✓ CONSISTENT: Positive correlation between L_ROC and gamma.\n")
     cat("  Both methods identify similar genes under strong selection.\n")
   } else if (abs(cor_spearman$estimate) < 0.1) {
-    cat("✗ INCONSISTENT: No correlation between S_ROC and gamma.\n")
+    cat("✗ INCONSISTENT: No correlation between L_ROC and gamma.\n")
     cat("  Methods may be measuring different processes.\n")
   } else {
     cat("⚠ PARTIALLY CONSISTENT: Weak correlation.\n")
@@ -803,12 +803,12 @@ test_diversity_hump_vs_expression <- function(pi_by_gene, integrated_data, outpu
   ))
 }
 
-#' Test 4: S_ROC-stratified gamma estimation
+#' Test 4: L_ROC-stratified gamma estimation
 #' 
-#' Direct test: partition genes by S_ROC and estimate gamma for each partition.
+#' Direct test: partition genes by L_ROC and estimate gamma for each partition.
 #' 
 #' @param vcf_data Codon VCF data
-#' @param integrated_data Main data with S_ROC values
+#' @param integrated_data Main data with L_ROC values
 #' @param aa_params Per-AA neutral parameters
 #' @param output_dir Directory to save plots
 #' @return List with results
@@ -819,34 +819,34 @@ test_sroc_stratified_gamma <- function(vcf_data, integrated_data,
   require(ggplot2)
   
   cat("\n", rep("=", 70), "\n", sep = "")
-  cat("ANALYSIS 4: S_ROC-Stratified Gamma Estimation (MOST DIRECT TEST)\n")
+  cat("ANALYSIS 4: L_ROC-Stratified Gamma Estimation (MOST DIRECT TEST)\n")
   cat(rep("=", 70), "\n\n", sep = "")
   
   if (!is.data.table(vcf_data)) setDT(vcf_data)
   if (!is.data.table(integrated_data)) setDT(integrated_data)
   
-  # Create S_ROC categories
+  # Create L_ROC categories
   integrated_data[, SROC_Category := cut(
-    S_ROC,
+    L_ROC,
     breaks = c(-Inf, 0.1, 1, 5, Inf),
     labels = c("S<0.1 (Drift)", "0.1≤S<1 (Weak)", 
                "1≤S<5 (Moderate)", "S≥5 (Strong)"),
     right = FALSE
   )]
   
-  cat("Gene distribution by S_ROC category:\n")
+  cat("Gene distribution by L_ROC category:\n")
   print(table(integrated_data$SROC_Category))
   cat("\n")
   
   # Map genes to categories
   gene_sroc <- integrated_data[!is.na(SROC_Category), 
-                                .(Gene_name, SROC_Category, S_ROC)]
+                                .(Gene_name, SROC_Category, L_ROC)]
   
   # Merge with VCF data
   vcf_data[, Gene_name := paste0("MgIM767.", Gene)]
   vcf_with_sroc <- merge(vcf_data, gene_sroc, by = "Gene_name")
   
-  # Estimate gamma for each S_ROC category
+  # Estimate gamma for each L_ROC category
   results_list <- list()
   
   for (cat_name in levels(vcf_with_sroc$SROC_Category)) {
@@ -908,7 +908,7 @@ test_sroc_stratified_gamma <- function(vcf_data, integrated_data,
         Terminal_Nuc = tn,
         N_Sites = nrow(cat_aa_data),
         N_Genes = length(unique(cat_aa_data$Gene_name)),
-        Mean_SROC = mean(cat_data$S_ROC),
+        Mean_SROC = mean(cat_data$L_ROC),
         Gamma = gamma_est,
         CI_Lower = ci[1],
         CI_Upper = ci[2]
@@ -918,13 +918,13 @@ test_sroc_stratified_gamma <- function(vcf_data, integrated_data,
   
   results <- rbindlist(results_list)
   
-  cat("\n=== Gamma Estimates by S_ROC Category ===\n")
+  cat("\n=== Gamma Estimates by L_ROC Category ===\n")
   print(results)
   
   # Trend test (Jonckheere-Terpstra)
   cat("\n=== Trend Test ===\n")
   
-  # Simple linear regression of gamma on mean S_ROC
+  # Simple linear regression of gamma on mean L_ROC
   if (nrow(results[!is.na(Gamma)]) >= 3) {
     lm_trend <- lm(Gamma ~ Mean_SROC, data = results)
     cat(sprintf("Linear trend: slope = %.4f, p = %.4f\n",
@@ -954,7 +954,7 @@ test_sroc_stratified_gamma <- function(vcf_data, integrated_data,
                       name = "Terminal\nNucleotide") +
     labs(
       title = "Selection Coefficient (γ) by ROC Selection Intensity",
-      subtitle = "If consistent: γ should increase with S_ROC category",
+      subtitle = "If consistent: γ should increase with L_ROC category",
       x = expression(S[ROC] ~ "Category"),
       y = expression(gamma ~ "from Polymorphism (4N"[e]*"s)")
     ) +
@@ -977,10 +977,10 @@ test_sroc_stratified_gamma <- function(vcf_data, integrated_data,
     
     if (!is.na(gamma_low) && !is.na(gamma_high)) {
       if (gamma_high > gamma_low * 1.5) {
-        cat("✓ CONSISTENT: γ increases with S_ROC category.\n")
+        cat("✓ CONSISTENT: γ increases with L_ROC category.\n")
         cat("  Genes with high ROC selection also show elevated γ from polymorphism.\n")
       } else if (abs(gamma_high - gamma_low) < 0.5) {
-        cat("✗ INCONSISTENT: γ is similar across S_ROC categories.\n")
+        cat("✗ INCONSISTENT: γ is similar across L_ROC categories.\n")
         cat("  ROC selection intensity does not predict polymorphism-based selection.\n")
       } else {
         cat("⚠ PARTIAL: Some trend but not as strong as expected.\n")
@@ -1549,7 +1549,7 @@ generate_summary_table <- function(results_list) {
     rho <- results_list$analysis1$correlation$estimate
     consistent <- ifelse(rho > 0.3, "Yes", ifelse(rho > 0.1, "Partial", "No"))
     summary_table <- rbind(summary_table, data.frame(
-      Analysis = "1. Gene-level S_ROC vs γ correlation",
+      Analysis = "1. Gene-level L_ROC vs γ correlation",
       Result = sprintf("ρ = %.3f", rho),
       Consistent = consistent,
       Interpretation = ifelse(consistent == "Yes",
@@ -1578,7 +1578,7 @@ generate_summary_table <- function(results_list) {
   # Analysis 4
   if (!is.null(results_list$analysis4)) {
     summary_table <- rbind(summary_table, data.frame(
-      Analysis = "4. S_ROC-stratified γ estimation",
+      Analysis = "4. L_ROC-stratified γ estimation",
       Result = sprintf("Median γ: High=%.2f, Mid=%.2f, Low=%.2f",
                        results_list$analysis4$summary$Gamma_Median[1],
                        results_list$analysis4$summary$Gamma_Median[2],

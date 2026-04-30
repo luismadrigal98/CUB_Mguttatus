@@ -1314,45 +1314,17 @@ synonymous_codons_aligned <- intersect(synonymous_codons, common_codons)
 # n_synonymous_codons: per-gene count of synonymous codon sites
 n_synonymous_codons <- rowSums(counts_aligned[, synonymous_codons_aligned], na.rm = TRUE)
 
-# Build per-codon load matrix: load = max(sel within AA family) - sel for each codon
-# For each gene, the "optimal" codon per AA has the highest selection coefficient;
-# load measures how each codon deviates from the optimum (always >= 0).
 aa_for_aligned <- genetic_code_dna_long[common_codons]
-load_matrix_per_codon <- matrix(0, nrow = nrow(sel_aligned), ncol = ncol(sel_aligned),
-                                dimnames = dimnames(sel_aligned))
-for (aa in unique(aa_for_aligned)) {
-  aa_cols <- which(aa_for_aligned == aa)
-  if (length(aa_cols) <= 1) next
-  # Per gene, optimal = max selection coefficient within this AA family
-  aa_sel <- sel_aligned[, aa_cols, drop = FALSE]
-  optimal_sel <- apply(aa_sel, 1, max, na.rm = TRUE)
-  # Load = reduction in fitness: L = 1 - exp(S_obs - S_opt)
-  # relative_S = S_obs - S_opt <= 0, so load >= 0
-  relative_S <- aa_sel - optimal_sel
-  load_matrix_per_codon[, aa_cols] <- 1 - exp(relative_S)
-}
 
-# Total selection intensity
+# Total selection intensity (phi-scaled; sel_aligned already incorporates φ)
 total_selection_intensity <- rowSums(counts_aligned * abs(sel_aligned), na.rm = TRUE)
 
-# S_ROC: per-gene mean |Delta_eta * phi| over synonymous codons.
-#
-# This measures the per-codon LOAD-being-paid (cost magnitude weighted by phi).
-# Because sel_aligned has been rescaled per-gene so the per-AA preferred codon
-# is at 0 and others are negative-and-phi-scaled, |sel| is the cost incurred
-# when the gene uses each codon. High S_ROC = high translational selection
-# cost CURRENTLY BEING PAID (typically high-phi genes that have not fully
-# optimized their codon usage; e.g. Rubisco/photosynthesis). It does NOT mean
-# "high selection efficacy"; the sign-aware companion S_eta below tracks that.
-S_ROC <- total_selection_intensity / n_synonymous_codons
+# L_ROC: per-gene mean |Δη × φ| over synonymous codons (translational load being paid).
+# sel_aligned is phi-scaled with per-AA preferred codon = 0; |sel| = cost of each codon.
+# High L_ROC = high-phi gene still paying selection cost (e.g. Rubisco/photosynthesis).
+L_ROC <- total_selection_intensity / n_synonymous_codons
 
-# L_ROC: Total Load (The total fitness cost of this gene's sequence)
-L_ROC <- rowSums(counts_aligned * load_matrix_per_codon, na.rm = TRUE)
-
-# Lprime_ROC: Average Load per site (Length-corrected)
-Lprime_ROC <- L_ROC / n_synonymous_codons
-
-# --- S_eta: sign-aware "selection efficacy" companion to S_ROC ------------
+# --- S_eta: sign-aware "selection efficacy" companion to L_ROC ------------
 # Built from the unscaled, signed AnaCoDa Delta_eta posterior means in
 # Cluster_1_Selection.csv from the cluster MCMC output (reference codon = 0;
 # preferred = negative; disfavored = positive). The negative sign in the
@@ -1361,8 +1333,8 @@ Lprime_ROC <- L_ROC / n_synonymous_codons
 #     S_eta = 0  -> gene uses reference codons (neutral composition)
 #     S_eta < 0  -> gene uses disfavored codons
 # Empirically Spearman(S_eta, S_Wright) ~ +0.67 in the M. guttatus data,
-# vs Spearman(S_ROC, S_Wright) ~ -0.25, because S_eta lacks the phi factor
-# that drags S_ROC into the load-vs-strength duality.
+# vs Spearman(L_ROC, S_Wright) ~ -0.25, because S_eta lacks the phi factor
+# that drags L_ROC into the load-vs-strength duality.
 # eta_data was already read from the canonical cluster Cluster_1_Selection.csv
 # at the start of Section 8.3 — reuse it directly to avoid drift if the file
 # is ever swapped.
@@ -1377,22 +1349,61 @@ S_eta   <- -as.numeric(counts_aligned[, synonymous_codons_aligned] %*% eta_syn) 
            n_synonymous_codons
 names(S_eta) <- common_genes
 
+# S_ROC: per-gene selection coefficient from unscaled AnaCoDa eta.
+# For each synonymous AA family: Δη_a = max(η_j) − min(η_j) = |η_preferred|
+# (reference codon η = 0; preferred codon η < 0).
+# Gene-level S_ROC = weighted mean of Δη_a by amino acid site counts; phi-independent.
+# Directly comparable to S_Wright (both = selection strength at a single synonymous site).
+#
+# S_ROC_4: same restriction to strictly 4-fold degenerate codons (NNA/T/C/G all same AA)
+# for direct contrast with S_Wright, which is derived from Q and π at 4-fold sites.
+
+is_4fold_codon <- sapply(names(genetic_code_dna_long), function(cdn) {
+  prefix   <- substr(cdn, 1, 2)
+  variants <- paste0(prefix, c("A", "T", "C", "G"))
+  aa_set   <- unique(genetic_code_dna_long[variants])
+  length(aa_set) == 1 && !("STOP" %in% aa_set)
+})
+fourfold_codons_syn <- intersect(names(is_4fold_codon)[is_4fold_codon], synonymous_codons_aligned)
+
+aa_for_syn         <- aa_for_aligned[synonymous_codons_aligned]
+delta_eta_by_aa    <- tapply(eta_syn, aa_for_syn,
+                             function(x) max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+delta_eta_by_codon <- setNames(delta_eta_by_aa[aa_for_syn], synonymous_codons_aligned)
+
+syn_counts <- counts_aligned[, synonymous_codons_aligned]
+
+S_ROC        <- as.numeric(syn_counts %*% delta_eta_by_codon) / n_synonymous_codons
+names(S_ROC) <- common_genes
+
+n_4fold_syn_sites <- rowSums(syn_counts[, fourfold_codons_syn, drop = FALSE], na.rm = TRUE)
+delta_eta_4f      <- delta_eta_by_codon[fourfold_codons_syn]
+S_ROC_4 <- ifelse(
+  n_4fold_syn_sites > 0,
+  as.numeric(syn_counts[, fourfold_codons_syn, drop = FALSE] %*% delta_eta_4f) /
+    n_4fold_syn_sites,
+  NA_real_
+)
+names(S_ROC_4) <- common_genes
+
 selection_metrics <- data.frame(
   Gene_name = common_genes,
 
-  # Use this for Drift Barrier Plots (The "Hump" x-axis).
-  # Threshold S_ROC > thr_sel (data-driven via GAM inflection; Section 8.3.4)
-  # captures genes paying high translational selection cost (load-paying
-  # group; Rubisco/photosynthesis enrichment).
+  # Per-gene selection coefficient (phi-independent, all synonymous sites).
+  # Δη_a averaged by amino acid composition; directly comparable to S_Wright.
   S_ROC = S_ROC,
 
-  # Sign-aware efficacy companion (no phi factor; positive = preferred-rich).
+  # S_ROC restricted to strictly 4-fold degenerate sites.
+  # Use for direct contrast with S_Wright (derived from Q/π at 4-fold sites).
+  S_ROC_4 = S_ROC_4,
+
+  # Sign-aware efficacy companion (unscaled eta; positive = preferred-rich).
   # Tracks S_Wright positively; use for "selection has succeeded" framings.
   S_eta = S_eta,
 
-  # Use these for assessing maladaptation
+  # Phi-scaled translational load: mean |Δη × φ| per synonymous codon.
+  # L_ROC > thr_sel identifies load-paying genes (Rubisco/photosynthesis enrichment).
   L_ROC = L_ROC,
-  Lprime_ROC = Lprime_ROC,
 
   n_codons = n_synonymous_codons,
 
@@ -1406,27 +1417,29 @@ selection_metrics <- selection_metrics |>
 # Memory cleanup: AnaCoDa genome/parameter objects and selection matrices ---
 rm(genome, parameter_object, selection_coeff,
    counts_df, sel_mat, counts_aligned, sel_aligned,
-   common_genes, common_codons, phi_hat_dM_fixed_with_phi, p)
+   common_genes, common_codons, phi_hat_dM_fixed_with_phi, p,
+   is_4fold_codon, fourfold_codons_syn, aa_for_syn,
+   delta_eta_by_aa, delta_eta_by_codon, delta_eta_4f,
+   syn_counts, n_4fold_syn_sites, total_selection_intensity)
 gc()
 
-# 8.3.1) Relationship between L' and phi ----
+# 8.3.1) Relationship between L_ROC and phi ----
 
 final_analysis_data <- selection_metrics |>
-  dplyr::filter(S_ROC > 0) |>
+  dplyr::filter(L_ROC > 0) |>
   dplyr::mutate(
-    Intrinsic_Inefficiency = S_ROC / MeanPhi
+    Intrinsic_Inefficiency = L_ROC / MeanPhi
   )
 
-p_load <- ggplot(final_analysis_data, aes(x = Mean.log10.Phi, 
-                                          y = Lprime_ROC)) +
+p_load <- ggplot(final_analysis_data, aes(x = Mean.log10.Phi,
+                                          y = L_ROC)) +
   geom_hex(bins = 80) +
-  scale_fill_viridis_c(option = "magma", trans = "log10", 
+  scale_fill_viridis_c(option = "magma", trans = "log10",
                        name = "Gene Count") +
-  # Trend line
   geom_smooth(method = "gam", color = "cyan", size = 1.2, se = TRUE) +
   labs(
     x = expression(bold(Log[10]("Expression" ~ (Phi)))),
-    y = expression(bold("Realized Load" ~ (L[prime])))
+    y = expression(bold("Translational Load" ~ (L[ROC])))
   ) +
   theme_custom() +
   theme(legend.position = "none")
@@ -1454,8 +1467,8 @@ p_optim <- ggplot(final_analysis_data,
 ggsave("./results/Intrinsic_Inefficiency_vs_Expression_Plot.pdf", 
        p_optim, width = 6, height = 5)
 
-cor_load <- cor.test(final_analysis_data$Mean.log10.Phi, 
-                     final_analysis_data$Lprime_ROC, method = "spearman",
+cor_load <- cor.test(final_analysis_data$Mean.log10.Phi,
+                     final_analysis_data$L_ROC, method = "spearman",
                      exact = F)
 cor_eff <- cor.test(final_analysis_data$Mean.log10.Phi, 
                     final_analysis_data$Intrinsic_Inefficiency, 
@@ -1476,24 +1489,24 @@ gc()
 
 integrated_data <- integrated_data |>
   dplyr::left_join(selection_metrics, by = "Gene_name") |>
-  dplyr::filter(!is.na(S_ROC), !is.na(S_eta))
+  dplyr::filter(!is.na(L_ROC), !is.na(S_eta))
 
 # Correlation between selection metric and CUB metrics
-# Run in parallel for S_ROC (load) and S_eta (efficacy) so we see both
+# Run in parallel for L_ROC (load) and S_eta (efficacy) so we see both
 # directions of the load/efficacy duality.
 
 cor_S_and_bias <- corrr::correlate(
-  x = as.matrix(integrated_data[, intersect(c("S_ROC", "S_eta", "CAI", "CDC", "ENC"),
+  x = as.matrix(integrated_data[, intersect(c("L_ROC", "S_eta", "CAI", "CDC", "ENC"),
                                             names(integrated_data))]),
   method = "spearman"
 )
-cat("\n=== Spearman correlations among S_ROC / S_eta / CUB metrics ===\n")
+cat("\n=== Spearman correlations among L_ROC / S_eta / CUB metrics ===\n")
 print(cor_S_and_bias)
 
-cat("\n--- S_ROC (load) vs CUB metrics ---\n")
-print(cor.test(integrated_data$S_ROC, integrated_data$CAI, method = "spearman", exact = FALSE))
-print(cor.test(integrated_data$S_ROC, integrated_data$CDC, method = "spearman", exact = FALSE))
-print(cor.test(integrated_data$S_ROC[integrated_data$Max_Log10_Exp > 3.5],
+cat("\n--- L_ROC (load) vs CUB metrics ---\n")
+print(cor.test(integrated_data$L_ROC, integrated_data$CAI, method = "spearman", exact = FALSE))
+print(cor.test(integrated_data$L_ROC, integrated_data$CDC, method = "spearman", exact = FALSE))
+print(cor.test(integrated_data$L_ROC[integrated_data$Max_Log10_Exp > 3.5],
                integrated_data$CDC[integrated_data$Max_Log10_Exp > 3.5],
                method = "spearman", exact = FALSE))
 
@@ -1510,7 +1523,7 @@ print(cor.test(integrated_data$S_eta[integrated_data$Max_Log10_Exp > 3.5],
 plot_data <- integrated_data |>
   dplyr::mutate(
     # Log Transform Selection Load
-    Log_S_ROC = log10(S_ROC + 0.01), 
+    Log_S_ROC = log10(L_ROC + 0.01), 
     
     # Expression metric
     Log_Phi = Mean.log10.Phi, 
@@ -1518,10 +1531,10 @@ plot_data <- integrated_data |>
     # Calculate raw Phi to isolate Intrinsic Inefficiency
     # Using 10^Mean.log10.Phi approximates the scale
     Phi_raw = 10^Mean.log10.Phi,
-    Intrinsic_Ineff = S_ROC / Phi_raw,
+    Intrinsic_Ineff = L_ROC / Phi_raw,
     
-    # Calculate Realized Load directly from S_ROC (L' = 1 - e^-S)
-    Realized_Load = 1 - exp(-S_ROC),
+    # Calculate Realized Load directly from L_ROC (L' = 1 - e^-S)
+    Realized_Load = 1 - exp(-L_ROC),
     
     # Log Transform Length
     Log_Length = log10(Total_Codons)
@@ -1569,7 +1582,7 @@ p1 <- ggplot(plot_data, aes(x = Log_S_ROC)) +
   theme_custom() +
   theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
 
-# Panel B: CAI vs S_ROC
+# Panel B: CAI vs L_ROC
 p2 <- ggplot(plot_data, aes(x = Log_S_ROC, y = CDC)) +
   geom_point(aes(color = Log_Phi), alpha = 0.6, size = 1) +
   scale_color_viridis_c(option = "plasma", name = expression(Log[10](Phi)), 
@@ -1608,9 +1621,9 @@ combined_plot <- (p1 | p2) / (p3 | p4) + plot_annotation(tag_levels = 'A')
 # Saved with a larger dimension to accommodate the 2x2 grid nicely
 ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, height = 12)
 
-# ---- Parallel S_eta panels (efficacy companion to the S_ROC landscape) ---
+# ---- Parallel S_eta panels (efficacy companion to the L_ROC landscape) ---
 # Mirrors p1/p2 above, but on the sign-aware S_eta axis. The contrast between
-# the two figures is the load/efficacy duality: S_ROC concentrates
+# the two figures is the load/efficacy duality: L_ROC concentrates
 # load-paying genes; S_eta concentrates preferred-rich (efficacy) genes.
 
 p1_eta <- ggplot(plot_data, aes(x = S_eta)) +
@@ -1650,14 +1663,14 @@ p3_eta <- ggplot(plot_data, aes(x = Log_Phi, y = S_eta)) +
        y = expression(S[eta])) +
   theme_custom()
 
-p4_eta <- ggplot(plot_data, aes(x = S_ROC, y = S_eta)) +
+p4_eta <- ggplot(plot_data, aes(x = L_ROC, y = S_eta)) +
   geom_hex(bins = 50) +
   scale_fill_viridis_c(option = "plasma", trans = "log10",
                        name = "Gene\nCount") +
   geom_smooth(method = "gam", formula = y ~ s(x),
               color = "red", linewidth = 1.2) +
   geom_hline(yintercept = 0, linetype = "dotted", color = "grey30") +
-  labs(title = "S_ROC vs S_eta: load-vs-efficacy duality",
+  labs(title = "L_ROC vs S_eta: load-vs-efficacy duality",
        x = expression(S[ROC] ~ "(load, " * phi * "-scaled)"),
        y = expression(S[eta] ~ "(efficacy, sign-aware)")) +
   theme_custom()
@@ -1667,11 +1680,11 @@ combined_plot_eta <- (p1_eta | p2_eta) / (p3_eta | p4_eta) +
 ggsave("results/Selection_Landscape_Final_eta.pdf",
        combined_plot_eta, width = 14, height = 12)
 
-# 8.3.4) Wright's MSD framework + data-driven S_ROC threshold ----
+# 8.3.4) Wright's MSD framework + data-driven L_ROC threshold ----
 #
 # Strategy (per JK email, 2026-04-25):
-#   * Don't force a direct S_ROC <-> S_Wright equivalence (the scales differ:
-#     S_Wright is per *site*, S_ROC is a per-codon ROC mean of |Delta_eta|).
+#   * Don't force a direct L_ROC <-> S_Wright equivalence (the scales differ:
+#     S_Wright is per *site*, L_ROC is a per-codon ROC mean of |Delta_eta|).
 #   * Wright's stationary distribution is per nucleotide site, so the empirical
 #     Q is the preferred-base frequency at 4-fold sites, NOT a preferred-codon
 #     frequency averaged across AAs.  Numerically these coincide here (each
@@ -1680,7 +1693,7 @@ ggsave("results/Selection_Landscape_Final_eta.pdf",
 #     conceptual framing matters for the threshold derivation.
 #   * Threshold rationale: take the *inflection* of the GAM-controlled
 #     Q-vs-expression curve (Fig 4A reformulated for per-base Q), then set
-#     thr_sel = a robust minimum of S_ROC among genes above the inflection
+#     thr_sel = a robust minimum of L_ROC among genes above the inflection
 #     expression.  This is data-driven and does not require an alpha fit.
 #
 # Branch A keeps the Wright theoretical curves (fiducial U/V) as a reference
@@ -1783,7 +1796,7 @@ gene_Q_4fold <- data.frame(
 #   - For per-gene π (Pi_mean_4fold), use whichever denominator is available
 
 msd_data <- integrated_data |>
-  dplyr::select(Gene_name, S_ROC, S_eta, Pi_mean_4fold, Mean_Log10_Exp,
+  dplyr::select(Gene_name, S_ROC, S_ROC_4, L_ROC, S_eta, Pi_mean_4fold, Mean_Log10_Exp,
                 Max_Log10_Exp, Exp_breadth, CDS_length_nt, Sites_4fold,
                 Pi_sum_4fold) |>
   dplyr::inner_join(gene_Q_4fold, by = "Gene_name") |>
@@ -1876,8 +1889,8 @@ ggsave("./results/Wright_advisor_replication_pi.pdf",
        p_advisor_pi, width = 6, height = 4, device = cairo_pdf)
 
 # Branch B: estimate U, V from a low-expression near-neutral pool ----
-# Use the bottom expression decile (rather than bottom S_ROC quartile) so
-# the "neutral" sample is selected on a covariate independent of the S_ROC
+# Use the bottom expression decile (rather than bottom L_ROC quartile) so
+# the "neutral" sample is selected on a covariate independent of the L_ROC
 # scale. Site-weight Q for noise reduction; weight pi by 4-fold site counts.
 
 exp_q10 <- quantile(msd_data$Mean_Log10_Exp, 0.10, na.rm = TRUE)
@@ -1959,7 +1972,6 @@ if (is.finite(pi_neutral_two) && pi_neutral_two > 0) {
   U_emp_two <- NA_real_; V_emp_two <- NA_real_
 }
 
-
 # ===========================================================================
 # Canonical thresholds (v11): anchor thr_eta to the Wright pi-rise barrier
 # at S_Wright = S_BARRIER on the S_eta axis.
@@ -1996,7 +2008,7 @@ if (is.finite(pi_neutral_two) && pi_neutral_two > 0) {
 #     The previous alpha-calibration test was both circular and
 #     intrinsically nonlinear (S_Wright_bin / mean_S_eta drops ~3x
 #     across S_eta bins, so no scalar alpha can fit) and is dropped.
-#   * thr_sel (S_ROC scale): unchanged -- median S_ROC among genes
+#   * thr_sel (L_ROC scale): unchanged -- median L_ROC among genes
 #     within +/- 10% of thr_eta on the S_eta axis.
 
 # --- Dynamic operational drift-barrier ------------------------------------
@@ -2235,6 +2247,10 @@ bin_eta$pi_se <- sqrt(bin_eta$pi_bin * (1 - bin_eta$pi_bin / 2) /
 # and prints a pass/fail summary against the Tier-1 adoption criteria.
 
 source("./src/wright_gam_diagnostics.R")
+# Use the same calibration as the Q/π inversion branches when available.
+U_diag_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
+V_diag_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
+
 gam_diagnostics <- run_wright_gam_diagnostics(
   msd_data       = msd_data,
   gam_Q_pool     = gam_Q_pool,
@@ -2242,8 +2258,8 @@ gam_diagnostics <- run_wright_gam_diagnostics(
   gam_pi_pool    = gam_pi_pool,
   gam_pi_wright  = gam_pi_wright,
   bin_eta        = bin_eta,
-  U_emp          = U_emp,
-  V_emp          = V_emp,
+  U_emp          = U_diag_calib,
+  V_emp          = V_diag_calib,
   S_BARRIER      = S_BARRIER,
   output_pdf     = "results/Wright_GAM_diagnostics.pdf",
   n_sim_reps     = 3,
@@ -2340,11 +2356,11 @@ cat(sprintf(
 
 thr_eta_band <- abs(thr_eta) * 0.10
 crossing_genes <- integrated_data |>
-  dplyr::filter(!is.na(S_eta), !is.na(S_ROC),
+  dplyr::filter(!is.na(S_eta), !is.na(L_ROC),
                 S_eta >= thr_eta - thr_eta_band,
                 S_eta <= thr_eta + thr_eta_band)
 thr_sel <- if (nrow(crossing_genes) >= 5) {
-  median(crossing_genes$S_ROC, na.rm = TRUE)
+  median(crossing_genes$L_ROC, na.rm = TRUE)
 } else {
   NA_real_
 }
@@ -2361,14 +2377,14 @@ attr(thr_sel, "U_empirical")    <- U_emp
 attr(thr_sel, "V_empirical")    <- V_emp
 
 cat(sprintf(
-  "    thr_sel = %.4f  (median S_ROC for genes within +/- 10%% of thr_eta; n = %d)\n",
+  "    thr_sel = %.4f  (median L_ROC for genes within +/- 10%% of thr_eta; n = %d)\n",
   as.numeric(thr_sel), nrow(crossing_genes)
 ))
 cat(sprintf(
   "    %d / %d genes (%.1f%%) above thr_sel.\n",
-  sum(integrated_data$S_ROC > thr_sel, na.rm = TRUE),
+  sum(integrated_data$L_ROC > thr_sel, na.rm = TRUE),
   nrow(integrated_data),
-  100 * mean(integrated_data$S_ROC > thr_sel, na.rm = TRUE)
+  100 * mean(integrated_data$L_ROC > thr_sel, na.rm = TRUE)
 ))
 
 # ===========================================================================
@@ -2616,7 +2632,7 @@ write.csv(bin_eta |> dplyr::select(Seta_bin, n_genes, mean_S_eta, sites_total,
                                    pi_pred_wright, pi_residual),
           "./results/Wright_S_eta_binned.csv",           row.names = FALSE)
 write.csv(
-  msd_data |> dplyr::select(Gene_name, S_ROC, Q_pref_base,
+  msd_data |> dplyr::select(Gene_name, S_ROC, S_ROC_4, L_ROC, Q_pref_base,
                             S_Wright_signed, S_Wright_raw, is_drift,
                             Q_GAM, S_Wright_GAM_signed, S_Wright_GAM_raw,
                             pi_2allele, pi_GAM,
@@ -2663,7 +2679,7 @@ write.csv(
     cor_S_eta_S_Wright_pearson  = cor_eta_pearson,
     n_above_thr_eta          = sum(integrated_data$S_eta > as.numeric(thr_eta),
                                    na.rm = TRUE),
-    n_above_thr_sel          = sum(integrated_data$S_ROC > as.numeric(thr_sel),
+    n_above_thr_sel          = sum(integrated_data$L_ROC > as.numeric(thr_sel),
                                    na.rm = TRUE)
   ),
   "./results/Wright_threshold_adopted.csv", row.names = FALSE
@@ -2691,7 +2707,7 @@ gc()
 # 8.4) GO-enrichment for the two complementary "selection groups" ----
 #
 # Run gost in PARALLEL on:
-#   (a) S_ROC > thr_sel  -> "load-paying" group (high translational cost;
+#   (a) L_ROC > thr_sel  -> "load-paying" group (high translational cost;
 #                            historically Rubisco/photosynthesis enrichment)
 #   (b) S_eta > thr_eta  -> "efficacy" group (preferred-codon-rich; sign-aware
 #                            companion that aligns with S_Wright)
@@ -2702,7 +2718,7 @@ custom_bag <- integrated_data |> dplyr::pull(Gene_name)
 
 # (a) Load-paying group ---------------------------------------------------
 subset_load_paying <- integrated_data |>
-  dplyr::filter(S_ROC > thr_sel) |>
+  dplyr::filter(L_ROC > thr_sel) |>
   dplyr::pull(Gene_name)
 
 GO_results_load <- gost(query = subset_load_paying,
@@ -2714,7 +2730,7 @@ GO_results_load <- gost(query = subset_load_paying,
 write.csv(x = GO_results_load$result |> dplyr::select(-parents),
           file = "./results/Go_enrichment_load_S_ROC.csv",
           quote = TRUE, row.names = FALSE)
-cat(sprintf("[GO] Load-paying group (S_ROC > %.4f): n = %d genes\n",
+cat(sprintf("[GO] Load-paying group (L_ROC > %.4f): n = %d genes\n",
             as.numeric(thr_sel), length(subset_load_paying)))
 
 # (b) Efficacy group ------------------------------------------------------
@@ -2742,7 +2758,7 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
           file = "./results/Go_enrichment.csv",
           quote = TRUE, row.names = FALSE)
 
-# 8.5) Top genes by S_ROC AND by S_eta -----------------------------------
+# 8.5) Top genes by L_ROC AND by S_eta -----------------------------------
 
 detailed_annotation_full <- read.delim(
   "data/Mguttatusvar_IM767_887_v2.1.annotation_info.txt",
@@ -2752,24 +2768,24 @@ detailed_annotation_full <- read.delim(
   dplyr::select(locusName, Best.hit.arabi.name, Best.hit.arabi.defline) |>
   dplyr::distinct()
 
-# Top by S_ROC (load-paying)
+# Top by L_ROC (load-paying)
 top_S_ROC <- integrated_data |>
-  dplyr::filter(S_ROC > thr_sel) |>
-  dplyr::arrange(desc(S_ROC)) |>
-  dplyr::select(Gene_name, S_ROC, S_eta, Mean_Log10_Exp) |>
+  dplyr::filter(L_ROC > thr_sel) |>
+  dplyr::arrange(desc(L_ROC)) |>
+  dplyr::select(Gene_name, L_ROC, S_eta, Mean_Log10_Exp) |>
   dplyr::left_join(detailed_annotation_full,
                    by = c("Gene_name" = "locusName"))
 write.csv(top_S_ROC,
           "./results/Top_genes_strong_selection_load.csv",
           quote = TRUE, row.names = FALSE)
-cat(sprintf("[Top genes] S_ROC > %.4f: %d genes (load-paying; e.g. Rubisco/photosynthesis)\n",
+cat(sprintf("[Top genes] L_ROC > %.4f: %d genes (load-paying; e.g. Rubisco/photosynthesis)\n",
             as.numeric(thr_sel), nrow(top_S_ROC)))
 
 # Top by S_eta (efficacy)
 top_S_eta <- integrated_data |>
   dplyr::filter(!is.na(S_eta), S_eta > thr_eta) |>
   dplyr::arrange(desc(S_eta)) |>
-  dplyr::select(Gene_name, S_ROC, S_eta, Mean_Log10_Exp) |>
+  dplyr::select(Gene_name, L_ROC, S_eta, Mean_Log10_Exp) |>
   dplyr::left_join(detailed_annotation_full,
                    by = c("Gene_name" = "locusName"))
 write.csv(top_S_eta,
@@ -3281,27 +3297,27 @@ for (i in seq_len(nrow(pca_wilcox_results))) {
               pca_wilcox_results$Significance[i]))
 }
 
-# 10.3) Selection (S_ROC) Based Analysis ----
+# 10.3) Selection (L_ROC) Based Analysis ----
 
 # Test whether genes under strong vs weak selection show distinct codon patterns
 
-if (exists("selection_metrics") && "S_ROC" %in% names(selection_metrics)) {
+if (exists("selection_metrics") && "L_ROC" %in% names(selection_metrics)) {
   
   cat("\nCA/PCA Analysis by Selection Load ---\n")
   
   # Create S_load-based groups
-  s_quantiles <- quantile(selection_metrics$S_ROC, 
+  s_quantiles <- quantile(selection_metrics$L_ROC, 
                           probs = c(0.05, 0.95), na.rm = TRUE)
   
   selection_groups <- selection_metrics |>
     dplyr::mutate(
       S_Group = dplyr::case_when(
-        S_ROC >= s_quantiles[2] ~ "High Selection (Top 5%)",
-        S_ROC <= s_quantiles[1] ~ "Low Selection (Bottom 5%)",
+        L_ROC >= s_quantiles[2] ~ "High Selection (Top 5%)",
+        L_ROC <= s_quantiles[1] ~ "Low Selection (Bottom 5%)",
         TRUE ~ "Intermediate"
       )
     ) |>
-    dplyr::select(Gene_name, S_ROC, S_Group)
+    dplyr::select(Gene_name, L_ROC, S_Group)
   
   cat("\nSelection Load Group Distribution:\n")
   print(table(selection_groups$S_Group))
@@ -3726,7 +3742,7 @@ has_mutation_types <- all(paste0("Pi_sum_4fold_", mutation_types) %in%
 
 # Rank genes by Mean_Log10_Exp and create bins
 pi_by_expression <- integrated_data |>
-  dplyr::filter(S_ROC < thr_sel) |>
+  dplyr::filter(L_ROC < thr_sel) |>
   dplyr::arrange(Mean_Log10_Exp) |>
   dplyr::mutate(
     Rank = dplyr::row_number(),
@@ -3751,7 +3767,7 @@ pi_by_expression <- integrated_data |>
 sel_bin_id <- max(pi_by_expression$Exp_Bin) + 1L
 
 sel_cat <- integrated_data |>
-  dplyr::filter(S_ROC > thr_sel) |>
+  dplyr::filter(L_ROC > thr_sel) |>
   dplyr::summarize(
     Exp_Bin = sel_bin_id,
     n_genes = n(),
@@ -3767,7 +3783,7 @@ sel_cat <- integrated_data |>
   )
 
 pi_by_expression <- pi_by_expression |>
-  rbind(sel_cat) # Final bin holds genes with S_ROC > thr_sel (Wright-calibrated)
+  rbind(sel_cat) # Final bin holds genes with L_ROC > thr_sel (Wright-calibrated)
 
 cat("\n=== 4-fold π by Expression Rank (groups of ~1000 genes) ===\n")
 print(pi_by_expression)
@@ -3802,7 +3818,7 @@ if (has_mutation_types) {
   # Calculate per-mutation-type pi component within each expression bin
   # Component = sum(Pi_sum_type) / sum(Sites_4fold) → additive decomposition
   pi_by_mutation <- integrated_data |>
-    dplyr::filter(S_ROC < thr_sel) |>
+    dplyr::filter(L_ROC < thr_sel) |>
     dplyr::arrange(Mean_Log10_Exp) |>
     dplyr::mutate(
       Rank = dplyr::row_number(),
@@ -3823,7 +3839,7 @@ if (has_mutation_types) {
     )
   
   pi_sel_group <- integrated_data |>
-    dplyr::filter(S_ROC > thr_sel) |>
+    dplyr::filter(L_ROC > thr_sel) |>
     dplyr::summarize(
       Exp_Bin = sel_bin_id,
       n_genes = n(),
@@ -4259,7 +4275,7 @@ rm(preferred_raw, pref_by_ending, contour_split)
 #   (a) Overall 4-fold pi (linked selection signal)
 #   (b) 4-fold pi at the first 300 bp of CDS (ramp / Hill-Robertson zone)
 #   (c) 4-fold pi after the first 300 bp (gene body)
-# The "selection group" (S_ROC > thr_sel) is isolated as an independent point.
+# The "selection group" (L_ROC > thr_sel) is isolated as an independent point.
 
 cat("\n=== Background Selection: Nonsynonymous Pi vs Expression ===\n")
 
@@ -4275,7 +4291,7 @@ cat(sprintf("Spearman rho (Pi_0fold ~ Expression): %.4f (p = %.2e, n = %d)\n",
             cor_0fold$estimate, cor_0fold$p.value, nrow(bgs_data)))
 
 # --- Binned analysis: expression-ranked bins (excluding selection group) ---
-bgs_nonsel <- bgs_data |> dplyr::filter(S_ROC < thr_sel)
+bgs_nonsel <- bgs_data |> dplyr::filter(L_ROC < thr_sel)
 
 bgs_binned <- bgs_nonsel |>
   dplyr::arrange(Mean_Log10_Exp) |>
@@ -4296,8 +4312,8 @@ bgs_binned <- bgs_nonsel |>
     .groups = "drop"
   )
 
-# --- Selection group (S_ROC > thr_sel) as isolated point ---
-bgs_sel <- bgs_data |> dplyr::filter(S_ROC > thr_sel)
+# --- Selection group (L_ROC > thr_sel) as isolated point ---
+bgs_sel <- bgs_data |> dplyr::filter(L_ROC > thr_sel)
 
 sel_point <- bgs_sel |>
   dplyr::summarize(
@@ -4311,7 +4327,7 @@ sel_point <- bgs_sel |>
                         sum(Sites_4fold_after300, na.rm = TRUE)
   )
 
-cat(sprintf("Selection group (S_ROC > thr_sel = %.3f): n = %d, mean_exp = %.2f\n",
+cat(sprintf("Selection group (L_ROC > thr_sel = %.3f): n = %d, mean_exp = %.2f\n",
             as.numeric(thr_sel),
             sel_point$n_genes, sel_point$mean_expression))
 
@@ -4599,7 +4615,7 @@ fourfold_per_gene <- fourfold_long |>
 fourfold_with_expr <- integrated_data |>
   dplyr::select(Gene_name, Max_Log10_Exp, Mean_Log10_Exp,
                 Expression_Group,
-                Geom_Mean_CPM, CDS_length_nt, S_ROC) |>
+                Geom_Mean_CPM, CDS_length_nt, L_ROC) |>
   dplyr::inner_join(fourfold_per_gene, by = "Gene_name") |>
   dplyr::filter(Total_4fold >= 20)  # Minimum for reliable composition estimates
 

@@ -29,7 +29,7 @@
 ##'   Q_neutral  = V / (U + V)
 ##'   pi_neutral = 2 * V * U / ((U + V) * (U + V + 1))
 ##' which we use to solve for U and V given empirical Q and pi at putatively
-##' neutral genes (lowest-S_ROC bin).
+##' neutral genes (lowest-L_ROC bin).
 
 ## ***************************************************************************
 ## Core moments of the Wright stationary distribution ----
@@ -89,15 +89,15 @@ wright_solve_UV <- function(Q_neutral, pi_neutral) {
 }
 
 ## ***************************************************************************
-## Calibrate S_ROC -> S_Wright via a single proportional scale factor alpha
+## Calibrate L_ROC -> S_Wright via a single proportional scale factor alpha
 ## ___________________________________________________________________________
 
-#' Fit alpha such that Q(alpha * S_ROC; U, V) approximates observed Q
+#' Fit alpha such that Q(alpha * L_ROC; U, V) approximates observed Q
 #'
 #' Uses bin-aggregated empirical Q (more stable than per-gene fits, since
 #' per-gene Q has high sampling noise from small 4-fold-site counts).
 #'
-#' @param S_ROC_bin   Numeric vector of mean S_ROC per bin.
+#' @param S_ROC_bin   Numeric vector of mean L_ROC per bin.
 #' @param Q_obs_bin   Numeric vector of mean preferred-codon frequency per bin.
 #' @param weights     Optional bin weights (e.g. site counts) for weighted LS.
 #' @param U,V         Wright mutation parameters.

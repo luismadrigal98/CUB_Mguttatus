@@ -215,13 +215,13 @@ run_posteriori_gam_analysis <- function(model, data, response_name = "Pi",
               hyp_test = slope_hyp))
 }
 
-#' Check Confounding and Multicollinearity (S_ROC vs GC)
+#' Check Confounding and Multicollinearity (L_ROC vs GC)
 #'
 #' @param data The integrated data frame.
-#' @param focal_pred The selection metric (e.g., "S_ROC").
+#' @param focal_pred The selection metric (e.g., "L_ROC").
 #' @param comp_pred The composition metric (e.g., "GC" or "GC3").
 #' @return A list containing correlation stats and a diagnostic plot.
-check_confounding_vif <- function(data, focal_pred = "S_ROC", comp_pred = "GC") {
+check_confounding_vif <- function(data, focal_pred = "L_ROC", comp_pred = "GC") {
   require(ggplot2)
   require(dplyr)
   
