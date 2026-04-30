@@ -2040,138 +2040,6 @@ cat(sprintf(
   S_BARRIER, S_BARRIER_advisor
 ))
 
-# --- Parallel GAM branch: smooth Q first, then invert to S_Wright ---------
-# Same model structure as the codon-usage GAMs in section 5: a binomial GAM
-# with additive smooths on Max_Log10_Exp, Exp_breadth, and Log_CDS_length_nt.
-# The fitted Q_GAM is the conditional mean given covariates (no per-gene
-# random effect — covariate-only smoothing). Two genes with identical
-# covariates therefore get the same Q_GAM, so this branch tests whether
-# covariate structure alone is sufficient to denoise per-gene Q before
-# inversion.
-
-gam_Q_pool <- msd_data |>
-  dplyr::filter(!is.na(Q_pref_base), !is.na(Max_Log10_Exp),
-                !is.na(Exp_breadth), !is.na(CDS_length_nt),
-                N_4fold_sites >= 20) |>
-  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
-
-if (nrow(gam_Q_pool) < 30) {
-  stop(sprintf(
-    "Not enough genes to fit the Q GAM branch: n = %d.",
-    nrow(gam_Q_pool)
-  ))
-}
-
-gam_Q_wright <- mgcv::gam(
-  cbind(N_preferred_base, N_4fold_sites - N_preferred_base) ~
-    s(Max_Log10_Exp, k = 8) +
-    s(Exp_breadth, k = 8) +
-    s(Log_CDS_length_nt, k = 8),
-  data   = gam_Q_pool,
-  family = binomial(link = "logit"),
-  method = "REML"
-)
-
-gam_Q_pool$Q_GAM <- as.numeric(predict(gam_Q_wright, newdata = gam_Q_pool,
-                                       type = "response"))
-## Choose calibration for Q inversion: prefer two-state empirical UV if available
-U_Q_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
-V_Q_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
-
-gam_Q_pool$S_Wright_GAM_signed <- vapply(gam_Q_pool$Q_GAM, function(q) {
-  tryCatch(wright_invert_Q(q, U = U_Q_calib, V = V_Q_calib),
-           error = function(e) NA_real_)
-}, numeric(1))
-gam_Q_pool$S_Wright_GAM_raw <- pmax(gam_Q_pool$S_Wright_GAM_signed, 0)
-
-cor_eta_gam_spearman <- cor(gam_Q_pool$S_eta, gam_Q_pool$S_Wright_GAM_signed,
-                            method = "spearman", use = "complete.obs")
-cor_eta_gam_pearson  <- cor(gam_Q_pool$S_eta, gam_Q_pool$S_Wright_GAM_signed,
-                            method = "pearson", use = "complete.obs")
-
-msd_data <- msd_data |>
-  dplyr::left_join(
-    gam_Q_pool |>
-      dplyr::select(Gene_name, Q_GAM,
-                    S_Wright_GAM_signed, S_Wright_GAM_raw),
-    by = "Gene_name"
-  )
-
-cat(sprintf(
-  "[Wright MSD] Q-GAM branch: n = %d genes, Spearman = %.3f, Pearson = %.3f for cor(S_eta, S_Wright_GAM_signed)\n",
-  nrow(gam_Q_pool),
-  cor_eta_gam_spearman, cor_eta_gam_pearson
-))
-
-# --- Parallel GAM branch: smooth π first, then invert to S_Wright ---------
-# Same model structure as the codon-usage GAMs in section 5: a Gaussian GAM
-# with additive smooths on Max_Log10_Exp, Exp_breadth, and Log_CDS_length_nt.
-# Each 4-fold site is encoded as preferred (1) vs unpreferred (0), and
-# pi_2allele is the per-gene heterozygosity across these binary sites. The
-# fitted pi_GAM is the conditional mean given covariates (no per-gene random
-# effect — covariate-only smoothing).
-
-pi_data <- read.csv("data/Two_allele_pi.csv") 
-colnames(pi_data) <- c("Gene_name", "pi_2allele")
-pi_data <- pi_data |>
-  dplyr::mutate(Gene_name = paste0("MgIM767.", Gene_name))
-
-gam_pi_pool <- msd_data |>
-  dplyr::inner_join(pi_data, by = "Gene_name") |>
-  dplyr::filter(!is.na(pi_2allele), pi_2allele > 0,
-                !is.na(Max_Log10_Exp), !is.na(Exp_breadth),
-                !is.na(CDS_length_nt),
-                N_4fold_sites >= 20) |>
-  dplyr::mutate(Log_CDS_length_nt = log10(CDS_length_nt))
-
-if (nrow(gam_pi_pool) < 30) {
-  stop(sprintf(
-    "Not enough genes to fit the π GAM branch: n = %d.",
-    nrow(gam_pi_pool)
-  ))
-}
-
-gam_pi_wright <- mgcv::gam(
-  pi_2allele ~
-    s(Max_Log10_Exp, k = 8) +
-    s(Exp_breadth, k = 8) +
-    s(Log_CDS_length_nt, k = 8),
-  data   = gam_pi_pool,
-  family = gaussian(link = "identity"),
-  method = "REML"
-)
-
-gam_pi_pool$pi_GAM <- as.numeric(predict(gam_pi_wright, newdata = gam_pi_pool,
-                                         type = "response"))
-## Choose calibration for π inversion: prefer two-state empirical UV if available
-U_pi_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
-V_pi_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
-
-gam_pi_pool$S_Wright_pi_signed <- vapply(gam_pi_pool$pi_GAM, function(pi_val) {
-  tryCatch(wright_invert_pi(pi_val, U = U_pi_calib, V = V_pi_calib,
-                           floor_at_zero = TRUE),
-           error = function(e) NA_real_)
-}, numeric(1))
-gam_pi_pool$S_Wright_pi_raw <- pmax(gam_pi_pool$S_Wright_pi_signed, 0)
-
-cor_eta_pi_spearman <- cor(gam_pi_pool$S_eta, gam_pi_pool$S_Wright_pi_signed,
-                           method = "spearman", use = "complete.obs")
-cor_eta_pi_pearson  <- cor(gam_pi_pool$S_eta, gam_pi_pool$S_Wright_pi_signed,
-                           method = "pearson", use = "complete.obs")
-
-msd_data <- msd_data |>
-  dplyr::left_join(
-    gam_pi_pool |>
-      dplyr::select(Gene_name, pi_2allele, pi_GAM,
-                    S_Wright_pi_signed, S_Wright_pi_raw),
-    by = "Gene_name"
-  )
-
-cat(sprintf(
-  "[Wright MSD] π-GAM branch: n = %d genes, Spearman = %.3f, Pearson = %.3f for cor(S_eta, S_Wright_pi_signed)\n",
-  nrow(gam_pi_pool),
-  cor_eta_pi_spearman, cor_eta_pi_pearson
-))
 
 # --- Per-gene S_Wright -----------------------------------------------------
 # Compute the SIGNED inversion first (full-information diagnostic), then
@@ -2203,6 +2071,16 @@ cat(sprintf(
   sum(msd_data$is_drift, na.rm = TRUE), nrow(msd_data),
   100 * mean(msd_data$is_drift, na.rm = TRUE)
 ))
+
+# --- Join two-allele pi into msd_data -------------------------------------
+# pi_2allele (per-gene heterozygosity under the two-allele model) was read
+# during the two-state UV calibration above (Branch B). Join here so it is
+# available for downstream Wright comparisons alongside S_Wright_signed.
+if (!is.null(pi_data)) {
+  msd_data <- msd_data |>
+    dplyr::left_join(pi_data |> dplyr::select(Gene_name, pi_2allele),
+                     by = "Gene_name")
+}
 
 # --- Binned S_eta -> (Q_bin, S_Wright_bin, pi_bin) curve ------------------
 # Site-weighted aggregation in 30 ntile-bins of S_eta.  Sign-preserving
@@ -2241,31 +2119,6 @@ bin_eta <- msd_data |>
 bin_eta$pi_se <- sqrt(bin_eta$pi_bin * (1 - bin_eta$pi_bin / 2) /
                       pmax(bin_eta$sites_total, 1))
 
-# --- GAM-RE diagnostic battery --------------------------------------------
-# Tier 1-3 checks for adopting the GAM-RE-shrunk Q (and π) inversion as
-# the canonical per-gene S_Wright pipeline. Generates a multi-panel PDF
-# and prints a pass/fail summary against the Tier-1 adoption criteria.
-
-source("./src/wright_gam_diagnostics.R")
-# Use the same calibration as the Q/π inversion branches when available.
-U_diag_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
-V_diag_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
-
-gam_diagnostics <- run_wright_gam_diagnostics(
-  msd_data       = msd_data,
-  gam_Q_pool     = gam_Q_pool,
-  gam_Q_wright   = gam_Q_wright,
-  gam_pi_pool    = gam_pi_pool,
-  gam_pi_wright  = gam_pi_wright,
-  bin_eta        = bin_eta,
-  U_emp          = U_diag_calib,
-  V_emp          = V_diag_calib,
-  S_BARRIER      = S_BARRIER,
-  output_pdf     = "results/Wright_GAM_diagnostics.pdf",
-  n_sim_reps     = 3,
-  n_boot         = 200,
-  seed           = 42L
-)
 
 # --- Primary thr_eta: GAM crossing of S_Wright = S_BARRIER ----------------
 # Fit on the FULL per-gene pool with sign-aware S_Wright_signed (NOT the
@@ -2634,9 +2487,7 @@ write.csv(bin_eta |> dplyr::select(Seta_bin, n_genes, mean_S_eta, sites_total,
 write.csv(
   msd_data |> dplyr::select(Gene_name, S_ROC, S_ROC_4, L_ROC, Q_pref_base,
                             S_Wright_signed, S_Wright_raw, is_drift,
-                            Q_GAM, S_Wright_GAM_signed, S_Wright_GAM_raw,
-                            pi_2allele, pi_GAM,
-                            S_Wright_pi_signed, S_Wright_pi_raw,
+                            pi_2allele,
                             Mean_Log10_Exp, Max_Log10_Exp, N_4fold_sites),
   "./results/Wright_per_gene_S_ROC_S_Wright.csv", row.names = FALSE
 )
@@ -2666,9 +2517,6 @@ write.csv(
     n_drift_genes            = sum(msd_data$is_drift, na.rm = TRUE),
     frac_drift_genes         = mean(msd_data$is_drift, na.rm = TRUE),
     n_selection_pool_GAM     = nrow(gam_eta_pool),
-    n_Q_GAM_pool             = nrow(gam_Q_pool),
-    cor_S_eta_S_Wright_GAM_spearman = cor_eta_gam_spearman,
-    cor_S_eta_S_Wright_GAM_pearson  = cor_eta_gam_pearson,
     chi2_pi_stat             = chi2_pi_stat,
     chi2_pi_df               = chi2_pi_df,
     chi2_pi_p                = chi2_pi_p,
@@ -2692,11 +2540,7 @@ rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
    p_advisor_Q, p_advisor_pi,
    S_grid_fid, S_grid_emp,
-   neutral_pool,
-   gam_Q_pool, gam_Q_wright,
-   cor_eta_gam_spearman, cor_eta_gam_pearson,
-   gam_pi_pool, gam_pi_wright, pi_data,
-   cor_eta_pi_spearman, cor_eta_pi_pearson,
+   neutral_pool, pi_data,
    gam_eta_pool, gam_eta_swright, seta_grid, sw_pred, gam_crossings,
    crossings_bin, thr_eta_band, crossing_genes,
    chi2_pi_terms, sel_bins,
