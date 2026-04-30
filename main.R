@@ -2041,8 +2041,10 @@ cat(sprintf(
 # fitted pi_GAM is the conditional mean given covariates (no per-gene random
 # effect — covariate-only smoothing).
 
-pi_data <- read.csv("data/Two_allele_pi.csv")
+pi_data <- read.csv("data/Two_allele_pi.csv") 
 colnames(pi_data) <- c("Gene_name", "pi_2allele")
+pi_data <- pi_data |>
+  dplyr::mutate(Gene_name = paste0("MgIM767.", Gene_name))
 
 gam_pi_pool <- msd_data |>
   dplyr::inner_join(pi_data, by = "Gene_name") |>
@@ -2072,7 +2074,8 @@ gam_pi_wright <- mgcv::gam(
 gam_pi_pool$pi_GAM <- as.numeric(predict(gam_pi_wright, newdata = gam_pi_pool,
                                          type = "response"))
 gam_pi_pool$S_Wright_pi_signed <- vapply(gam_pi_pool$pi_GAM, function(pi_val) {
-  tryCatch(wright_invert_pi(pi_val, U = U_emp, V = V_emp),
+  tryCatch(wright_invert_pi(pi_val, U = U_emp, V = V_emp,
+                           floor_at_zero = TRUE),
            error = function(e) NA_real_)
 }, numeric(1))
 gam_pi_pool$S_Wright_pi_raw <- pmax(gam_pi_pool$S_Wright_pi_signed, 0)
