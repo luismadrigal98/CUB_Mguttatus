@@ -1906,6 +1906,60 @@ wright_emp <- data.frame(
   pi_site = wright_pi(S_grid_emp, U = U_emp, V = V_emp)
 )
 
+# --- Two-state π calibration (preferred vs unpreferred sites) ----------
+# Use the same neutral_pool (low-expression decile) but pull the
+# two-state per-gene heterozygosity `pi_2allele` from the precomputed
+# `data/Two_allele_pi.csv`.  Solve (U, V) from Q_neutral_obs and the
+# site-weighted `pi_neutral_two` when feasible and keep as a fallback
+# reference alongside the original empirical (U_emp, V_emp).
+pi_data <- tryCatch(read.csv("data/Two_allele_pi.csv"), error = function(e) NULL)
+if (!is.null(pi_data)) {
+  colnames(pi_data) <- c("Gene_name", "pi_2allele")
+  pi_data <- pi_data |>
+    dplyr::mutate(Gene_name = paste0("MgIM767.", Gene_name))
+  neutral_pool_pi <- neutral_pool |> dplyr::inner_join(pi_data, by = "Gene_name") |>
+    dplyr::filter(!is.na(pi_2allele))
+  if (nrow(neutral_pool_pi) > 0) {
+    pi_neutral_two <- with(neutral_pool_pi,
+                           sum(pi_2allele * Sites_4fold, na.rm = TRUE) /
+                           sum(Sites_4fold, na.rm = TRUE))
+  } else {
+    pi_neutral_two <- NA_real_
+  }
+} else {
+  pi_neutral_two <- NA_real_
+}
+
+# Diagnostic output for two-state calibration
+if (is.null(pi_data)) {
+  cat("[Branch B - two-state] data/Two_allele_pi.csv not found or unreadable.\n")
+} else {
+  n_pi <- if (exists("neutral_pool_pi")) nrow(neutral_pool_pi) else 0
+  cat(sprintf("[Branch B - two-state] matched genes in neutral pool: %d\n", n_pi))
+  cat(sprintf("[Branch B - two-state] pi_neutral_two (site-weighted) = %s\n",
+              ifelse(is.na(pi_neutral_two), "NA", format(pi_neutral_two, digits = 6))))
+}
+
+# Validate and solve for (U, V) using the two-state π if possible.
+if (is.finite(pi_neutral_two) && pi_neutral_two > 0) {
+  hardy_max_two <- 2 * Q_neutral_obs * (1 - Q_neutral_obs)
+  cat(sprintf("[Branch B - two-state] Q_neutral_obs = %.6f, Hardy_max = %.6f\n", Q_neutral_obs, hardy_max_two))
+  if (pi_neutral_two < hardy_max_two) {
+    UV_emp_two <- wright_solve_UV(Q_neutral_obs, pi_neutral_two)
+    U_emp_two <- UV_emp_two["U"]; V_emp_two <- UV_emp_two["V"]
+    cat(sprintf("[Branch B - two-state π] Empirical U2 = %.6f, V2 = %.6f\n", U_emp_two, V_emp_two))
+    cat("[Branch B - two-state] two-state UV calibration SUCCESS; using U_emp_two/V_emp_two for π→S inversions.\n")
+  } else {
+    U_emp_two <- NA_real_; V_emp_two <- NA_real_
+    warning("two-state pi_neutral is outside Hardy bound; skipping two-state UV solve")
+    cat(sprintf("[Branch B - two-state] pi_neutral_two = %.6f >= Hardy_max = %.6f; skipping solve.\n",
+                pi_neutral_two, hardy_max_two))
+  }
+} else {
+  U_emp_two <- NA_real_; V_emp_two <- NA_real_
+}
+
+
 # ===========================================================================
 # Canonical thresholds (v11): anchor thr_eta to the Wright pi-rise barrier
 # at S_Wright = S_BARRIER on the S_eta axis.
@@ -2073,8 +2127,12 @@ gam_pi_wright <- mgcv::gam(
 
 gam_pi_pool$pi_GAM <- as.numeric(predict(gam_pi_wright, newdata = gam_pi_pool,
                                          type = "response"))
+## Choose calibration for π inversion: prefer two-state empirical UV if available
+U_pi_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
+V_pi_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
+
 gam_pi_pool$S_Wright_pi_signed <- vapply(gam_pi_pool$pi_GAM, function(pi_val) {
-  tryCatch(wright_invert_pi(pi_val, U = U_emp, V = V_emp,
+  tryCatch(wright_invert_pi(pi_val, U = U_pi_calib, V = V_pi_calib,
                            floor_at_zero = TRUE),
            error = function(e) NA_real_)
 }, numeric(1))
