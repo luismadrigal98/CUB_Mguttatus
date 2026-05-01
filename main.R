@@ -1368,6 +1368,18 @@ S_ROC_4 <- ifelse(
 )
 names(S_ROC_4) <- common_genes
 
+# S_eta_4: signed 4-fold AnaCoDa selection signal, kept for Wright-scale diagnostics.
+# This preserves the signed codon-level information before cleanup so the test
+# script can compare the AnaCoDa estimate against S_Wright_signed.
+S_eta_4 <- ifelse(
+  n_4fold_syn_sites > 0,
+  -rowSums(counts_aligned[, fourfold_codons_syn, drop = FALSE] *
+             sel_aligned[, fourfold_codons_syn, drop = FALSE],
+           na.rm = TRUE) / n_4fold_syn_sites,
+  NA_real_
+)
+names(S_eta_4) <- common_genes
+
 selection_metrics <- data.frame(
   Gene_name = common_genes,
 
@@ -1378,6 +1390,9 @@ selection_metrics <- data.frame(
   # S_ROC restricted to strictly 4-fold degenerate sites.
   # At Wright equilibrium S_ROC_4 ≈ S_Wright (up to 4N_e scale factor).
   S_ROC_4 = S_ROC_4,
+
+  # Signed 4-fold AnaCoDa metric derived from the raw codon-level selection matrix.
+  S_eta_4 = S_eta_4,
 
   # Phi-scaled translational load: mean |Δη × φ| per synonymous codon.
   L_ROC = L_ROC,
