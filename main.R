@@ -1324,21 +1324,11 @@ total_selection_intensity <- rowSums(counts_aligned * abs(sel_aligned), na.rm = 
 # High L_ROC = high-phi gene still paying selection cost (e.g. Rubisco/photosynthesis).
 L_ROC <- total_selection_intensity / n_synonymous_codons
 
-# eta_vec and eta_syn: unscaled AnaCoDa η posterior means per synonymous codon.
-# Needed for the Δη computation below.
+# eta_vec: unscaled AnaCoDa η posterior means per codon.
+# Preferred codons η < 0; reference codon η = 0; disfavored η > 0.
 eta_vec <- setNames(rep(0, length(common_codons)), common_codons)
 m_eta   <- match(common_codons, eta_data$Codon)
 eta_vec[!is.na(m_eta)] <- eta_data$Mean[m_eta[!is.na(m_eta)]]
-eta_syn <- eta_vec[synonymous_codons_aligned]
-
-# S_ROC: per-gene φ-scaled selection coefficient from AnaCoDa Δη × MeanPhi.
-# For each synonymous AA family: Δη_a = max(η_j) − min(η_j) = |η_preferred|
-# (reference codon η = 0; preferred codon η < 0). After multiplying by MeanPhi
-# (below), S_ROC ≈ S_Wright up to a 4N_e scale factor.
-#
-# S_ROC_4: same, restricted to strictly 4-fold degenerate codons (NNA/T/C/G
-# all same AA), for direct contrast with S_Wright (derived from Q/π at 4-fold
-# sites). The slope of S_Wright ~ S_ROC_4 gives the 4N_e factor empirically.
 
 is_4fold_codon <- sapply(names(genetic_code_dna_long), function(cdn) {
   prefix   <- substr(cdn, 1, 2)
@@ -1348,51 +1338,35 @@ is_4fold_codon <- sapply(names(genetic_code_dna_long), function(cdn) {
 })
 fourfold_codons_syn <- intersect(names(is_4fold_codon)[is_4fold_codon], synonymous_codons_aligned)
 
-aa_for_syn         <- aa_for_aligned[synonymous_codons_aligned]
-delta_eta_by_aa    <- tapply(eta_syn, aa_for_syn,
-                             function(x) max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
-delta_eta_by_codon <- setNames(delta_eta_by_aa[aa_for_syn], synonymous_codons_aligned)
-
 syn_counts <- counts_aligned[, synonymous_codons_aligned]
 
-S_ROC        <- as.numeric(syn_counts %*% delta_eta_by_codon) / n_synonymous_codons
-names(S_ROC) <- common_genes
-
 n_4fold_syn_sites <- rowSums(syn_counts[, fourfold_codons_syn, drop = FALSE], na.rm = TRUE)
-delta_eta_4f      <- delta_eta_by_codon[fourfold_codons_syn]
-S_ROC_4 <- ifelse(
+
+# S_ROC: per-gene signed codon-usage efficacy at strictly 4-fold sites.
+# Defined as −mean(η) weighted by 4-fold site counts. Preferred codons (η < 0)
+# make this positive; well-optimized genes have S_ROC > 0.
+# Diagnostic shows Spearman rho ≈ +0.77 with S_Wright (vs −0.16 for old φ×Δη).
+# φ is deliberately NOT used: AnaCoDa φ scale is incompatible with Wright 4Nes.
+eta_4fold_vec <- eta_vec[fourfold_codons_syn]
+S_ROC <- ifelse(
   n_4fold_syn_sites > 0,
-  as.numeric(syn_counts[, fourfold_codons_syn, drop = FALSE] %*% delta_eta_4f) /
+  -as.numeric(syn_counts[, fourfold_codons_syn, drop = FALSE] %*% eta_4fold_vec) /
     n_4fold_syn_sites,
   NA_real_
 )
+names(S_ROC) <- common_genes
+S_ROC_4 <- S_ROC   # backwards-compatible alias (same formula)
 names(S_ROC_4) <- common_genes
-
-# S_eta_4: signed 4-fold AnaCoDa selection signal, kept for Wright-scale diagnostics.
-# This preserves the signed codon-level information before cleanup so the test
-# script can compare the AnaCoDa estimate against S_Wright_signed.
-S_eta_4 <- ifelse(
-  n_4fold_syn_sites > 0,
-  -rowSums(counts_aligned[, fourfold_codons_syn, drop = FALSE] *
-             sel_aligned[, fourfold_codons_syn, drop = FALSE],
-           na.rm = TRUE) / n_4fold_syn_sites,
-  NA_real_
-)
-names(S_eta_4) <- common_genes
 
 selection_metrics <- data.frame(
   Gene_name = common_genes,
 
-  # Per-gene φ-scaled selection coefficient (all synonymous sites): Δη × MeanPhi.
-  # Unscaled values stored temporarily; multiplied by MeanPhi in the mutate below.
+  # Signed codon-usage efficacy at 4-fold sites: −mean(η_4fold).
+  # Positive = gene uses preferred codons (well-optimized).
   S_ROC = S_ROC,
 
-  # S_ROC restricted to strictly 4-fold degenerate sites.
-  # At Wright equilibrium S_ROC_4 ≈ S_Wright (up to 4N_e scale factor).
+  # Backwards-compatible alias for S_ROC (same formula).
   S_ROC_4 = S_ROC_4,
-
-  # Signed 4-fold AnaCoDa metric derived from the raw codon-level selection matrix.
-  S_eta_4 = S_eta_4,
 
   # Phi-scaled translational load: mean |Δη × φ| per synonymous codon.
   L_ROC = L_ROC,
@@ -1404,19 +1378,66 @@ selection_metrics <- data.frame(
 
 selection_metrics <- selection_metrics |>
   left_join(phi_hat_dM_fixed_with_phi |> dplyr::select(GeneID, Mean.log10.Phi, MeanPhi),
-            by = join_by(Gene_name == GeneID)) |>
-  dplyr::mutate(
-    S_ROC   = S_ROC   * MeanPhi,
-    S_ROC_4 = S_ROC_4 * MeanPhi
-  )
+            by = join_by(Gene_name == GeneID))
+
+# === Diagnostic save — objects for ./src/diagnose_S_ROC.R ===
+# Run once; outputs go to ./results/for_claude/ for local diagnosis.
+{
+  dir.create("./results/for_claude", showWarnings = FALSE, recursive = TRUE)
+
+  # 1. Per-codon 4-fold table: gene × {codon, AA, is_preferred, eta_unscaled, count}
+  #    Gives the diagnostic script full flexibility to test any S definition.
+  fourfold_codons_all <- names(is_4fold_codon)[is_4fold_codon]
+  fourfold_codons_use <- intersect(fourfold_codons_all, synonymous_codons_aligned)
+  eta_4fold           <- eta_vec[fourfold_codons_use]
+  aa_4fold            <- aa_for_aligned[fourfold_codons_use]
+  preferred_per_aa_4  <- tapply(eta_4fold, aa_4fold, function(x) names(which.min(x)))
+  is_pref_4fold       <- sapply(fourfold_codons_use,
+                                function(cdn) cdn == preferred_per_aa_4[aa_4fold[cdn]])
+
+  counts_4f <- counts_aligned[, fourfold_codons_use, drop = FALSE]
+  per_codon_4fold <- do.call(rbind, lapply(seq_along(fourfold_codons_use), function(j) {
+    cdn <- fourfold_codons_use[j]
+    data.frame(
+      Gene_name    = common_genes,
+      Codon        = cdn,
+      AA           = aa_4fold[j],
+      is_preferred = is_pref_4fold[j],
+      eta          = eta_4fold[j],
+      count        = as.numeric(counts_4f[, j]),
+      stringsAsFactors = FALSE
+    )
+  })) |>
+    dplyr::filter(count > 0)
+
+  write.csv(per_codon_4fold,
+            "./results/for_claude/per_codon_4fold.csv", row.names = FALSE)
+
+  # 2. Phi estimates per gene
+  write.csv(phi_hat_dM_fixed_with_phi |>
+              dplyr::select(GeneID, MeanPhi, Mean.log10.Phi),
+            "./results/for_claude/phi_hat.csv", row.names = FALSE)
+
+  # 3. Global η table (reference + all synonymous codons)
+  write.csv(eta_data, "./results/for_claude/eta_data.csv", row.names = FALSE)
+
+  # 4. selection_metrics snapshot (before Wright join)
+  write.csv(selection_metrics,
+            "./results/for_claude/selection_metrics.csv", row.names = FALSE)
+
+  cat("[diag-save] per_codon_4fold, phi_hat, eta_data, selection_metrics ->",
+      "./results/for_claude/\n")
+  rm(fourfold_codons_all, fourfold_codons_use, eta_4fold, aa_4fold,
+     preferred_per_aa_4, is_pref_4fold, counts_4f, per_codon_4fold)
+}
+# === end diagnostic save ===
 
 # Memory cleanup: AnaCoDa genome/parameter objects and selection matrices ---
 rm(genome, parameter_object, selection_coeff,
    counts_df, sel_mat, counts_aligned, sel_aligned,
    common_genes, common_codons, phi_hat_dM_fixed_with_phi, p,
-   eta_vec, m_eta, eta_syn,
-   is_4fold_codon, fourfold_codons_syn, aa_for_syn,
-   delta_eta_by_aa, delta_eta_by_codon, delta_eta_4f,
+   eta_vec, m_eta, eta_4fold_vec,
+   is_4fold_codon, fourfold_codons_syn,
    syn_counts, n_4fold_syn_sites, total_selection_intensity)
 gc()
 
@@ -1503,7 +1524,7 @@ print(cor.test(integrated_data$L_ROC[integrated_data$Max_Log10_Exp > 3.5],
                integrated_data$CDC[integrated_data$Max_Log10_Exp > 3.5],
                method = "spearman", exact = FALSE))
 
-cat("\n--- S_ROC (phi-scaled selection) vs CUB metrics ---\n")
+cat("\n--- S_ROC (signed codon efficacy, 4-fold) vs CUB metrics ---\n")
 print(cor.test(integrated_data$S_ROC, integrated_data$CAI, method = "spearman", exact = FALSE))
 print(cor.test(integrated_data$S_ROC, integrated_data$CDC, method = "spearman", exact = FALSE))
 print(cor.test(integrated_data$S_ROC[integrated_data$Max_Log10_Exp > 3.5],
@@ -1515,11 +1536,8 @@ print(cor.test(integrated_data$S_ROC[integrated_data$Max_Log10_Exp > 3.5],
 # 1. Data Preparation
 plot_data <- integrated_data |>
   dplyr::mutate(
-    # Log Transform Selection Load
-    Log_S_ROC = log10(S_ROC + 0.01), 
-    
     # Expression metric
-    Log_Phi = Mean.log10.Phi, 
+    Log_Phi = Mean.log10.Phi,
     
     # Calculate raw Phi to isolate Intrinsic Inefficiency
     # Using 10^Mean.log10.Phi approximates the scale
@@ -1540,16 +1558,16 @@ cat("\n=== Selection Efficacy Stats (For Manuscript) ===\n")
 # Define common color scale limits
 phi_range <- range(plot_data$Log_Phi, na.rm = TRUE)
 
-# Panel A: S_ROC Distribution
-drift_thresh <- log10(1)   
+# Panel A: S_ROC distribution (signed efficacy at 4-fold sites; linear scale)
 y_max_anno <- 10000
 
-p1 <- ggplot(plot_data, aes(x = Log_S_ROC)) +
+p1 <- ggplot(plot_data |> dplyr::filter(!is.na(S_ROC)), aes(x = S_ROC)) +
   geom_histogram(bins = 100, fill = "#69b3a2", color = "white", linewidth = 0.05) +
-  scale_y_continuous(trans = "log1p", breaks = c(0, 10, 100, 1000, 10000), 
+  scale_y_continuous(trans = "log1p", breaks = c(0, 10, 100, 1000, 10000),
                      labels = scales::comma_format(accuracy = 1), expand = c(0, 0)) +
-  coord_cartesian(clip = "off", ylim = c(0, NA)) + 
-  labs(x = expression(Log[10](S[ROC])), y = "Gene Count (Log1p Scale)") +
+  coord_cartesian(clip = "off", ylim = c(0, NA)) +
+  labs(x = expression(S[ROC] ~ "(signed AnaCoDa efficacy, 4-fold sites)"),
+       y = "Gene Count (Log1p Scale)") +
   theme_custom() +
   theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
 
@@ -1942,6 +1960,26 @@ if (!is.null(pi_data)) {
                      by = "Gene_name")
 }
 
+# === Diagnostic save (part 2) — Wright scalars + per-gene S/Q data ===
+{
+  write.csv(
+    msd_data |> dplyr::select(Gene_name, Q_pref_base, N_4fold_sites, N_preferred_base,
+                               S_Wright_signed, S_Wright_raw, is_drift,
+                               S_ROC, S_ROC_4, L_ROC, Mean_Log10_Exp),
+    "./results/for_claude/gene_q_s_wright.csv", row.names = FALSE
+  )
+  saveRDS(
+    list(U_emp = U_emp, V_emp = V_emp,
+         U_emp_two = if (exists("U_emp_two")) U_emp_two else NA_real_,
+         V_emp_two = if (exists("V_emp_two")) V_emp_two else NA_real_,
+         S_BARRIER = S_BARRIER, S_BARRIER_advisor = S_BARRIER_advisor,
+         Q_neutral_obs = Q_neutral_obs, pi_neutral_obs = pi_neutral_obs),
+    "./results/for_claude/wright_scalars.rds"
+  )
+  cat("[diag-save] gene_q_s_wright.csv, wright_scalars.rds -> ./results/for_claude/\n")
+}
+# === end diagnostic save (part 2) ===
+
 # --- Binned S_ROC -> (Q_bin, S_Wright_bin, pi_bin) curve ------------------
 # Site-weighted aggregation in 30 ntile-bins of S_ROC (φ-scaled, all synonymous
 # sites). Use two-state calibration if available.
@@ -2126,7 +2164,7 @@ p_SROC4_vs_SWright <- ggplot(per_gene_pool,
       "Spearman rho = %+.3f | Pearson r = %+.3f | S_BARRIER = %.4f | n = %d",
       cor_sroc4_spearman, cor_sroc4_pearson, S_BARRIER, nrow(per_gene_pool)
     ),
-    x = expression(S[ROC][",4"] ~ "(" * phi * "-scaled, 4-fold sites)"),
+    x = expression(S[ROC] ~ "(signed AnaCoDa efficacy, 4-fold sites)"),
     y = expression(S[Wright] ~ "(per-gene, signed)")
   ) +
   theme_custom()
