@@ -1775,21 +1775,36 @@ wright_emp <- data.frame(
 # `data/Two_allele_pi.csv`.  Solve (U, V) from Q_neutral_obs and the
 # site-weighted `pi_neutral_two` when feasible and keep as a fallback
 # reference alongside the original empirical (U_emp, V_emp).
-pi_data <- tryCatch(read.csv("data/Two_allele_pi.csv"), error = function(e) NULL)
+# File has 5 columns: Gene, n_pref_notpref, q_pref, p_notpref, pi_2allele.
+# Properly select and rename — old 2-name colnames() assignment silently
+# mapped column 2 (site counts) to pi_2allele, discarding q_pref entirely.
+pi_data <- tryCatch({
+  d <- read.csv("data/Two_allele_pi.csv")
+  dplyr::transmute(d,
+    Gene_name      = paste0("MgIM767.", Gene),
+    n_pref_notpref = n_pref_notpref,
+    q_pref_two     = q_pref,
+    pi_2allele     = pi_2allele
+  )
+}, error = function(e) NULL)
+
 if (!is.null(pi_data)) {
-  colnames(pi_data) <- c("Gene_name", "pi_2allele")
-  pi_data <- pi_data |>
-    dplyr::mutate(Gene_name = paste0("MgIM767.", Gene_name))
-  neutral_pool_pi <- neutral_pool |> dplyr::inner_join(pi_data, by = "Gene_name") |>
-    dplyr::filter(!is.na(pi_2allele))
+  neutral_pool_pi <- neutral_pool |>
+    dplyr::inner_join(pi_data, by = "Gene_name") |>
+    dplyr::filter(!is.na(pi_2allele), !is.na(q_pref_two))
   if (nrow(neutral_pool_pi) > 0) {
+    # Q_neutral from two-allele preferred frequency, weighted by two-allele site count.
+    Q_neutral_two  <- with(neutral_pool_pi,
+                           weighted.mean(q_pref_two, n_pref_notpref, na.rm = TRUE))
+    # pi from two-allele heterozygosity, weighted by two-allele site count.
     pi_neutral_two <- with(neutral_pool_pi,
-                           sum(pi_2allele * Sites_4fold, na.rm = TRUE) /
-                           sum(Sites_4fold, na.rm = TRUE))
+                           weighted.mean(pi_2allele, n_pref_notpref, na.rm = TRUE))
   } else {
+    Q_neutral_two  <- NA_real_
     pi_neutral_two <- NA_real_
   }
 } else {
+  Q_neutral_two  <- NA_real_
   pi_neutral_two <- NA_real_
 }
 
@@ -1799,16 +1814,18 @@ if (is.null(pi_data)) {
 } else {
   n_pi <- if (exists("neutral_pool_pi")) nrow(neutral_pool_pi) else 0
   cat(sprintf("[Branch B - two-state] matched genes in neutral pool: %d\n", n_pi))
-  cat(sprintf("[Branch B - two-state] pi_neutral_two (site-weighted) = %s\n",
+  cat(sprintf("[Branch B - two-state] Q_neutral_two = %s, pi_neutral_two = %s\n",
+              ifelse(is.na(Q_neutral_two),  "NA", format(Q_neutral_two,  digits = 6)),
               ifelse(is.na(pi_neutral_two), "NA", format(pi_neutral_two, digits = 6))))
 }
 
-# Validate and solve for (U, V) using the two-state π if possible.
-if (is.finite(pi_neutral_two) && pi_neutral_two > 0) {
-  hardy_max_two <- 2 * Q_neutral_obs * (1 - Q_neutral_obs)
-  cat(sprintf("[Branch B - two-state] Q_neutral_obs = %.6f, Hardy_max = %.6f\n", Q_neutral_obs, hardy_max_two))
+# Validate and solve for (U, V) using the two-state Q and π.
+if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0) {
+  hardy_max_two <- 2 * Q_neutral_two * (1 - Q_neutral_two)
+  cat(sprintf("[Branch B - two-state] Q_neutral_two = %.6f, Hardy_max = %.6f\n",
+              Q_neutral_two, hardy_max_two))
   if (pi_neutral_two < hardy_max_two) {
-    UV_emp_two <- wright_solve_UV(Q_neutral_obs, pi_neutral_two)
+    UV_emp_two <- wright_solve_UV(Q_neutral_two, pi_neutral_two)
     U_emp_two <- UV_emp_two["U"]; V_emp_two <- UV_emp_two["V"]
     cat(sprintf("[Branch B - two-state π] Empirical U2 = %.6f, V2 = %.6f\n", U_emp_two, V_emp_two))
     cat("[Branch B - two-state] two-state UV calibration SUCCESS; using U_emp_two/V_emp_two for π→S inversions.\n")
@@ -2171,54 +2188,135 @@ p_SROC4_vs_SWright <- ggplot(per_gene_pool,
 ggsave("./results/Wright_S_ROC4_vs_S_Wright.pdf",
        p_SROC4_vs_SWright, width = 7, height = 5, device = cairo_pdf)
 
-# 8.3.5) Diversity hump: two panels — pi vs S_ROC and pi vs S_Wright ----
+# 8.3.5) Three-panel drift-barrier overview ----
+#
+# Panel A: S_Wright_signed histogram, filled by selection/drift group.
+#   The vertical dashed line marks S_BARRIER (GAM-inflection threshold).
+# Panel B: L_ROC density split by the same S_Wright classification.
+# Panel C: S_ROC density split by the same S_Wright classification.
+#
+# Logic: the barrier is derived entirely from S_Wright (pop-gen units).
+# Overlaying it on L_ROC and S_ROC distributions is a cross-metric
+# validation — genes that pop-gen calls "under selection" should show
+# elevated translational load (B) and stronger codon preference (C).
+
+plot_barrier <- msd_data |>
+  dplyr::filter(is.finite(S_Wright_signed), is.finite(L_ROC), is.finite(S_ROC)) |>
+  dplyr::mutate(
+    SW_group = dplyr::if_else(S_Wright_signed >= S_BARRIER, "Selection", "Drift")
+  )
+
+n_sel_barrier   <- sum(plot_barrier$SW_group == "Selection")
+n_drift_barrier <- sum(plot_barrier$SW_group == "Drift")
+
+barrier_colors <- c("Selection" = "#E41A1C", "Drift" = "#377EB8")
+
+# Panel A: S_Wright histogram coloured by group
+p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
+  geom_histogram(bins = 80, color = "white", linewidth = 0.05) +
+  geom_vline(xintercept = S_BARRIER,
+             linetype = "dashed", color = "black", linewidth = 0.8) +
+  scale_fill_manual(values = barrier_colors, name = NULL) +
+  scale_y_continuous(trans  = "log1p",
+                     breaks = c(0, 10, 100, 1000, 10000),
+                     labels = scales::comma_format(accuracy = 1),
+                     expand = c(0, 0)) +
+  labs(
+    x        = expression(S[Wright] ~ "(per-gene, signed)"),
+    y        = "Gene count (log1p)",
+    subtitle = sprintf(
+      "S_BARRIER = %.4f  |  selection: %d genes  |  drift: %d genes",
+      S_BARRIER, n_sel_barrier, n_drift_barrier
+    )
+  ) +
+  theme_custom() +
+  theme(legend.position = "top")
+
+# Panel B: L_ROC density split by group
+p_lroc_split <- ggplot(plot_barrier, aes(x = L_ROC, fill = SW_group)) +
+  geom_density(alpha = 0.55, color = NA) +
+  scale_fill_manual(values = barrier_colors, name = NULL) +
+  coord_cartesian(xlim = c(0, quantile(plot_barrier$L_ROC, 0.995, na.rm = TRUE))) +
+  labs(
+    x = expression(L[ROC] ~ "(translational load)"),
+    y = "Density"
+  ) +
+  theme_custom() +
+  theme(legend.position = "none")
+
+# Panel C: S_ROC density split by group
+p_sroc_split <- ggplot(plot_barrier, aes(x = S_ROC, fill = SW_group)) +
+  geom_density(alpha = 0.55, color = NA) +
+  scale_fill_manual(values = barrier_colors, name = NULL) +
+  labs(
+    x = expression(S[ROC] ~ "(signed AnaCoDa efficacy, 4-fold)"),
+    y = "Density"
+  ) +
+  theme_custom() +
+  theme(legend.position = "none")
+
+p_barrier_overview <- (p_sw_dist / (p_lroc_split | p_sroc_split)) +
+  patchwork::plot_annotation(tag_levels = "A")
+
+ggsave("./results/Drift_barrier_overview.pdf",
+       p_barrier_overview, width = 11, height = 9, device = cairo_pdf)
+
+rm(plot_barrier, n_sel_barrier, n_drift_barrier,
+   barrier_colors, p_sw_dist, p_lroc_split, p_sroc_split, p_barrier_overview)
+
+# 8.3.6) Diversity hump: pi vs S_Wright ----
 #
 # Wright's pi(S) is non-monotone: plateau at S=0, small rise (the "hump"),
 # then collapse as selection drives preferred alleles toward fixation.
-# Panel A: 30 bins of S_ROC — shows whether the φ-scaled AnaCoDa metric
-#   recovers the hump.
-# Panel B: 30 bins of S_Wright — the direct per-gene inversion; hump should
-#   be visible on this axis by construction.
+# 30 site-weighted bins of S_Wright with theory overlay (red) and S_BARRIER (dashed).
 
-# Theory curve helper: Wright pi smoothed through the bin-level Wright axis
-make_hump_theory <- function(bin_df, x_col, sw_col) {
-  x_vals <- bin_df[[x_col]]
-  sw_vals <- bin_df[[sw_col]]
-  keep <- !is.na(x_vals) & !is.na(sw_vals)
-  bf <- bin_df[keep, , drop = FALSE]
-  bf <- bf[order(bf[[x_col]]), , drop = FALSE]
-  sw_floor <- pmax(bf[[sw_col]], 0)
-  sm <- splinefun(x = bf[[x_col]], y = sw_floor, method = "monoH.FC")
-  x_seq <- seq(min(bf[[x_col]]), max(bf[[x_col]]), length.out = 401)
-  data.frame(
-    x_val     = x_seq,
-    pi_theory = wright_pi(pmax(sm(x_seq), 0), U = U_bin_calib, V = V_bin_calib)
+# Relative diversity: pi_bin / pi_neutral_obs, echoing McVean & Charlesworth (1999)
+# who plot pi/pi(S=0) vs N_e*s.  Our calibrated U/V = (1-Q_neutral)/Q_neutral
+# ≈ 2.9, placing Mimulus in the μ₁₀/μ₀₁ ≈ 3 regime (dotted curve in M&C Fig 1),
+# where weak selection transiently raises diversity above neutral before the
+# preferred allele is fixed at high S.
+
+mu_ratio <- (1 - Q_neutral_obs) / Q_neutral_obs   # U/V = μ_away / μ_toward
+
+bin_sw_rel <- bin_sw |>
+  dplyr::mutate(
+    pi_rel    = pi_bin / pi_neutral_obs,
+    pi_rel_lo = (pi_bin - 2 * pi_se) / pi_neutral_obs,
+    pi_rel_hi = (pi_bin + 2 * pi_se) / pi_neutral_obs
   )
-}
 
-theory_sw  <- make_hump_theory(bin_sw, "mean_S_Wright", "mean_S_Wright")
+# Theory curve on the relative scale
+S_seq_hump  <- seq(0, max(bin_sw$mean_S_Wright, na.rm = TRUE) * 1.05, length.out = 500)
+theory_sw   <- data.frame(
+  x_val    = S_seq_hump,
+  pi_rel   = wright_pi(S_seq_hump, U = U_bin_calib, V = V_bin_calib) / pi_neutral_obs
+)
 
-p_hump_sw <- ggplot(bin_sw, aes(x = mean_S_Wright, y = pi_bin)) +
-  geom_hline(yintercept = pi_neutral_obs,
+p_hump_sw <- ggplot(bin_sw_rel, aes(x = mean_S_Wright, y = pi_rel)) +
+  geom_hline(yintercept = 1,
              linetype = "dotted", color = "grey40") +
   geom_vline(xintercept = S_BARRIER,
-             linetype = "dashed", color = "blue") +
-  geom_errorbar(aes(ymin = pi_bin - 2 * pi_se,
-                    ymax = pi_bin + 2 * pi_se),
+             linetype = "dashed", color = "#377EB8") +
+  geom_errorbar(aes(ymin = pi_rel_lo, ymax = pi_rel_hi),
                 width = 0, color = "#377EB8", alpha = 0.6) +
   geom_point(aes(size = sites_total),
              color = "#377EB8", alpha = 0.9) +
   geom_line(data = theory_sw,
-            aes(x = x_val, y = pi_theory),
+            aes(x = x_val, y = pi_rel),
             color = "#E41A1C", linewidth = 0.8, inherit.aes = FALSE) +
   scale_size_continuous(name = "4-fold sites / bin",
                         range = c(2, 6),
                         labels = scales::comma_format()) +
   labs(
-    title = expression(paste(pi[4*fold], " vs ", S[Wright])),
-    subtitle = sprintf("Dashed: S_BARRIER = %.4f", S_BARRIER),
+    title    = expression(paste("Relative ", pi[4*fold], " vs ", S[Wright],
+                                "  (McVean & Charlesworth 1999)")),
+    subtitle = sprintf(
+      paste0("μ₁₀/μ₀₁ = U/V ≈ %.2f",
+             "  |  S_BARRIER = %.4f  |  red: Wright π(S) / π(0)"),
+      mu_ratio, S_BARRIER
+    ),
     x = expression(mean(S[Wright]) ~ "(30 bins)"),
-    y = expression(pi[4*fold] ~ "(site-weighted)")
+    y = expression(pi[4*fold] / pi[neutral] ~ "(relative diversity)")
   ) +
   theme_custom()
 
@@ -2230,12 +2328,12 @@ write.csv(bin_roc |> dplyr::select(Sroc_bin, n_genes, mean_S_ROC, sites_total,
                                    pi_pred_wright, pi_residual),
           "./results/Diversity_hump_pi_vs_S_ROC_binned.csv",
           row.names = FALSE)
-write.csv(bin_sw |> dplyr::select(Ssw_bin, n_genes, mean_S_Wright, sites_total,
-                                  Q_bin, pi_bin, pi_se),
+write.csv(bin_sw_rel |> dplyr::select(Ssw_bin, n_genes, mean_S_Wright, sites_total,
+                                      Q_bin, pi_bin, pi_se, pi_rel),
           "./results/Diversity_hump_pi_vs_S_Wright_binned.csv",
           row.names = FALSE)
 
-rm(p_hump_sw, theory_sw, make_hump_theory)
+rm(p_hump_sw, theory_sw, bin_sw_rel, S_seq_hump, mu_ratio)
 gc()
 
 # Persist artefacts.
@@ -2288,7 +2386,8 @@ rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
    p_advisor_Q, p_advisor_pi,
    S_grid_fid, S_grid_emp,
-   neutral_pool, pi_data,
+   neutral_pool, neutral_pool_pi, pi_data,
+   Q_neutral_two, pi_neutral_two, hardy_max_two,
    chi2_pi_terms, sel_bins,
    per_gene_pool, p_pi_validation, p_SROC4_vs_SWright)
 gc()
