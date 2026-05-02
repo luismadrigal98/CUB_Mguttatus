@@ -1921,33 +1921,108 @@ gam_q_exp <- mgcv::gam(
 exp_grid     <- seq(quantile(msd_data$Mean_Log10_Exp, 0.05, na.rm = TRUE),
                     quantile(msd_data$Mean_Log10_Exp, 0.99, na.rm = TRUE),
                     length.out = 500)
+
+# Predict GAM fit + se on the grid
 gam_pred_det <- predict(gam_q_exp,
                         newdata = data.frame(Mean_Log10_Exp = exp_grid),
                         type = "response", se.fit = TRUE)
-inflection_idx <- which(gam_pred_det$fit - 1.96 * gam_pred_det$se.fit > Q_neutral_obs)
 
-if (length(inflection_idx) > 0) {
-  exp_inflection <- exp_grid[min(inflection_idx)]
-} else {
-  exp_inflection <- as.numeric(quantile(msd_data$Mean_Log10_Exp, 0.94, na.rm = TRUE))
-  cat("[Inflection threshold] GAM lower CI never crosses Q_neutral; using 94th-pctile fallback.\n")
+# CI-based inflection: first grid point where lower 95% CI exceeds neutral Q
+inflection_idx_ci <- which(gam_pred_det$fit - 1.96 * gam_pred_det$se.fit > Q_neutral_obs)
+
+# Monotonicity-based inflection: look for the first position where the
+# fitted curve starts a sustained increase. We require 'win_len' consecutive
+# positive differences to avoid noise-driven spikes.
+fit_vals <- gam_pred_det$fit
+df_fit   <- diff(fit_vals)
+win_len  <- 7
+tol      <- 1e-8
+mon_idx  <- NA_integer_
+
+# Find global minimum of the fitted curve and search for a sustained
+# increase after that minimum. This avoids picking small early upticks.
+min_idx <- which.min(fit_vals)
+min_increase <- max(1e-3, 0.01 * (max(fit_vals) - min(fit_vals)))
+if (length(df_fit) >= win_len) {
+  start_search <- min_idx
+  # ensure we have room to check a window
+  for (i in seq.int(start_search, length(df_fit) - win_len + 1)) {
+    window_pos <- df_fit[i:(i + win_len - 1)] > tol
+    if (all(window_pos)) {
+      # check magnitude of increase relative to minimum
+      reach_idx <- i + win_len - 1 + 1  # map diff-window end -> fit index
+      if (reach_idx <= length(fit_vals) && (fit_vals[reach_idx] - fit_vals[min_idx]) >= min_increase) {
+        # use the fit index corresponding to the end of the positive run
+        mon_idx <- reach_idx
+        break
+      }
+    }
+  }
 }
 
-above_infl      <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_signed), Mean_Log10_Exp >= exp_inflection)
-S_BARRIER       <- median(above_infl$S_Wright_signed, na.rm = TRUE)
+# Select inflection: prefer monotonicity-based, else CI-based, else fallback
+# (Note: inflection is used only for diagnostic visualization of Q trends, and
+#  now also for deriving S_BARRIER as a biologically-motivated threshold)
+
+if (!is.na(mon_idx)) {
+  exp_inflection_diagnostic <- exp_grid[mon_idx]
+  inflection_method_diagnostic <- "monotonic"
+} else if (length(inflection_idx_ci) > 0) {
+  exp_inflection_diagnostic <- exp_grid[min(inflection_idx_ci)]
+  inflection_method_diagnostic <- "ci_lower_exceeds_Q_neutral"
+} else {
+  exp_inflection_diagnostic <- as.numeric(quantile(msd_data$Mean_Log10_Exp, 0.94, na.rm = TRUE))
+  inflection_method_diagnostic <- "fallback_94pctile"
+}
+
+cat(sprintf("[Inflection] method=%s exp=%.3f (used for S_BARRIER derivation + diagnostic plots)\n", 
+            inflection_method_diagnostic, exp_inflection_diagnostic))
+
+# Theoretically-motivated yet empirically-grounded S_BARRIER derivation:
+# S_BARRIER is set to the median S_Wright_raw (non-negative) of genes at/above
+# the Q-vs-expression inflection point. This inflection marks where codon preference
+# becomes statistically elevated above the neutral baseline (Q_neutral_obs).
+#
+# Using S_Wright_raw (floored at 0) rather than S_Wright_signed avoids
+# conceptual ambiguity: we measure "how much selection" not "is there drift".
+# S_BARRIER thus represents the typical selection strength of genes that have
+# crossed into the "selected" expression regime.
+
+above_infl <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_raw), Mean_Log10_Exp >= exp_inflection_diagnostic)
+
+# Compute barrier from strictly positive S_Wright_raw (non-zero signal)
+pos_vals <- above_infl$S_Wright_raw[above_infl$S_Wright_raw > 0]
+if (length(pos_vals) > 0 && any(is.finite(pos_vals))) {
+  S_BARRIER <- median(pos_vals, na.rm = TRUE)
+  S_BARRIER_source <- "median_positive_S_Wright_raw_above_inflection"
+} else {
+  S_BARRIER <- median(above_infl$S_Wright_raw, na.rm = TRUE)
+  S_BARRIER_source <- "median_all_S_Wright_raw_fallback"
+}
+
 n_above_barrier <- nrow(above_infl)
 
-cat(sprintf(
-  "[Inflection threshold] exp_inflection = %.3f | n_genes_above = %d | S_BARRIER = %.4f\n",
-  exp_inflection, n_above_barrier, S_BARRIER
-))
-cat(sprintf(
-  "  Genes with S_Wright_signed >= S_BARRIER: %d / %d (%.1f%%)\n",
-  sum(msd_data$S_Wright_signed >= S_BARRIER, na.rm = TRUE),
-  sum(!is.na(msd_data$S_Wright_signed)),
-  100 * mean(msd_data$S_Wright_signed >= S_BARRIER, na.rm = TRUE)
-))
+cat(sprintf("[S_BARRIER] Derived from Q-inflection at exp=%.3f\n", exp_inflection_diagnostic))
+cat(sprintf("            Genes at/above inflection: %d\n", n_above_barrier))
+cat(sprintf("            S_BARRIER = %.4f (source: %s)\n", S_BARRIER, S_BARRIER_source))
+cat(sprintf("            Positive S_Wright_raw values above inflection: %d / %d (%.1f%%)\n",
+            length(pos_vals), n_above_barrier, 100*length(pos_vals)/pmax(n_above_barrier, 1)))
+
+# Totals and informative counts
+total_genes_with_S <- sum(!is.na(msd_data$S_Wright_raw))
+n_selected_ge_barrier <- sum(msd_data$S_Wright_raw >= S_BARRIER, na.rm = TRUE)
+n_selected_gt_zero <- sum(msd_data$S_Wright_raw > 0, na.rm = TRUE)
+
+cat(sprintf("  Genes with S_Wright_raw >= S_BARRIER: %d / %d (%.1f%%)\n",
+            n_selected_ge_barrier, total_genes_with_S,
+            100 * n_selected_ge_barrier / pmax(total_genes_with_S, 1)))
+cat(sprintf("  Genes with S_Wright_raw > 0 (any positive S): %d / %d (%.1f%%)\n",
+            n_selected_gt_zero, total_genes_with_S,
+            100 * n_selected_gt_zero / pmax(total_genes_with_S, 1)))
+cat(sprintf("  Genes flagged is_drift (S_Wright_signed < 0): %d / %d (%.1f%%)\n",
+            sum(msd_data$is_drift, na.rm = TRUE), total_genes_with_S,
+            100 * mean(msd_data$is_drift, na.rm = TRUE)))
 
 # Figure: Q vs expression with GAM fit and inflection line
 exp_grid_full <- seq(min(msd_data$Mean_Log10_Exp, na.rm = TRUE),
@@ -1963,7 +2038,7 @@ gam_ribbon_df <- data.frame(
   hi  = gam_full$fit + 1.96 * gam_full$se.fit
 )
 
-p_q_inflection <- ggplot(msd_data |> dplyr::filter(!is.na(Q_pref_base)),
+p_q_expression <- ggplot(msd_data |> dplyr::filter(!is.na(Q_pref_base)),
                           aes(x = Mean_Log10_Exp, y = Q_pref_base)) +
   geom_hex(bins = 60) +
   scale_fill_viridis_c(option = "plasma", trans = "log10", name = "n") +
@@ -1972,21 +2047,21 @@ p_q_inflection <- ggplot(msd_data |> dplyr::filter(!is.na(Q_pref_base)),
   geom_line(data = gam_ribbon_df, aes(x = x, y = fit),
             inherit.aes = FALSE, color = "#E41A1C", linewidth = 0.9) +
   geom_hline(yintercept = Q_neutral_obs, linetype = "dotted", color = "grey40") +
-  geom_vline(xintercept = exp_inflection, linetype = "dashed", color = "#377EB8") +
+  geom_vline(xintercept = exp_inflection_diagnostic, linetype = "dashed", color = "#377EB8", linewidth = 0.8) +
   labs(
     title    = "Preferred-base frequency (Q) vs expression",
     subtitle = sprintf(
-      "Blue dashed: inflection at log10(phi) = %.2f | Q_neutral = %.3f | S_BARRIER = %.4f",
-      exp_inflection, Q_neutral_obs, S_BARRIER),
-    x = expression(Log[10](phi)),
+      "Blue dashed: Q-inflection at log10(phi) = %.2f | Q_neutral = %.3f | S_BARRIER = %.4f",
+      exp_inflection_diagnostic, Q_neutral_obs, S_BARRIER),
+    x = expression(Log[10](expression)),
     y = "Q (preferred-base freq., 4-fold sites)"
   ) +
   theme_custom()
-ggsave("./results/Wright_Q_vs_expression_inflection.pdf",
-       p_q_inflection, width = 7, height = 5, device = cairo_pdf)
+ggsave("./results/Wright_Q_vs_expression_diagnostic.pdf",
+       p_q_expression, width = 7, height = 5, device = cairo_pdf)
 
-rm(gam_q_exp, exp_grid, gam_pred_det, inflection_idx, above_infl,
-   exp_grid_full, gam_full, gam_ribbon_df, p_q_inflection)
+rm(gam_q_exp, exp_grid, gam_pred_det, inflection_idx,
+   exp_grid_full, gam_full, gam_ribbon_df, p_q_expression)
 
 # --- Three-metric correlation summary --------------------------------------
 cat("\n=== Spearman correlations among selection metrics ===\n")
@@ -2029,6 +2104,8 @@ bin_roc$pi_se <- sqrt(bin_roc$pi_bin * (1 - bin_roc$pi_bin / 2) /
                       pmax(bin_roc$sites_total, 1))
 
 # Also build S_Wright-binned table for the two-panel diversity hump
+# Use the SIGNED S_Wright here so negative values (mutation-dominated
+# genes) are preserved in the binning for the diversity-hump diagnostic.
 bin_sw <- msd_data |>
   dplyr::filter(!is.na(S_Wright_signed), !is.na(Q_pref_base)) |>
   dplyr::arrange(S_Wright_signed) |>
@@ -2066,9 +2143,9 @@ cat(sprintf(
   100 * mean(integrated_data$L_ROC > thr_sel, na.rm = TRUE)
 ))
 cat(sprintf(
-  "    S_BARRIER = %.4f; genes with S_Wright_signed >= S_BARRIER: %d\n",
+  "    S_BARRIER = %.4f; genes with S_Wright_raw >= S_BARRIER: %d\n",
   S_BARRIER,
-  sum(msd_data$S_Wright_signed >= S_BARRIER, na.rm = TRUE)
+  sum(msd_data$S_Wright_raw >= S_BARRIER, na.rm = TRUE)
 ))
 
 # ===========================================================================
@@ -2157,32 +2234,43 @@ ggsave("./results/Wright_pi_vs_S_Wright_binned.pdf",
 
 
 # --- Per-gene S_ROC_4 vs S_Wright sanity-check scatter --------------------
+# CRITICAL: Filter to genes where BOTH S_ROC_4 and S_Wright_raw are non-zero
+# to avoid noise contamination from genes with no detectable selection signal.
+# This avoids correlating noise with noise, preserving signal-to-noise in the
+# subset of genes actually exhibiting codon usage optimization.
+
 per_gene_pool <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_signed), !is.na(S_ROC_4), N_4fold_sites >= 50)
-cor_sroc4_spearman <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_signed,
+  dplyr::filter(!is.na(S_Wright_raw), !is.na(S_ROC_4), 
+                N_4fold_sites >= 50,
+                S_Wright_raw > 0,        # Non-zero S_Wright (positive selection)
+                S_ROC_4 != 0)            # Non-zero S_ROC (detectable codon preference)
+
+cor_sroc4_spearman <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_raw,
                           method = "spearman")
-cor_sroc4_pearson  <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_signed,
+cor_sroc4_pearson  <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_raw,
                           method = "pearson")
+
 cat(sprintf(
-  "[Validation] cor(S_ROC_4, S_Wright_signed): Spearman = %+.3f, Pearson = %+.3f (n = %d, >=50 4-fold sites)\n",
+  "[Validation] cor(S_ROC_4, S_Wright_raw): Spearman = %+.3f, Pearson = %+.3f (n = %d)\n",
   cor_sroc4_spearman, cor_sroc4_pearson, nrow(per_gene_pool)
 ))
+cat(sprintf("             Filtered to: S_Wright_raw > 0 & S_ROC_4 != 0 & N_4fold_sites >= 50\n"))
 
 p_SROC4_vs_SWright <- ggplot(per_gene_pool,
-                              aes(x = S_ROC_4, y = S_Wright_signed)) +
+                              aes(x = S_ROC_4, y = S_Wright_raw)) +
   geom_hex(bins = 60) +
   scale_fill_viridis_c(option = "plasma", trans = "log10", name = "Gene\nCount") +
   geom_smooth(method = "lm", color = "#E41A1C", linewidth = 0.9, se = TRUE) +
   geom_hline(yintercept = S_BARRIER, linetype = "dotted", color = "grey40") +
   geom_hline(yintercept = 0,         linetype = "dotted", color = "grey60") +
   labs(
-    title = expression(paste(S[ROC][",4"], " vs ", S[Wright], "  (per-gene sanity check)")),
+    title = expression(paste(S[ROC][",4"], " vs ", S[Wright], "  (non-zero genes only)")),
     subtitle = sprintf(
-      "Spearman rho = %+.3f | Pearson r = %+.3f | S_BARRIER = %.4f | n = %d",
-      cor_sroc4_spearman, cor_sroc4_pearson, S_BARRIER, nrow(per_gene_pool)
+      "Spearman rho = %+.3f (n = %d, S_Wright_raw > 0 & S_ROC != 0) | S_BARRIER = %.4f",
+      cor_sroc4_spearman, nrow(per_gene_pool), S_BARRIER
     ),
-    x = expression(S[ROC] ~ "(signed AnaCoDa efficacy, 4-fold sites)"),
-    y = expression(S[Wright] ~ "(per-gene, signed)")
+    x = expression(S[ROC] ~ "(AnaCoDa efficacy, 4-fold)"),
+    y = expression(S[Wright] ~ "(per-gene, non-negative)")
   ) +
   theme_custom()
 ggsave("./results/Wright_S_ROC4_vs_S_Wright.pdf",
@@ -2190,20 +2278,20 @@ ggsave("./results/Wright_S_ROC4_vs_S_Wright.pdf",
 
 # 8.3.5) Three-panel drift-barrier overview ----
 #
-# Panel A: S_Wright_signed histogram, filled by selection/drift group.
+# Panel A: S_Wright_raw histogram, filled by selection/drift group.
 #   The vertical dashed line marks S_BARRIER (GAM-inflection threshold).
 # Panel B: L_ROC density split by the same S_Wright classification.
 # Panel C: S_ROC density split by the same S_Wright classification.
 #
-# Logic: the barrier is derived entirely from S_Wright (pop-gen units).
-# Overlaying it on L_ROC and S_ROC distributions is a cross-metric
-# validation — genes that pop-gen calls "under selection" should show
-# elevated translational load (B) and stronger codon preference (C).
+# Logic: the barrier is derived from Q-inflection (expression level where
+# selection becomes detectable). Genes at/above inflection are classified as
+# "selection" if S_Wright_raw >= S_BARRIER (median of selected genes).
+# Overlaying on L_ROC and S_ROC provides cross-metric validation.
 
 plot_barrier <- msd_data |>
-  dplyr::filter(is.finite(S_Wright_signed), is.finite(L_ROC), is.finite(S_ROC)) |>
+  dplyr::filter(is.finite(S_Wright_raw), is.finite(L_ROC), is.finite(S_ROC)) |>
   dplyr::mutate(
-    SW_group = dplyr::if_else(S_Wright_signed >= S_BARRIER, "Selection", "Drift")
+    SW_group = dplyr::if_else(S_Wright_raw >= S_BARRIER, "Selection", "Drift")
   )
 
 n_sel_barrier   <- sum(plot_barrier$SW_group == "Selection")
@@ -2212,8 +2300,8 @@ n_drift_barrier <- sum(plot_barrier$SW_group == "Drift")
 barrier_colors <- c("Selection" = "#E41A1C", "Drift" = "#377EB8")
 
 # Panel A: S_Wright histogram coloured by group
-p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
-  geom_histogram(bins = 80, color = "white", linewidth = 0.05) +
+p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_raw, fill = SW_group)) +
+  geom_histogram(bins = 80, color = "white", linewidth = 0.05, position = "dodge") +
   geom_vline(xintercept = S_BARRIER,
              linetype = "dashed", color = "black", linewidth = 0.8) +
   scale_fill_manual(values = barrier_colors, name = NULL) +
@@ -2222,7 +2310,7 @@ p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
                      labels = scales::comma_format(accuracy = 1),
                      expand = c(0, 0)) +
   labs(
-    x        = expression(S[Wright] ~ "(per-gene, signed)"),
+    x        = expression(S[Wright] ~ "(per-gene, non-negative)"),
     y        = "Gene count (log1p)",
     subtitle = sprintf(
       "S_BARRIER = %.4f  |  selection: %d genes  |  drift: %d genes",
@@ -2232,13 +2320,15 @@ p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
   theme_custom() +
   theme(legend.position = "top")
 
-# Panel B: L_ROC density split by group
+# Panel B: L_ROC density split by group (log scale)
 p_lroc_split <- ggplot(plot_barrier, aes(x = L_ROC, fill = SW_group)) +
   geom_density(alpha = 0.55, color = NA) +
   scale_fill_manual(values = barrier_colors, name = NULL) +
-  coord_cartesian(xlim = c(0, quantile(plot_barrier$L_ROC, 0.995, na.rm = TRUE))) +
+  scale_x_log10() +
+  coord_cartesian(xlim = c(quantile(plot_barrier$L_ROC[plot_barrier$L_ROC > 0], 0.01, na.rm = TRUE),
+                           quantile(plot_barrier$L_ROC, 0.995, na.rm = TRUE))) +
   labs(
-    x = expression(L[ROC] ~ "(translational load)"),
+    x = expression(L[ROC] ~ "(translational load, log scale)"),
     y = "Density"
   ) +
   theme_custom() +
@@ -2278,6 +2368,9 @@ rm(plot_barrier, n_sel_barrier, n_drift_barrier,
 
 mu_ratio <- (1 - Q_neutral_obs) / Q_neutral_obs   # U/V = μ_away / μ_toward
 
+# Use signed S_Wright for the diversity-hump but display it on a
+# relative 0->1 axis for visual comparison while preserving negative values
+# in the binning.  Compute a relative S for plotting: S_rel = (mean_S - min)/(max-min).
 bin_sw_rel <- bin_sw |>
   dplyr::mutate(
     pi_rel    = pi_bin / pi_neutral_obs,
@@ -2285,28 +2378,45 @@ bin_sw_rel <- bin_sw |>
     pi_rel_hi = (pi_bin + 2 * pi_se) / pi_neutral_obs
   )
 
-# Theory curve on the relative scale
-S_seq_hump  <- seq(0, max(bin_sw$mean_S_Wright, na.rm = TRUE) * 1.05, length.out = 500)
-theory_sw   <- data.frame(
-  x_val    = S_seq_hump,
-  pi_rel   = wright_pi(S_seq_hump, U = U_bin_calib, V = V_bin_calib) / pi_neutral_obs
+# Compute relative scaling based on the observed binned S range
+min_S <- min(bin_sw_rel$mean_S_Wright, na.rm = TRUE)
+max_S <- max(bin_sw_rel$mean_S_Wright, na.rm = TRUE)
+if (!is.finite(min_S) || !is.finite(max_S) || max_S == min_S) {
+  stop("Cannot compute relative S scale for diversity hump: invalid S range.")
+}
+bin_sw_rel <- bin_sw_rel |>
+  dplyr::mutate(
+    S_rel = (mean_S_Wright - min_S) / (max_S - min_S)
+  )
+
+# Theory curve evaluated on the signed S range then mapped to relative x
+S_seq_hump <- seq(min_S, max_S, length.out = 500)
+theory_sw  <- data.frame(
+  x_rel  = (S_seq_hump - min_S) / (max_S - min_S),
+  pi_rel = wright_pi(S_seq_hump, U = U_bin_calib, V = V_bin_calib) / pi_neutral_obs
 )
 
-p_hump_sw <- ggplot(bin_sw_rel, aes(x = mean_S_Wright, y = pi_rel)) +
+# Compute S_BARRIER on the same relative scale (clamped to [0,1])
+S_BARRIER_rel <- (S_BARRIER - min_S) / (max_S - min_S)
+S_BARRIER_rel <- pmin(pmax(S_BARRIER_rel, 0), 1)
+
+p_hump_sw <- ggplot(bin_sw_rel, aes(x = S_rel, y = pi_rel)) +
   geom_hline(yintercept = 1,
              linetype = "dotted", color = "grey40") +
-  geom_vline(xintercept = S_BARRIER,
+  geom_vline(xintercept = S_BARRIER_rel,
              linetype = "dashed", color = "#377EB8") +
-  geom_errorbar(aes(ymin = pi_rel_lo, ymax = pi_rel_hi),
+  geom_errorbar(aes(x = S_rel, ymin = pi_rel_lo, ymax = pi_rel_hi),
                 width = 0, color = "#377EB8", alpha = 0.6) +
-  geom_point(aes(size = sites_total),
+  geom_point(aes(x = S_rel, size = sites_total),
              color = "#377EB8", alpha = 0.9) +
   geom_line(data = theory_sw,
-            aes(x = x_val, y = pi_rel),
+            aes(x = x_rel, y = pi_rel),
             color = "#E41A1C", linewidth = 0.8, inherit.aes = FALSE) +
   scale_size_continuous(name = "4-fold sites / bin",
                         range = c(2, 6),
                         labels = scales::comma_format()) +
+  scale_x_continuous(labels = scales::number_format(accuracy = 0.01),
+                     limits = c(0, 1)) +
   labs(
     title    = expression(paste("Relative ", pi[4*fold], " vs ", S[Wright],
                                 "  (McVean & Charlesworth 1999)")),
@@ -2315,7 +2425,7 @@ p_hump_sw <- ggplot(bin_sw_rel, aes(x = mean_S_Wright, y = pi_rel)) +
              "  |  S_BARRIER = %.4f  |  red: Wright π(S) / π(0)"),
       mu_ratio, S_BARRIER
     ),
-    x = expression(mean(S[Wright]) ~ "(30 bins)"),
+    x = "Relative mean(S[Wright]) (0 = min, 1 = max, 30 bins)",
     y = expression(pi[4*fold] / pi[neutral] ~ "(relative diversity)")
   ) +
   theme_custom()
@@ -2418,7 +2528,7 @@ cat(sprintf("[GO] Load-paying group (top 50 L_ROC; thr_sel = %.6f): n = %d genes
 
 # (b) Selection group: S_Wright >= S_BARRIER ------------------------------
 subset_selection <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_signed), S_Wright_signed >= S_BARRIER) |>
+  dplyr::filter(!is.na(S_Wright_raw), S_Wright_raw >= S_BARRIER) |>
   dplyr::pull(Gene_name)
 
 GO_results_selection <- gost(query = subset_selection,
@@ -2465,15 +2575,15 @@ cat(sprintf("[Top genes] Top 50 by L_ROC (thr_sel = %.6f): %d genes (load-paying
 
 # Selection group: S_Wright >= S_BARRIER
 top_selection <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_signed), S_Wright_signed >= S_BARRIER) |>
-  dplyr::arrange(desc(S_Wright_signed)) |>
-  dplyr::select(Gene_name, S_Wright_signed, S_ROC_4, L_ROC, Mean_Log10_Exp) |>
+  dplyr::filter(!is.na(S_Wright_raw), S_Wright_raw >= S_BARRIER) |>
+  dplyr::arrange(desc(S_Wright_raw)) |>
+  dplyr::select(Gene_name, S_Wright_raw, S_ROC_4, L_ROC, Mean_Log10_Exp) |>
   dplyr::left_join(detailed_annotation_full,
                    by = c("Gene_name" = "locusName"))
 write.csv(top_selection,
           "./results/Top_genes_strong_selection_S_Wright.csv",
           quote = TRUE, row.names = FALSE)
-cat(sprintf("[Top genes] S_Wright >= %.4f: %d genes (drift-barrier selection group)\n",
+cat(sprintf("[Top genes] S_Wright_raw >= %.4f: %d genes (Q-inflection-derived selection group)\n",
             S_BARRIER, nrow(top_selection)))
 
 # Compatibility alias for downstream sections expecting `detailed_annotation`
