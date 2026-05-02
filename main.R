@@ -1380,57 +1380,6 @@ selection_metrics <- selection_metrics |>
   left_join(phi_hat_dM_fixed_with_phi |> dplyr::select(GeneID, Mean.log10.Phi, MeanPhi),
             by = join_by(Gene_name == GeneID))
 
-# === Diagnostic save — objects for ./src/diagnose_S_ROC.R ===
-# Run once; outputs go to ./results/for_claude/ for local diagnosis.
-{
-  dir.create("./results/for_claude", showWarnings = FALSE, recursive = TRUE)
-
-  # 1. Per-codon 4-fold table: gene × {codon, AA, is_preferred, eta_unscaled, count}
-  #    Gives the diagnostic script full flexibility to test any S definition.
-  fourfold_codons_all <- names(is_4fold_codon)[is_4fold_codon]
-  fourfold_codons_use <- intersect(fourfold_codons_all, synonymous_codons_aligned)
-  eta_4fold           <- eta_vec[fourfold_codons_use]
-  aa_4fold            <- aa_for_aligned[fourfold_codons_use]
-  preferred_per_aa_4  <- tapply(eta_4fold, aa_4fold, function(x) names(which.min(x)))
-  is_pref_4fold       <- sapply(fourfold_codons_use,
-                                function(cdn) cdn == preferred_per_aa_4[aa_4fold[cdn]])
-
-  counts_4f <- counts_aligned[, fourfold_codons_use, drop = FALSE]
-  per_codon_4fold <- do.call(rbind, lapply(seq_along(fourfold_codons_use), function(j) {
-    cdn <- fourfold_codons_use[j]
-    data.frame(
-      Gene_name    = common_genes,
-      Codon        = cdn,
-      AA           = aa_4fold[j],
-      is_preferred = is_pref_4fold[j],
-      eta          = eta_4fold[j],
-      count        = as.numeric(counts_4f[, j]),
-      stringsAsFactors = FALSE
-    )
-  })) |>
-    dplyr::filter(count > 0)
-
-  write.csv(per_codon_4fold,
-            "./results/for_claude/per_codon_4fold.csv", row.names = FALSE)
-
-  # 2. Phi estimates per gene
-  write.csv(phi_hat_dM_fixed_with_phi |>
-              dplyr::select(GeneID, MeanPhi, Mean.log10.Phi),
-            "./results/for_claude/phi_hat.csv", row.names = FALSE)
-
-  # 3. Global η table (reference + all synonymous codons)
-  write.csv(eta_data, "./results/for_claude/eta_data.csv", row.names = FALSE)
-
-  # 4. selection_metrics snapshot (before Wright join)
-  write.csv(selection_metrics,
-            "./results/for_claude/selection_metrics.csv", row.names = FALSE)
-
-  cat("[diag-save] per_codon_4fold, phi_hat, eta_data, selection_metrics ->",
-      "./results/for_claude/\n")
-  rm(fourfold_codons_all, fourfold_codons_use, eta_4fold, aa_4fold,
-     preferred_per_aa_4, is_pref_4fold, counts_4f, per_codon_4fold)
-}
-# === end diagnostic save ===
 
 # Memory cleanup: AnaCoDa genome/parameter objects and selection matrices ---
 rm(genome, parameter_object, selection_coeff,
@@ -1586,26 +1535,21 @@ combined_plot <- p1 | p2 + plot_annotation(tag_levels = 'A')
 # Saved with a larger dimension to accommodate the 2x2 grid nicely
 ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, height = 8)
 
-# 8.3.4) Wright's MSD framework + data-driven L_ROC threshold ----
+# 8.3.4) Wright's MSD framework + expression-GAM drift barrier ----
 #
-# Strategy (per JK email, 2026-04-25):
-#   * Don't force a direct L_ROC <-> S_Wright equivalence (the scales differ:
-#     S_Wright is per *site*, L_ROC is a per-codon ROC mean of |Delta_eta|).
-#   * Wright's stationary distribution is per nucleotide site, so the empirical
-#     Q is the preferred-base frequency at 4-fold sites, NOT a preferred-codon
-#     frequency averaged across AAs.  Numerically these coincide here (each
-#     4-fold codon's 3rd position IS the 4-fold site, and the per-AA preferred
-#     codon's 3rd-position base is the per-AA preferred nucleotide), but the
-#     conceptual framing matters for the threshold derivation.
-#   * Threshold rationale: take the *inflection* of the GAM-controlled
-#     Q-vs-expression curve (Fig 4A reformulated for per-base Q), then set
-#     thr_sel = a robust minimum of L_ROC among genes above the inflection
-#     expression.  This is data-driven and does not require an alpha fit.
+# Three metrics presented alongside each other:
+#   L_ROC:         per-gene translational load (phi-scaled |Δη|); used for GO/BGS.
+#   S_ROC:         per-gene codon-usage efficacy (-mean η at 4-fold sites); no phi.
+#   S_Wright:      per-gene selection coefficient from Wright Q inversion; population-genetic units.
 #
-# Branch A keeps the Wright theoretical curves (fiducial U/V) as a reference
-# figure for the manuscript.  Branch B estimates U, V empirically from the
-# low-expression near-neutral pool (closed-form solver).  Branch C builds the
-# GAM, locates the inflection, and adopts thr_sel.
+# Drift barrier (S_BARRIER):
+#   Defined as the median S_Wright of genes at/above the expression inflection
+#   — the first expression level where the GAM lower CI of Q exceeds Q_neutral.
+#   This anchors the threshold to the biological inflection visible in Fig 4A.
+#
+# Branch A: fiducial Wright Q(S) and pi(S) curves (reference figures).
+# Branch B: empirical U, V from low-expression neutral pool.
+# S_BARRIER derivation follows per-gene S_Wright computation below.
 
 # --- Per-gene preferred-base frequency at 4-fold sites --------------------
 # Wright is a per-site framework. For each 4-fold AA family, the preferred
@@ -1882,7 +1826,7 @@ if (is.finite(pi_neutral_two) && pi_neutral_two > 0) {
 # Operational thresholds for the two selection groups
 # ===========================================================================
 #
-# S_BARRIER: dynamic drift-barrier from Wright pi-rise (1% above neutral).
+# S_BARRIER: median S_Wright of genes at/above the Q-vs-expression inflection.
 #   Genes with S_Wright_signed >= S_BARRIER are in the "selection group".
 # thr_sel: L_ROC of the 50th-highest gene (top-50 load group for GO/BGS).
 #
@@ -1890,33 +1834,17 @@ if (is.finite(pi_neutral_two) && pi_neutral_two > 0) {
 #   wright_invert_Q(Q; U_emp, V_emp).  Sign-aware version kept as
 #   S_Wright_signed; genes below neutral Q are flagged is_drift = TRUE.
 
-# --- Dynamic operational drift-barrier ------------------------------------
+# --- Theoretical neutral-pi reference ------------------------------------
+# S_BARRIER is derived below via the Q-vs-expression GAM inflection (after
+# per-gene S_Wright). Only pi_neutral_theory is needed here as a reference
+# line in downstream Wright plots.
 
 pi_neutral_theory <- wright_pi(0, U = U_emp, V = V_emp)
-S_BARRIER_advisor <- 0.1   # JK's hand-set Mathematica pi-rise reference.
-S_BARRIER_dyn <- tryCatch(
-  derive_S_barrier(U = U_emp, V = V_emp,
-                   pi_neutral = pi_neutral_theory, fraction = 0.01),
-  error = function(e) {
-    cat(sprintf("[Wright MSD] derive_S_barrier failed: %s\n",
-                conditionMessage(e)))
-    NA_real_
-  }
-)
-if (!is.finite(S_BARRIER_dyn)) {
-  stop("derive_S_barrier returned NA -- empirical (U, V) is outside the ",
-       "regime where Wright's pi(S) admits a 1% rising-flank crossing. ",
-       "Investigate before falling back to the advisor value.")
-}
-S_BARRIER <- S_BARRIER_dyn
+S_BARRIER_advisor <- 0.1   # JK's Mathematica reference; kept for comparison.
 
 cat(sprintf(
   "\n[Wright MSD] pi_neutral_theory = %.5f, pi_neutral_obs = %.5f\n",
   pi_neutral_theory, pi_neutral_obs
-))
-cat(sprintf(
-  "[Wright MSD] S_BARRIER (1%% pi-rise, dynamic) = %.4f  (advisor reference: %.2f)\n",
-  S_BARRIER, S_BARRIER_advisor
 ))
 
 # --- Per-gene S_Wright -----------------------------------------------------
@@ -1960,29 +1888,101 @@ if (!is.null(pi_data)) {
                      by = "Gene_name")
 }
 
-# === Diagnostic save (part 2) — Wright scalars + per-gene S/Q data ===
-{
-  write.csv(
-    msd_data |> dplyr::select(Gene_name, Q_pref_base, N_4fold_sites, N_preferred_base,
-                               S_Wright_signed, S_Wright_raw, is_drift,
-                               S_ROC, S_ROC_4, L_ROC, Mean_Log10_Exp),
-    "./results/for_claude/gene_q_s_wright.csv", row.names = FALSE
-  )
-  saveRDS(
-    list(U_emp = U_emp, V_emp = V_emp,
-         U_emp_two = if (exists("U_emp_two")) U_emp_two else NA_real_,
-         V_emp_two = if (exists("V_emp_two")) V_emp_two else NA_real_,
-         S_BARRIER = S_BARRIER, S_BARRIER_advisor = S_BARRIER_advisor,
-         Q_neutral_obs = Q_neutral_obs, pi_neutral_obs = pi_neutral_obs),
-    "./results/for_claude/wright_scalars.rds"
-  )
-  cat("[diag-save] gene_q_s_wright.csv, wright_scalars.rds -> ./results/for_claude/\n")
-}
-# === end diagnostic save (part 2) ===
+# --- Expression-GAM inflection drift barrier --------------------------------
+# Fit a site-weighted GAM of Q_pref_base ~ expression. S_BARRIER is set to
+# the median S_Wright of genes at/above the expression inflection point —
+# defined as the first expression level where the GAM lower 95% CI exceeds
+# Q_neutral_obs. This anchors the selection/drift boundary to the empirically
+# visible inflection in Q vs expression (the ~1300-gene inflection in Fig 4A).
 
-# --- Binned S_ROC -> (Q_bin, S_Wright_bin, pi_bin) curve ------------------
-# Site-weighted aggregation in 30 ntile-bins of S_ROC (φ-scaled, all synonymous
-# sites). Use two-state calibration if available.
+gam_q_exp <- mgcv::gam(
+  Q_pref_base ~ s(Mean_Log10_Exp, k = 10),
+  data    = msd_data |> dplyr::filter(!is.na(Q_pref_base), !is.na(Mean_Log10_Exp)),
+  weights = N_4fold_sites
+)
+
+exp_grid     <- seq(quantile(msd_data$Mean_Log10_Exp, 0.05, na.rm = TRUE),
+                    quantile(msd_data$Mean_Log10_Exp, 0.99, na.rm = TRUE),
+                    length.out = 500)
+gam_pred_det <- predict(gam_q_exp,
+                        newdata = data.frame(Mean_Log10_Exp = exp_grid),
+                        type = "response", se.fit = TRUE)
+inflection_idx <- which(gam_pred_det$fit - 1.96 * gam_pred_det$se.fit > Q_neutral_obs)
+
+if (length(inflection_idx) > 0) {
+  exp_inflection <- exp_grid[min(inflection_idx)]
+} else {
+  exp_inflection <- as.numeric(quantile(msd_data$Mean_Log10_Exp, 0.94, na.rm = TRUE))
+  cat("[Inflection threshold] GAM lower CI never crosses Q_neutral; using 94th-pctile fallback.\n")
+}
+
+above_infl      <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_signed), Mean_Log10_Exp >= exp_inflection)
+S_BARRIER       <- median(above_infl$S_Wright_signed, na.rm = TRUE)
+n_above_barrier <- nrow(above_infl)
+
+cat(sprintf(
+  "[Inflection threshold] exp_inflection = %.3f | n_genes_above = %d | S_BARRIER = %.4f\n",
+  exp_inflection, n_above_barrier, S_BARRIER
+))
+cat(sprintf(
+  "  Genes with S_Wright_signed >= S_BARRIER: %d / %d (%.1f%%)\n",
+  sum(msd_data$S_Wright_signed >= S_BARRIER, na.rm = TRUE),
+  sum(!is.na(msd_data$S_Wright_signed)),
+  100 * mean(msd_data$S_Wright_signed >= S_BARRIER, na.rm = TRUE)
+))
+
+# Figure: Q vs expression with GAM fit and inflection line
+exp_grid_full <- seq(min(msd_data$Mean_Log10_Exp, na.rm = TRUE),
+                     max(msd_data$Mean_Log10_Exp, na.rm = TRUE),
+                     length.out = 300)
+gam_full      <- predict(gam_q_exp,
+                          newdata = data.frame(Mean_Log10_Exp = exp_grid_full),
+                          type = "response", se.fit = TRUE)
+gam_ribbon_df <- data.frame(
+  x   = exp_grid_full,
+  fit = gam_full$fit,
+  lo  = gam_full$fit - 1.96 * gam_full$se.fit,
+  hi  = gam_full$fit + 1.96 * gam_full$se.fit
+)
+
+p_q_inflection <- ggplot(msd_data |> dplyr::filter(!is.na(Q_pref_base)),
+                          aes(x = Mean_Log10_Exp, y = Q_pref_base)) +
+  geom_hex(bins = 60) +
+  scale_fill_viridis_c(option = "plasma", trans = "log10", name = "n") +
+  geom_ribbon(data = gam_ribbon_df, aes(x = x, ymin = lo, ymax = hi),
+              inherit.aes = FALSE, fill = "#E41A1C", alpha = 0.20) +
+  geom_line(data = gam_ribbon_df, aes(x = x, y = fit),
+            inherit.aes = FALSE, color = "#E41A1C", linewidth = 0.9) +
+  geom_hline(yintercept = Q_neutral_obs, linetype = "dotted", color = "grey40") +
+  geom_vline(xintercept = exp_inflection, linetype = "dashed", color = "#377EB8") +
+  labs(
+    title    = "Preferred-base frequency (Q) vs expression",
+    subtitle = sprintf(
+      "Blue dashed: inflection at log10(phi) = %.2f | Q_neutral = %.3f | S_BARRIER = %.4f",
+      exp_inflection, Q_neutral_obs, S_BARRIER),
+    x = expression(Log[10](phi)),
+    y = "Q (preferred-base freq., 4-fold sites)"
+  ) +
+  theme_custom()
+ggsave("./results/Wright_Q_vs_expression_inflection.pdf",
+       p_q_inflection, width = 7, height = 5, device = cairo_pdf)
+
+rm(gam_q_exp, exp_grid, gam_pred_det, inflection_idx, above_infl,
+   exp_grid_full, gam_full, gam_ribbon_df, p_q_inflection)
+
+# --- Three-metric correlation summary --------------------------------------
+cat("\n=== Spearman correlations among selection metrics ===\n")
+metric_df <- msd_data |>
+  dplyr::select(S_ROC, L_ROC, S_Wright_signed, Mean_Log10_Exp) |>
+  dplyr::filter(dplyr::if_all(dplyr::everything(), is.finite))
+cat(sprintf("  n = %d genes with all four metrics finite\n", nrow(metric_df)))
+print(round(cor(metric_df, method = "spearman"), 3))
+rm(metric_df)
+
+# --- Binned S_ROC and S_Wright tables ----------------------------------------
+# 30 site-weighted ntile bins used for the pi-consistency validation (bin_roc)
+# and the diversity-hump figure (bin_sw). Use two-state calibration if available.
 
 U_bin_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
 V_bin_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
@@ -2196,31 +2196,7 @@ make_hump_theory <- function(bin_df, x_col, sw_col) {
   )
 }
 
-theory_roc <- make_hump_theory(bin_roc, "mean_S_ROC", "S_Wright_bin")
-theory_sw  <- make_hump_theory(bin_sw,  "mean_S_Wright", "mean_S_Wright")
-
-p_hump_roc <- ggplot(bin_roc, aes(x = mean_S_ROC, y = pi_bin)) +
-  geom_hline(yintercept = pi_neutral_obs,
-             linetype = "dotted", color = "grey40") +
-  geom_errorbar(aes(ymin = pi_bin - 2 * pi_se,
-                    ymax = pi_bin + 2 * pi_se),
-                width = 0, color = "#377EB8", alpha = 0.6) +
-  geom_point(aes(size = sites_total),
-             color = "#377EB8", alpha = 0.9) +
-  geom_line(data = theory_roc,
-            aes(x = x_val, y = pi_theory),
-            color = "#E41A1C", linewidth = 0.8, inherit.aes = FALSE) +
-  scale_size_continuous(name = "4-fold sites / bin",
-                        range = c(2, 6),
-                        labels = scales::comma_format()) +
-  labs(
-    title = expression(paste(pi[4*fold], " vs ", S[ROC])),
-    subtitle = sprintf("U = %.4f, V = %.4f | pi_neutral = %.5f",
-                       U_bin_calib, V_bin_calib, pi_neutral_obs),
-    x = expression(mean(S[ROC]) ~ "(30 bins)"),
-    y = expression(pi[4*fold] ~ "(site-weighted)")
-  ) +
-  theme_custom()
+theory_sw  <- make_hump_theory(bin_sw, "mean_S_Wright", "mean_S_Wright")
 
 p_hump_sw <- ggplot(bin_sw, aes(x = mean_S_Wright, y = pi_bin)) +
   geom_hline(yintercept = pi_neutral_obs,
@@ -2246,9 +2222,8 @@ p_hump_sw <- ggplot(bin_sw, aes(x = mean_S_Wright, y = pi_bin)) +
   ) +
   theme_custom()
 
-p_hump_combined <- p_hump_roc | p_hump_sw
-ggsave("./results/Diversity_hump_two_panels.pdf",
-       p_hump_combined, width = 13, height = 5.5, device = cairo_pdf)
+ggsave("./results/Diversity_hump_S_Wright.pdf",
+       p_hump_sw, width = 7, height = 5.5, device = cairo_pdf)
 
 write.csv(bin_roc |> dplyr::select(Sroc_bin, n_genes, mean_S_ROC, sites_total,
                                    Q_bin, S_Wright_bin, pi_bin, pi_se,
@@ -2260,8 +2235,7 @@ write.csv(bin_sw |> dplyr::select(Ssw_bin, n_genes, mean_S_Wright, sites_total,
           "./results/Diversity_hump_pi_vs_S_Wright_binned.csv",
           row.names = FALSE)
 
-rm(p_hump_roc, p_hump_sw, p_hump_combined,
-   theory_roc, theory_sw, make_hump_theory)
+rm(p_hump_sw, theory_sw, make_hump_theory)
 gc()
 
 # Persist artefacts.
@@ -2278,27 +2252,29 @@ write.csv(
 )
 write.csv(
   data.frame(
-    criterion                   = "top50_L_ROC",
-    S_BARRIER                   = S_BARRIER,
-    S_BARRIER_advisor           = S_BARRIER_advisor,
-    U_empirical                 = U_emp,
-    V_empirical                 = V_emp,
-    Q_neutral_obs               = Q_neutral_obs,
-    pi_neutral_obs              = pi_neutral_obs,
-    pi_neutral_theory           = pi_neutral_theory,
-    thr_sel                     = as.numeric(thr_sel),
-    n_above_thr_sel             = sum(integrated_data$L_ROC > as.numeric(thr_sel),
-                                      na.rm = TRUE),
-    n_above_S_BARRIER           = sum(msd_data$S_Wright_signed >= S_BARRIER,
-                                      na.rm = TRUE),
-    n_drift_genes               = sum(msd_data$is_drift, na.rm = TRUE),
-    frac_drift_genes            = mean(msd_data$is_drift, na.rm = TRUE),
-    chi2_pi_stat                = chi2_pi_stat,
-    chi2_pi_df                  = chi2_pi_df,
-    chi2_pi_p                   = chi2_pi_p,
-    chi2_pi_sel_stat            = if (is.finite(chi2_pi_sel_stat)) chi2_pi_sel_stat else NA_real_,
-    chi2_pi_sel_df              = chi2_pi_sel_df,
-    chi2_pi_sel_p               = if (is.finite(chi2_pi_sel_p))    chi2_pi_sel_p    else NA_real_,
+    criterion                    = "GAM_Q_inflection",
+    S_BARRIER                    = S_BARRIER,
+    S_BARRIER_advisor            = S_BARRIER_advisor,
+    exp_inflection               = exp_inflection,
+    n_above_barrier              = n_above_barrier,
+    U_empirical                  = U_emp,
+    V_empirical                  = V_emp,
+    Q_neutral_obs                = Q_neutral_obs,
+    pi_neutral_obs               = pi_neutral_obs,
+    pi_neutral_theory            = pi_neutral_theory,
+    thr_sel                      = as.numeric(thr_sel),
+    n_above_thr_sel              = sum(integrated_data$L_ROC > as.numeric(thr_sel),
+                                       na.rm = TRUE),
+    n_above_S_BARRIER            = sum(msd_data$S_Wright_signed >= S_BARRIER,
+                                       na.rm = TRUE),
+    n_drift_genes                = sum(msd_data$is_drift, na.rm = TRUE),
+    frac_drift_genes             = mean(msd_data$is_drift, na.rm = TRUE),
+    chi2_pi_stat                 = chi2_pi_stat,
+    chi2_pi_df                   = chi2_pi_df,
+    chi2_pi_p                    = chi2_pi_p,
+    chi2_pi_sel_stat             = if (is.finite(chi2_pi_sel_stat)) chi2_pi_sel_stat else NA_real_,
+    chi2_pi_sel_df               = chi2_pi_sel_df,
+    chi2_pi_sel_p                = if (is.finite(chi2_pi_sel_p))    chi2_pi_sel_p    else NA_real_,
     cor_S_ROC4_S_Wright_spearman = cor_sroc4_spearman,
     cor_S_ROC4_S_Wright_pearson  = cor_sroc4_pearson
   ),
@@ -2307,7 +2283,7 @@ write.csv(
 
 # Memory cleanup -- keep: thr_sel, U_emp, V_emp, Q_neutral_obs,
 # pi_neutral_obs, pi_neutral_theory, S_BARRIER, S_BARRIER_advisor,
-# msd_data, bin_roc, bin_sw, integrated_data.
+# exp_inflection, n_above_barrier, msd_data, bin_roc, bin_sw, integrated_data.
 rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
    p_advisor_Q, p_advisor_pi,
