@@ -3,11 +3,14 @@
 # Example: sbatch Bash_scripts/run_intronic_twostate.sbatch data/all.vcf.gz data/annotations.gff3 results/Two_allele_pi.csv
 
 #SBATCH --job-name=intronic_pi
+#SBATCH --partition=eeb,kelly,kucg
 #SBATCH --cpus-per-task=14
 #SBATCH --mem-per-cpu=6G
 #SBATCH --time=12:00:00
 #SBATCH --output=run_intronic_twostate.%j.out
 #SBATCH --error=run_intronic_twostate.%j.err
+#SBATCH --mail-user=madrigalrocalj@ku.edu
+#SBATCH --mail-type=END,FAIL
 
 set -euo pipefail
 
