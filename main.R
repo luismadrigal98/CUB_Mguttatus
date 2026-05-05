@@ -1702,9 +1702,91 @@ cat(sprintf(
   nrow(msd_data)
 ))
 
-# Branch A: estiamte U, V from introns ----
+# Branch A: estimate U, V from introns ----
+# Loads per-gene intronic two-allele pi from calculate_intronic_twostatepi.py.
+# C system (7/8 four-fold families) and G system (Val only) solved separately.
+# Primary calibration uses the C system; G system retained as a diagnostic.
+MIN_INTRON_SITES <- 50L
 
+pi_intron <- tryCatch({
+  d <- read.csv("data/Two_allele_pi_intron.csv")
+  dplyr::filter(d, n_sites >= MIN_INTRON_SITES)
+}, error = function(e) NULL)
 
+if (!is.null(pi_intron) && nrow(pi_intron) > 0) {
+  Q_intron_C  <- with(pi_intron, weighted.mean(q_pref_C,     n_sites, na.rm = TRUE))
+  pi_intron_C <- with(pi_intron, weighted.mean(pi_2allele_C, n_sites, na.rm = TRUE))
+  Q_intron_G  <- with(pi_intron, weighted.mean(q_pref_G,     n_sites, na.rm = TRUE))
+  pi_intron_G <- with(pi_intron, weighted.mean(pi_2allele_G, n_sites, na.rm = TRUE))
+
+  cat(sprintf("[Branch A] %d genes with >= %d intronic sites\n",
+              nrow(pi_intron), MIN_INTRON_SITES))
+  cat(sprintf("[Branch A - C system] Q_intron_C = %.5f, pi_intron_C = %.6f\n",
+              Q_intron_C, pi_intron_C))
+  cat(sprintf("[Branch A - G system] Q_intron_G = %.5f, pi_intron_G = %.6f\n",
+              Q_intron_G, pi_intron_G))
+
+  # C system solve (covers 7/8 four-fold families)
+  hardy_max_C <- 2 * Q_intron_C * (1 - Q_intron_C)
+  if (is.finite(pi_intron_C) && pi_intron_C > 0 && pi_intron_C < hardy_max_C) {
+    UV_intron_C <- wright_solve_UV(Q_intron_C, pi_intron_C)
+    U_intron_C  <- UV_intron_C["U"]; V_intron_C <- UV_intron_C["V"]
+    cat(sprintf("[Branch A - C] U_intron_C = %.6f, V_intron_C = %.6f, V/U = %.3f\n",
+                U_intron_C, V_intron_C, V_intron_C / U_intron_C))
+  } else {
+    U_intron_C <- NA_real_; V_intron_C <- NA_real_
+    cat(sprintf("[Branch A - C] pi_intron_C = %.6f fails Hardy bound (%.6f); skipping.\n",
+                pi_intron_C, hardy_max_C))
+  }
+
+  # G system solve (Val family only)
+  hardy_max_G <- 2 * Q_intron_G * (1 - Q_intron_G)
+  if (is.finite(pi_intron_G) && pi_intron_G > 0 && pi_intron_G < hardy_max_G) {
+    UV_intron_G <- wright_solve_UV(Q_intron_G, pi_intron_G)
+    U_intron_G  <- UV_intron_G["U"]; V_intron_G <- UV_intron_G["V"]
+    cat(sprintf("[Branch A - G] U_intron_G = %.6f, V_intron_G = %.6f, V/U = %.3f\n",
+                U_intron_G, V_intron_G, V_intron_G / U_intron_G))
+  } else {
+    U_intron_G <- NA_real_; V_intron_G <- NA_real_
+    cat(sprintf("[Branch A - G] pi_intron_G = %.6f fails Hardy bound (%.6f); skipping.\n",
+                pi_intron_G, hardy_max_G))
+  }
+
+  # Cross-check against SFS-derived genome-wide intronic alpha/beta
+  # Convention: V = alpha/2 (toward preferred), U = beta/2 (away from preferred)
+  neutral_params_check <- tryCatch(read.csv("results/neutral_mutation_parameters.csv"),
+                                   error = function(e) NULL)
+  if (!is.null(neutral_params_check)) {
+    get_param <- function(nm) {
+      v <- neutral_params_check$Value[neutral_params_check$Parameter == nm]
+      if (length(v)) v[1] else NA_real_
+    }
+    cat(sprintf(
+      "[Branch A - SFS cross-check] C: V_SFS=%.5f U_SFS=%.5f | G: V_SFS=%.5f U_SFS=%.5f\n",
+      get_param("alpha_C") / 2, get_param("beta_C") / 2,
+      get_param("alpha_G") / 2, get_param("beta_G") / 2
+    ))
+    rm(neutral_params_check, get_param)
+  }
+
+  # Primary intron calibration: C system (7/8 of four-fold families prefer C)
+  U_intron <- U_intron_C
+  V_intron <- V_intron_C
+  cat(sprintf("[Branch A] Primary: U_intron = %s, V_intron = %s\n",
+              ifelse(is.finite(U_intron), format(U_intron, digits = 6), "NA"),
+              ifelse(is.finite(V_intron), format(V_intron, digits = 6), "NA")))
+} else {
+  U_intron <- NA_real_; V_intron <- NA_real_
+  U_intron_C <- NA_real_; V_intron_C <- NA_real_
+  U_intron_G <- NA_real_; V_intron_G <- NA_real_
+  if (is.null(pi_intron)) {
+    cat("[Branch A] data/Two_allele_pi_intron.csv not found; intron calibration skipped.\n")
+  } else {
+    cat(sprintf("[Branch A] No genes pass n_sites >= %d filter; intron calibration skipped.\n",
+                MIN_INTRON_SITES))
+  }
+}
+rm(pi_intron)
 
 # Branch B: estimate U, V from a low-expression near-neutral pool ----
 # Use the bottom expression decile (rather than bottom L_ROC quartile) so
@@ -1748,16 +1830,13 @@ wright_emp <- data.frame(
 # mapped column 2 (site counts) to pi_2allele, discarding q_pref entirely.
 pi_data_operational <- tryCatch({
   d <- read.csv("data/pi_operational.csv")
-  dplyr::transmute(d,
-    Gene_name      = paste0("MgIM767.", Gene),
-    n_pref_notpref = n_pref_notpref,
-    q_pref     = q_pref,
-    pi_2allele     = pi_2allele
+  dplyr::mutate(d,
+    Gene_name = paste0("MgIM767.", Gene)
   )
 }, error = function(e) NULL)
 
 pi_data_operational <- pi_data_operational |>
-  dplyr::filter(Mean_Log10_Exp != 0)
+  dplyr::filter(MeanLog10_exp != 0)
 
 if (!is.null(pi_data_operational)) {
   neutral_pool_pi <- neutral_pool |>
@@ -1812,30 +1891,27 @@ if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0)
 
 # Visualizations based on this data (q a two-allele system) ----
 
-pi_data_operational <- pi_data_operational |>
-  left_join(integrated_data |> dplyr::select(Gene_name, Mean_Log10_Exp))
-
 plot_data <- pi_data_operational |>
-  # Remove rows with missing data in the columns of interest
-  dplyr::filter(!is.na(Mean_Log10_Exp), !is.na(q_pref)) |>
+  # Remove rows with missing data
+  dplyr::filter(!is.na(MeanLog10_exp), !is.na(q_pref)) |>
   
-  # Use cut() to create strict intervals (0-0.2, 0.2-0.4, etc.) 
-  # and label them with the upper bound tick marks
   dplyr::mutate(
     exp_bin = as.numeric(as.character(
-      cut(Mean_Log10_Exp, 
-          breaks = seq(0, 2.4, by = 0.2), 
-          labels = seq(0.2, 2.4, by = 0.2),
-          include.lowest = TRUE) # Ensures exactly 0 is included in the first bin
+      cut(MeanLog10_exp, 
+          # Extend breaks to 2.4, then catch the rest with Inf
+          breaks = c(seq(0, 2.4, by = 0.2), Inf), 
+          # Shift labels to start at 0 (lower bounds)
+          labels = seq(0, 2.4, by = 0.2),
+          include.lowest = TRUE,
+          right = FALSE) 
     ))
   ) |>
   
-  # Drop any values that fell outside the 0 to 2.4 range (they become NA from cut)
   dplyr::filter(!is.na(exp_bin)) |>
   
-  # Calculate mean and confidence interval (CI) for the y-axis
   dplyr::group_by(exp_bin) |>
   dplyr::summarise(
+    size = n(),
     mean_q_pref = mean(q_pref),
     ci = 1.96 * (sd(q_pref) / sqrt(n())),
     .groups = 'drop'
@@ -1850,7 +1926,7 @@ q_by_exp_plot <- ggplot(plot_data, aes(x = exp_bin, y = mean_q_pref)) +
   geom_point(color = "#004b87", size = 3) +
   
   # Format axes and labels to match the image
-  scale_x_continuous(breaks = seq(0.2, 2.4, by = 0.2)) +
+  scale_x_continuous(breaks = seq(0.0, 2.4, by = 0.2)) +
   labs(x = "exp bin", y = "q_pref") +
   
   # Apply your custom theme
@@ -1859,8 +1935,54 @@ q_by_exp_plot <- ggplot(plot_data, aes(x = exp_bin, y = mean_q_pref)) +
 ggsave("./results/Q_by_exp.pdf", plot = q_by_exp_plot, width = 8,
        height = 6)
 
-# Including non-synonimous pi values
+# Pi 4-fold as a function of expression
 
+pi_4_fold_by_exp <- pi_data_operational |>
+  # Remove rows with missing data
+  dplyr::filter(!is.na(MeanLog10_exp), !is.na(q_pref)) |>
+  
+  dplyr::mutate(
+    exp_bin = as.numeric(as.character(
+      cut(MeanLog10_exp, 
+          # Extend breaks to 2.4, then catch the rest with Inf
+          breaks = c(seq(0, 2.4, by = 0.2), Inf), 
+          # Shift labels to start at 0 (lower bounds)
+          labels = seq(0, 2.4, by = 0.2),
+          include.lowest = TRUE,
+          right = FALSE) 
+    ))
+  ) |>
+  
+  dplyr::filter(!is.na(exp_bin)) |>
+  
+  dplyr::group_by(exp_bin) |>
+  dplyr::summarise(
+    size = n(),
+    mean_pi_4_fold = mean(pi_4fold),
+    ci = 1.96 * (sd(pi_4fold) / sqrt(n())),
+    .groups = 'drop'
+  )
+
+p_pi_by_expression <- ggplot(pi_4_fold_by_exp, 
+                             aes(x = exp_bin, 
+                                 y = mean_pi_4_fold)) +
+  geom_point(size = 3, color = "#377EB8") +
+  geom_errorbar(aes(ymin = mean_pi_4_fold - ci,
+                    ymax = mean_pi_4_fold + ci),
+                width = 0.1, color = "#377EB8") +
+  labs(
+    title = expression(paste("Mean 4-fold Nucleotide Diversity (", pi, 
+                             ") by Expression Level")),
+    x = "Expression level category",
+    y = expression(paste("nuc_diversity (4 fold)"))
+  ) +
+  scale_x_continuous(breaks = seq(0.0, 2.4, by = 0.2)) +
+  theme_custom()
+
+ggsave("./results/pi_4fold_by_expression_asym.pdf", 
+       p_pi_by_expression, width = 10, height = 6)
+
+# Including non-synonimous pi values
 
 
 # Operational thresholds for the two selection groups ----
@@ -1878,7 +2000,10 @@ ggsave("./results/Q_by_exp.pdf", plot = q_by_exp_plot, width = 8,
 # per-gene S_Wright). Only pi_neutral_theory is needed here as a reference
 # line in downstream Wright plots.
 
-pi_neutral_theory <- wright_pi(0, U = U_emp, V = V_emp)
+pi_neutral_theory <- wright_pi(0,
+  U = if (is.finite(U_intron)) U_intron else U_emp,
+  V = if (is.finite(V_intron)) V_intron else V_emp
+)
 S_BARRIER_advisor <- 0.1   # JK's Mathematica reference; kept for comparison.
 
 cat(sprintf(
@@ -1896,11 +2021,15 @@ cat(sprintf(
 # The second source in hierarchy are the parameters derived from the two-allele
 # system. And finally, the approximated parameters based on the regular pi.
 
-U_gene_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
-V_gene_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
-
-# Override parameters if intron-based U and V are present
-
+U_gene_calib <- if (is.finite(U_intron) && is.finite(V_intron)) U_intron else
+                if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
+V_gene_calib <- if (is.finite(U_intron) && is.finite(V_intron)) V_intron else
+                if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
+cat(sprintf("[UV calib] U_gene_calib = %.6f, V_gene_calib = %.6f  [source: %s]\n",
+            U_gene_calib, V_gene_calib,
+            if (is.finite(U_intron) && is.finite(V_intron)) "Branch A (intron)" else
+            if (exists("U_emp_two") && is.finite(U_emp_two)) "Branch B (two-state)" else
+            "Branch B (raw empirical)"))
 
 msd_data$S_Wright_signed <- vapply(msd_data$Q_pref_base, function(q) {
   tryCatch(wright_invert_Q(q, U = U_gene_calib, V = V_gene_calib),
@@ -2106,8 +2235,10 @@ rm(metric_df)
 # 30 site-weighted ntile bins used for the pi-consistency validation (bin_roc)
 # and the diversity-hump figure (bin_sw). Use two-state calibration if available.
 
-U_bin_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
-V_bin_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
+U_bin_calib <- if (is.finite(U_intron) && is.finite(V_intron)) U_intron else
+               if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
+V_bin_calib <- if (is.finite(U_intron) && is.finite(V_intron)) V_intron else
+               if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
 
 bin_roc <- msd_data |>
   dplyr::filter(!is.na(S_ROC), !is.na(Q_pref_base)) |>
@@ -2159,8 +2290,8 @@ bin_sw$pi_se <- sqrt(bin_sw$pi_bin * (1 - bin_sw$pi_bin / 2) /
 thr_sel <- sort(integrated_data$L_ROC, decreasing = TRUE, na.last = NA)[50]
 if (!is.finite(thr_sel)) stop("thr_sel could not be determined: fewer than 50 finite L_ROC values.")
 attr(thr_sel, "criterion") <- "top50_L_ROC"
-attr(thr_sel, "U_empirical") <- U_emp
-attr(thr_sel, "V_empirical") <- V_emp
+attr(thr_sel, "U_empirical") <- U_gene_calib
+attr(thr_sel, "V_empirical") <- V_gene_calib
 
 cat(sprintf(
   "\n>>> thr_sel = %.6f  (L_ROC of the 50th-highest gene; top-50 load group)\n",
@@ -3726,53 +3857,6 @@ if (has_mutation_types) {
 
 # Memory cleanup
 rm(p_pi_by_expression, bin_size, mutation_types)
-
-# 12.1.1) Pi 4-fold but tracking expression levels ----
-
-integrated_data <- integrated_data |> 
-  dplyr::mutate(
-    Exp_bin_asym = as.numeric(as.character(
-      cut(Mean_Log10_Exp, 
-          breaks = seq(0, 2.4, by = 0.2), 
-          labels = seq(0.2, 2.4, by = 0.2),
-          include.lowest = TRUE) # Ensures exactly 0 is included in the first bin
-    )))
-
-pi_by_expression <- integrated_data |>
-  dplyr::filter(Mean_Log10_Exp != 0) |>
-  dplyr::group_by(Exp_bin_asym) |>
-  dplyr::summarize(
-    n_genes = n(),
-    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
-    # Weighted mean π at 4-fold sites: total π_sum / total sites
-    total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
-    total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
-    weighted_pi_4fold = total_pi_sum_4fold / total_sites_4fold,
-    # Also compute individual-gene SD for error bars
-    sd_pi_4fold = sd(Pi_mean_4fold, na.rm = TRUE),
-    se_pi_4fold = sd_pi_4fold / sqrt(n()),
-    ci_moe = 1.96 * se_pi_4fold,
-    .groups = "drop"
-  )
-
-p_pi_by_expression <- ggplot(pi_by_expression, 
-                             aes(x = Exp_bin_asym, 
-                                 y = weighted_pi_4fold)) +
-  geom_point(size = 3, color = "#377EB8") +
-  geom_errorbar(aes(ymin = weighted_pi_4fold - ci_moe,
-                    ymax = weighted_pi_4fold + ci_moe),
-                width = 0.1, color = "#377EB8") +
-  labs(
-    title = expression(paste("4-fold Nucleotide Diversity (", pi, 
-                             ") by Expression Level")),
-    x = "Expression level category",
-    y = expression(paste("nuc_diversity (4 fold)"))
-  ) +
-  scale_x_continuous(breaks = seq(0.2, 2.4, by = 0.2)) +
-  theme_custom()
-
-ggsave("./results/pi_4fold_by_expression_asym.pdf", 
-       p_pi_by_expression, width = 10, height = 6)
 
 # 12.2) Tracking frequency of preferred allele as a function of expression ----
 
