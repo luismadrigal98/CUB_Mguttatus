@@ -47,8 +47,10 @@ echo "CPUS: $CPUS, workers: $WORKERS, buffer_mb: $BUFFER_MB, batch_size: $BATCH_
 # Load modules if your cluster requires it (uncomment & adjust)
 
 module load conda
+set +u  # Temporarily allow unbound variables for conda setup
 eval "$(conda shell.bash hook)"
 conda activate PyR
+set -u  # Re-enable unbound variable check
 
 cd /home/l338m483/scratch/CUB/CUB_Mguttatus
 

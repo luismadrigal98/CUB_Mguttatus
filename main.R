@@ -1746,8 +1746,8 @@ wright_emp <- data.frame(
 # File has 5 columns: Gene, n_pref_notpref, q_pref, p_notpref, pi_2allele.
 # Properly select and rename — old 2-name colnames() assignment silently
 # mapped column 2 (site counts) to pi_2allele, discarding q_pref entirely.
-pi_data_2 <- tryCatch({
-  d <- read.csv("data/Two_allele_pi.csv")
+pi_data_operational <- tryCatch({
+  d <- read.csv("data/pi_operational.csv")
   dplyr::transmute(d,
     Gene_name      = paste0("MgIM767.", Gene),
     n_pref_notpref = n_pref_notpref,
@@ -1756,12 +1756,12 @@ pi_data_2 <- tryCatch({
   )
 }, error = function(e) NULL)
 
-pi_data_2 <- pi_data_2 |>
+pi_data_operational <- pi_data_operational |>
   dplyr::filter(Mean_Log10_Exp != 0)
 
-if (!is.null(pi_data_2)) {
+if (!is.null(pi_data_operational)) {
   neutral_pool_pi <- neutral_pool |>
-    dplyr::inner_join(pi_data_2, by = "Gene_name") |>
+    dplyr::inner_join(pi_data_operational, by = "Gene_name") |>
     dplyr::filter(!is.na(pi_2allele), !is.na(q_pref))
   if (nrow(neutral_pool_pi) > 0) {
     # Q_neutral from two-allele preferred frequency, weighted by two-allele site count.
@@ -1780,7 +1780,7 @@ if (!is.null(pi_data_2)) {
 }
 
 # Diagnostic output for two-state calibration
-if (is.null(pi_data_2)) {
+if (is.null(pi_data_operational)) {
   cat("[Branch B - two-state] data/Two_allele_pi.csv not found or unreadable.\n")
 } else {
   n_pi <- if (exists("neutral_pool_pi")) nrow(neutral_pool_pi) else 0
@@ -1812,10 +1812,10 @@ if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0)
 
 # Visualizations based on this data (q a two-allele system) ----
 
-pi_data_2 <- pi_data_2 |>
+pi_data_operational <- pi_data_operational |>
   left_join(integrated_data |> dplyr::select(Gene_name, Mean_Log10_Exp))
 
-plot_data <- pi_data_2 |>
+plot_data <- pi_data_operational |>
   # Remove rows with missing data in the columns of interest
   dplyr::filter(!is.na(Mean_Log10_Exp), !is.na(q_pref)) |>
   
@@ -1858,6 +1858,10 @@ q_by_exp_plot <- ggplot(plot_data, aes(x = exp_bin, y = mean_q_pref)) +
 
 ggsave("./results/Q_by_exp.pdf", plot = q_by_exp_plot, width = 8,
        height = 6)
+
+# Including non-synonimous pi values
+
+
 
 # Operational thresholds for the two selection groups ----
 
@@ -1925,9 +1929,9 @@ cat(sprintf(
 # pi_2allele (per-gene heterozygosity under the two-allele model) was read
 # during the two-state UV calibration above (Branch B). Join here so it is
 # available for downstream Wright comparisons alongside S_Wright_signed.
-if (!is.null(pi_data_2)) {
+if (!is.null(pi_data_operational)) {
   msd_data <- msd_data |>
-    dplyr::left_join(pi_data_2 |> dplyr::select(Gene_name, pi_2allele),
+    dplyr::left_join(pi_data_operational |> dplyr::select(Gene_name, pi_2allele),
                      by = "Gene_name")
 }
 
@@ -2519,7 +2523,7 @@ rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
    p_advisor_Q, p_advisor_pi,
    S_grid_fid, S_grid_emp,
-   neutral_pool, neutral_pool_pi, pi_data_2,
+   neutral_pool, neutral_pool_pi, pi_data_operational,
    Q_neutral_two, pi_neutral_two, hardy_max_two,
    chi2_pi_terms, sel_bins,
    per_gene_pool, p_pi_validation, p_SROC4_vs_SWright)
