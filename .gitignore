@@ -47,3 +47,5 @@ data/codon_counts_from_fasta.rds
 .positai
 test_S_ROC_derivation.R
 src/diagnose_S_ROC.R
+.Rproj.user
+.positai

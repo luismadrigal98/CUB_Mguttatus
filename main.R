@@ -1535,7 +1535,7 @@ combined_plot <- p1 | p2 + plot_annotation(tag_levels = 'A')
 # Saved with a larger dimension to accommodate the 2x2 grid nicely
 ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, height = 8)
 
-# 8.3.4) Wright's MSD framework + expression-GAM drift barrier ----
+# 8.3.4) Wright's MSD framework ----
 #
 # Three metrics presented alongside each other:
 #   L_ROC:         per-gene translational load (phi-scaled |Δη|); used for GO/BGS.
@@ -1545,13 +1545,13 @@ ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, heigh
 # Drift barrier (S_BARRIER):
 #   Defined as the median S_Wright of genes at/above the expression inflection
 #   — the first expression level where the GAM lower CI of Q exceeds Q_neutral.
-#   This anchors the threshold to the biological inflection visible in Fig 4A.
+#   This anchors the threshold to the biological inflection.
 #
-# Branch A: fiducial Wright Q(S) and pi(S) curves (reference figures).
+# Branch A: empirical U, V from introns
 # Branch B: empirical U, V from low-expression neutral pool.
 # S_BARRIER derivation follows per-gene S_Wright computation below.
 
-# --- Per-gene preferred-base frequency at 4-fold sites --------------------
+# Per-gene preferred-base frequency at 4-fold sites
 # Wright is a per-site framework. For each 4-fold AA family, the preferred
 # 3rd-position nucleotide is set by the AnaCoDa-determined preferred codon
 # (e.g. Ala -> GCC -> C, Val -> GTG -> G).  Q_pref_base is then the per-gene
@@ -1702,41 +1702,9 @@ cat(sprintf(
   nrow(msd_data)
 ))
 
-# Branch A: replicate Mathematica predictions ----
-# Fiducial parameters: U = 0.075, V = 0.25 * U = 0.01875.
-# Sanity: Q(S = 0) should equal V/(U+V) = 0.20 and pi(S = 0) ~ 0.027.
+# Branch A: estiamte U, V from introns ----
 
-U_fid <- 0.075
-V_fid <- 0.25 * U_fid
-S_grid_fid <- seq(0, 2.5, by = 0.1)
-wright_fid <- data.frame(
-  S       = S_grid_fid,
-  Q       = wright_Q(S_grid_fid,  U = U_fid, V = V_fid),
-  pi_site = wright_pi(S_grid_fid, U = U_fid, V = V_fid)
-)
-cat(sprintf("[Branch A] Fiducial: Q(0) = %.3f (expect 0.200), pi(0) = %.4f (expect ~0.027)\n",
-            wright_fid$Q[1], wright_fid$pi_site[1]))
 
-p_advisor_Q <- ggplot(wright_fid, aes(x = S, y = Q)) +
-  geom_line(color = "#1f6f8b", linewidth = 0.6) +
-  geom_point(color = "#1f6f8b", size = 2.5) +
-  scale_y_continuous(limits = c(0, 0.8), breaks = seq(0, 0.8, 0.1)) +
-  labs(x = "S (Wright)", y = "Preferred base freq",
-       title = "Wright Q(S) — fiducial U = 0.075, V = U/4") +
-  theme_custom()
-
-p_advisor_pi <- ggplot(wright_fid, aes(x = S, y = pi_site)) +
-  geom_line(color = "#1f6f8b", linewidth = 0.6) +
-  geom_point(color = "#1f6f8b", size = 2.5) +
-  scale_y_continuous(limits = c(0.025, 0.041)) +
-  labs(x = "S (Wright)", y = "Nucleotide Diversity",
-       title = "Wright pi(S) — fiducial U = 0.075, V = U/4") +
-  theme_custom()
-
-ggsave("./results/Wright_advisor_replication_Q.pdf",
-       p_advisor_Q,  width = 6, height = 4, device = cairo_pdf)
-ggsave("./results/Wright_advisor_replication_pi.pdf",
-       p_advisor_pi, width = 6, height = 4, device = cairo_pdf)
 
 # Branch B: estimate U, V from a low-expression near-neutral pool ----
 # Use the bottom expression decile (rather than bottom L_ROC quartile) so
@@ -1839,10 +1807,8 @@ if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0)
   U_emp_two <- NA_real_; V_emp_two <- NA_real_
 }
 
-# ===========================================================================
-# Operational thresholds for the two selection groups
-# ===========================================================================
-#
+# Operational thresholds for the two selection groups ----
+
 # S_BARRIER: median S_Wright of genes at/above the Q-vs-expression inflection.
 #   Genes with S_Wright_signed >= S_BARRIER are in the "selection group".
 # thr_sel: L_ROC of the 50th-highest gene (top-50 load group for GO/BGS).
@@ -2148,10 +2114,8 @@ cat(sprintf(
   sum(msd_data$S_Wright_raw >= S_BARRIER, na.rm = TRUE)
 ))
 
-# ===========================================================================
 # Bin-level pi consistency test (parameter-free Wright validation)
-# ===========================================================================
-#
+
 # Parameter-free validation: does Wright's Q -> pi map predict pi_bin
 # from the bin-level S_Wright_bin (already inverted from Q_bin)?
 #
@@ -2240,14 +2204,13 @@ ggsave("./results/Wright_pi_vs_S_Wright_binned.pdf",
 # subset of genes actually exhibiting codon usage optimization.
 
 per_gene_pool <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_raw), !is.na(S_ROC_4), 
-                N_4fold_sites >= 50,
-                S_Wright_raw > 0,        # Non-zero S_Wright (positive selection)
+  dplyr::filter(!is.na(S_Wright_signed), !is.na(S_ROC_4), 
+                N_4fold_sites >= 50,        # Non-zero S_Wright (positive selection)
                 S_ROC_4 != 0)            # Non-zero S_ROC (detectable codon preference)
 
-cor_sroc4_spearman <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_raw,
+cor_sroc4_spearman <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_signed,
                           method = "spearman")
-cor_sroc4_pearson  <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_raw,
+cor_sroc4_pearson  <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_signed,
                           method = "pearson")
 
 cat(sprintf(
@@ -2257,7 +2220,7 @@ cat(sprintf(
 cat(sprintf("             Filtered to: S_Wright_raw > 0 & S_ROC_4 != 0 & N_4fold_sites >= 50\n"))
 
 p_SROC4_vs_SWright <- ggplot(per_gene_pool,
-                              aes(x = S_ROC_4, y = S_Wright_raw)) +
+                              aes(x = S_ROC_4, y = S_Wright_signed)) +
   geom_hex(bins = 60) +
   scale_fill_viridis_c(option = "plasma", trans = "log10", name = "Gene\nCount") +
   geom_smooth(method = "lm", color = "#E41A1C", linewidth = 0.9, se = TRUE) +
@@ -2266,7 +2229,7 @@ p_SROC4_vs_SWright <- ggplot(per_gene_pool,
   labs(
     title = expression(paste(S[ROC][",4"], " vs ", S[Wright], "  (non-zero genes only)")),
     subtitle = sprintf(
-      "Spearman rho = %+.3f (n = %d, S_Wright_raw > 0 & S_ROC != 0) | S_BARRIER = %.4f",
+      "Spearman rho = %+.3f (n = %d, S_Wright & S_ROC) | S_BARRIER = %.4f",
       cor_sroc4_spearman, nrow(per_gene_pool), S_BARRIER
     ),
     x = expression(S[ROC] ~ "(AnaCoDa efficacy, 4-fold)"),
