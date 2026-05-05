@@ -1703,9 +1703,12 @@ cat(sprintf(
 ))
 
 # Branch A: estimate U, V from introns ----
-# Loads per-gene intronic two-allele pi from calculate_intronic_twostatepi.py.
-# C system (7/8 four-fold families) and G system (Val only) solved separately.
-# Primary calibration uses the C system; G system retained as a diagnostic.
+# U and V are calibrated from the C two-allele system across all intronic sites.
+# C nucleotides are used universally (including for the Val/G-preferred family)
+# because C and G have near-identical stationary frequencies in introns, so a
+# single C-based (U, V) is a valid approximation for both systems.
+# The G-system Q and pi are printed as a diagnostic to verify this assumption.
+# Introns have highest priority; Branch B two-state and raw empirical are fallbacks.
 MIN_INTRON_SITES <- 50L
 
 pi_intron <- tryCatch({
@@ -1716,40 +1719,29 @@ pi_intron <- tryCatch({
 if (!is.null(pi_intron) && nrow(pi_intron) > 0) {
   Q_intron_C  <- with(pi_intron, weighted.mean(q_pref_C,     n_sites, na.rm = TRUE))
   pi_intron_C <- with(pi_intron, weighted.mean(pi_2allele_C, n_sites, na.rm = TRUE))
-  Q_intron_G  <- with(pi_intron, weighted.mean(q_pref_G,     n_sites, na.rm = TRUE))
-  pi_intron_G <- with(pi_intron, weighted.mean(pi_2allele_G, n_sites, na.rm = TRUE))
 
   cat(sprintf("[Branch A] %d genes with >= %d intronic sites\n",
               nrow(pi_intron), MIN_INTRON_SITES))
-  cat(sprintf("[Branch A - C system] Q_intron_C = %.5f, pi_intron_C = %.6f\n",
+  cat(sprintf("[Branch A] Q_intron_C = %.5f, pi_intron_C = %.6f\n",
               Q_intron_C, pi_intron_C))
-  cat(sprintf("[Branch A - G system] Q_intron_G = %.5f, pi_intron_G = %.6f\n",
+
+  # Diagnostic: print G-system statistics to verify C ≈ G approximation
+  Q_intron_G  <- with(pi_intron, weighted.mean(q_pref_G,     n_sites, na.rm = TRUE))
+  pi_intron_G <- with(pi_intron, weighted.mean(pi_2allele_G, n_sites, na.rm = TRUE))
+  cat(sprintf("[Branch A - approx check] Q_intron_G = %.5f, pi_intron_G = %.6f  (C used for both systems)\n",
               Q_intron_G, pi_intron_G))
 
-  # C system solve (covers 7/8 four-fold families)
+  # Solve (U, V) from C-system intronic Q and pi
   hardy_max_C <- 2 * Q_intron_C * (1 - Q_intron_C)
   if (is.finite(pi_intron_C) && pi_intron_C > 0 && pi_intron_C < hardy_max_C) {
-    UV_intron_C <- wright_solve_UV(Q_intron_C, pi_intron_C)
-    U_intron_C  <- UV_intron_C["U"]; V_intron_C <- UV_intron_C["V"]
-    cat(sprintf("[Branch A - C] U_intron_C = %.6f, V_intron_C = %.6f, V/U = %.3f\n",
-                U_intron_C, V_intron_C, V_intron_C / U_intron_C))
+    UV_intron <- wright_solve_UV(Q_intron_C, pi_intron_C)
+    U_intron  <- UV_intron["U"]; V_intron <- UV_intron["V"]
+    cat(sprintf("[Branch A] U_intron = %.6f, V_intron = %.6f, V/U = %.3f\n",
+                U_intron, V_intron, V_intron / U_intron))
   } else {
-    U_intron_C <- NA_real_; V_intron_C <- NA_real_
-    cat(sprintf("[Branch A - C] pi_intron_C = %.6f fails Hardy bound (%.6f); skipping.\n",
+    U_intron <- NA_real_; V_intron <- NA_real_
+    cat(sprintf("[Branch A] pi_intron_C = %.6f fails Hardy bound (%.6f); skipping.\n",
                 pi_intron_C, hardy_max_C))
-  }
-
-  # G system solve (Val family only)
-  hardy_max_G <- 2 * Q_intron_G * (1 - Q_intron_G)
-  if (is.finite(pi_intron_G) && pi_intron_G > 0 && pi_intron_G < hardy_max_G) {
-    UV_intron_G <- wright_solve_UV(Q_intron_G, pi_intron_G)
-    U_intron_G  <- UV_intron_G["U"]; V_intron_G <- UV_intron_G["V"]
-    cat(sprintf("[Branch A - G] U_intron_G = %.6f, V_intron_G = %.6f, V/U = %.3f\n",
-                U_intron_G, V_intron_G, V_intron_G / U_intron_G))
-  } else {
-    U_intron_G <- NA_real_; V_intron_G <- NA_real_
-    cat(sprintf("[Branch A - G] pi_intron_G = %.6f fails Hardy bound (%.6f); skipping.\n",
-                pi_intron_G, hardy_max_G))
   }
 
   # Cross-check against SFS-derived genome-wide intronic alpha/beta
@@ -1768,17 +1760,8 @@ if (!is.null(pi_intron) && nrow(pi_intron) > 0) {
     ))
     rm(neutral_params_check, get_param)
   }
-
-  # Primary intron calibration: C system (7/8 of four-fold families prefer C)
-  U_intron <- U_intron_C
-  V_intron <- V_intron_C
-  cat(sprintf("[Branch A] Primary: U_intron = %s, V_intron = %s\n",
-              ifelse(is.finite(U_intron), format(U_intron, digits = 6), "NA"),
-              ifelse(is.finite(V_intron), format(V_intron, digits = 6), "NA")))
 } else {
   U_intron <- NA_real_; V_intron <- NA_real_
-  U_intron_C <- NA_real_; V_intron_C <- NA_real_
-  U_intron_G <- NA_real_; V_intron_G <- NA_real_
   if (is.null(pi_intron)) {
     cat("[Branch A] data/Two_allele_pi_intron.csv not found; intron calibration skipped.\n")
   } else {
