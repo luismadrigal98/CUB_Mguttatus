@@ -1751,19 +1751,22 @@ pi_data_2 <- tryCatch({
   dplyr::transmute(d,
     Gene_name      = paste0("MgIM767.", Gene),
     n_pref_notpref = n_pref_notpref,
-    q_pref_two     = q_pref,
+    q_pref     = q_pref,
     pi_2allele     = pi_2allele
   )
 }, error = function(e) NULL)
 
+pi_data_2 <- pi_data_2 |>
+  dplyr::filter(Mean_Log10_Exp != 0)
+
 if (!is.null(pi_data_2)) {
   neutral_pool_pi <- neutral_pool |>
     dplyr::inner_join(pi_data_2, by = "Gene_name") |>
-    dplyr::filter(!is.na(pi_2allele), !is.na(q_pref_two))
+    dplyr::filter(!is.na(pi_2allele), !is.na(q_pref))
   if (nrow(neutral_pool_pi) > 0) {
     # Q_neutral from two-allele preferred frequency, weighted by two-allele site count.
     Q_neutral_two  <- with(neutral_pool_pi,
-                           weighted.mean(q_pref_two, n_pref_notpref, na.rm = TRUE))
+                           weighted.mean(q_pref, n_pref_notpref, na.rm = TRUE))
     # pi from two-allele heterozygosity, weighted by two-allele site count.
     pi_neutral_two <- with(neutral_pool_pi,
                            weighted.mean(pi_2allele, n_pref_notpref, na.rm = TRUE))
@@ -1807,9 +1810,54 @@ if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0)
   U_emp_two <- NA_real_; V_emp_two <- NA_real_
 }
 
-# Visualizations based on this data (q and pi for a two-allele system) ----
+# Visualizations based on this data (q a two-allele system) ----
 
+pi_data_2 <- pi_data_2 |>
+  left_join(integrated_data |> dplyr::select(Gene_name, Mean_Log10_Exp))
 
+plot_data <- pi_data_2 |>
+  # Remove rows with missing data in the columns of interest
+  dplyr::filter(!is.na(Mean_Log10_Exp), !is.na(q_pref)) |>
+  
+  # Use cut() to create strict intervals (0-0.2, 0.2-0.4, etc.) 
+  # and label them with the upper bound tick marks
+  dplyr::mutate(
+    exp_bin = as.numeric(as.character(
+      cut(Mean_Log10_Exp, 
+          breaks = seq(0, 2.4, by = 0.2), 
+          labels = seq(0.2, 2.4, by = 0.2),
+          include.lowest = TRUE) # Ensures exactly 0 is included in the first bin
+    ))
+  ) |>
+  
+  # Drop any values that fell outside the 0 to 2.4 range (they become NA from cut)
+  dplyr::filter(!is.na(exp_bin)) |>
+  
+  # Calculate mean and confidence interval (CI) for the y-axis
+  dplyr::group_by(exp_bin) |>
+  dplyr::summarise(
+    mean_q_pref = mean(q_pref),
+    ci = 1.96 * (sd(q_pref) / sqrt(n())),
+    .groups = 'drop'
+  )
+
+q_by_exp_plot <- ggplot(plot_data, aes(x = exp_bin, y = mean_q_pref)) +
+  # Add error bars first so the points sit on top of them
+  geom_errorbar(aes(ymin = mean_q_pref - ci, ymax = mean_q_pref + ci),
+                width = 0.05, color = "#004b87") +
+  
+  # Add the points
+  geom_point(color = "#004b87", size = 3) +
+  
+  # Format axes and labels to match the image
+  scale_x_continuous(breaks = seq(0.2, 2.4, by = 0.2)) +
+  labs(x = "exp bin", y = "q_pref") +
+  
+  # Apply your custom theme
+  theme_custom()
+
+ggsave("./results/Q_by_exp.pdf", plot = q_by_exp_plot, width = 8,
+       height = 6)
 
 # Operational thresholds for the two selection groups ----
 
@@ -3674,6 +3722,53 @@ if (has_mutation_types) {
 
 # Memory cleanup
 rm(p_pi_by_expression, bin_size, mutation_types)
+
+# 12.1.1) Pi 4-fold but tracking expression levels ----
+
+integrated_data <- integrated_data |> 
+  dplyr::mutate(
+    Exp_bin_asym = as.numeric(as.character(
+      cut(Mean_Log10_Exp, 
+          breaks = seq(0, 2.4, by = 0.2), 
+          labels = seq(0.2, 2.4, by = 0.2),
+          include.lowest = TRUE) # Ensures exactly 0 is included in the first bin
+    )))
+
+pi_by_expression <- integrated_data |>
+  dplyr::filter(Mean_Log10_Exp != 0) |>
+  dplyr::group_by(Exp_bin_asym) |>
+  dplyr::summarize(
+    n_genes = n(),
+    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+    # Weighted mean π at 4-fold sites: total π_sum / total sites
+    total_pi_sum_4fold = sum(Pi_sum_4fold, na.rm = TRUE),
+    total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
+    weighted_pi_4fold = total_pi_sum_4fold / total_sites_4fold,
+    # Also compute individual-gene SD for error bars
+    sd_pi_4fold = sd(Pi_mean_4fold, na.rm = TRUE),
+    se_pi_4fold = sd_pi_4fold / sqrt(n()),
+    ci_moe = 1.96 * se_pi_4fold,
+    .groups = "drop"
+  )
+
+p_pi_by_expression <- ggplot(pi_by_expression, 
+                             aes(x = Exp_bin_asym, 
+                                 y = weighted_pi_4fold)) +
+  geom_point(size = 3, color = "#377EB8") +
+  geom_errorbar(aes(ymin = weighted_pi_4fold - ci_moe,
+                    ymax = weighted_pi_4fold + ci_moe),
+                width = 0.1, color = "#377EB8") +
+  labs(
+    title = expression(paste("4-fold Nucleotide Diversity (", pi, 
+                             ") by Expression Level")),
+    x = "Expression level category",
+    y = expression(paste("nuc_diversity (4 fold)"))
+  ) +
+  scale_x_continuous(breaks = seq(0.2, 2.4, by = 0.2)) +
+  theme_custom()
+
+ggsave("./results/pi_4fold_by_expression_asym.pdf", 
+       p_pi_by_expression, width = 10, height = 6)
 
 # 12.2) Tracking frequency of preferred allele as a function of expression ----
 

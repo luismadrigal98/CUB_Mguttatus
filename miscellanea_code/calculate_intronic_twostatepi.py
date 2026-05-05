@@ -37,6 +37,7 @@ import sys
 import argparse
 import bisect
 import re
+import multiprocessing
 from collections import defaultdict
 
 
@@ -44,11 +45,12 @@ from collections import defaultdict
 # GFF3 parsing
 # ---------------------------------------------------------------------------
 
-def parse_gff3_introns(gff3_file, trim_bp=30, min_width=86):
+def parse_gff3_introns(gff3_file, trim_bp=30, min_width=86, buffer_bytes=16 * 1024 * 1024):
     """
     Parse GFF3 and derive trimmed intronic intervals per chromosome.
 
-    Introns are the gaps between consecutive exons of the same mRNA.
+    Introns are the gaps between consecutive exon-like intervals of the same mRNA
+    (supports both 'exon' and 'CDS' features).
     Each intron is trimmed by trim_bp on both ends to exclude splice
     signals.  Introns whose original length < 2*trim_bp + min_width are
     discarded (matches get_intron_sequences() defaults in local_M_estimation.R).
@@ -63,7 +65,7 @@ def parse_gff3_introns(gff3_file, trim_bp=30, min_width=86):
     gene_to_chrom  = {}
     gene_to_strand = {}
 
-    with open(gff3_file) as fh:
+    with open(gff3_file, buffering=buffer_bytes) as fh:
         for line in fh:
             if line.startswith('#'):
                 continue
@@ -91,7 +93,7 @@ def parse_gff3_introns(gff3_file, trim_bp=30, min_width=86):
                     short = re.sub(r'\.v\d+\.\d+$', '', short)
                     gene_to_strand[short] = cols[6]
 
-            elif feat == 'exon':
+            elif feat in ('exon', 'CDS'):
                 parent_raw = attr.get('Parent', '')
                 for mrna_id in parent_raw.split(','):
                     mrna_id = mrna_id.strip()
@@ -235,11 +237,131 @@ class GeneStats:
         self.G_pi_sum   = 0.0
 
 
+# Worker globals for multiprocessing mode
+WORKER_INTERVALS = None
+WORKER_GENE_TO_STRAND = None
+WORKER_TARGET_CHROM = None
+
+
+def worker_init(intervals, gene_to_strand, target_chrom):
+    global WORKER_INTERVALS, WORKER_GENE_TO_STRAND, WORKER_TARGET_CHROM
+    WORKER_INTERVALS = intervals
+    WORKER_GENE_TO_STRAND = gene_to_strand
+    WORKER_TARGET_CHROM = target_chrom
+
+
+def add_site_to_stats(stats, gene_id, ref, alt, genotypes):
+    if gene_id not in stats:
+        stats[gene_id] = [0, 0.0, 0.0, 0.0, 0.0]
+    rec = stats[gene_id]
+    rec[0] += 1
+
+    # ---- invariant site ----------------------------------------
+    if alt == '.':
+        if ref == 'C':
+            rec[1] += 1.0
+        elif ref == 'G':
+            rec[3] += 1.0
+        # A/T sites contribute 0.0 to both sums (implicit)
+        return
+
+    # ---- variant site ------------------------------------------
+    ref_hom, alt_hom = calc_hom_counts(genotypes)
+    nx = ref_hom + alt_hom
+    is_poly = nx >= 2 and min(ref_hom, alt_hom) > 0
+
+    if is_poly:
+        # shared pi formula: 2*nx*p*(1-p)/(nx-1)
+        p_ref = ref_hom / nx
+        pi_val = 2.0 * nx * p_ref * (1.0 - p_ref) / (nx - 1.0)
+    else:
+        pi_val = 0.0
+
+    # C system: C is preferred (vs non-C)
+    if ref == 'C':
+        if is_poly:
+            q_C = p_ref            # C allele frequency = ref_hom/nx
+            rec[2] += pi_val
+        else:
+            q_C = 1.0 if ref_hom > 0 else 0.0
+        rec[1] += q_C
+    elif alt == 'C':
+        if is_poly:
+            q_C = 1.0 - p_ref      # C allele frequency = alt_hom/nx
+            rec[2] += pi_val
+        else:
+            q_C = 1.0              # fixed for alt C allele
+        rec[1] += q_C
+
+    # G system: G is preferred (vs non-G)
+    if ref == 'G':
+        if is_poly:
+            q_G = p_ref
+            rec[4] += pi_val
+        else:
+            q_G = 1.0 if ref_hom > 0 else 0.0
+        rec[3] += q_G
+    elif alt == 'G':
+        if is_poly:
+            q_G = 1.0 - p_ref
+            rec[4] += pi_val
+        else:
+            q_G = 1.0              # fixed for alt G allele
+        rec[3] += q_G
+
+
+def merge_partial_stats(stats, partial_stats):
+    for gene_id, rec in partial_stats.items():
+        if gene_id not in stats:
+            gs = GeneStats()
+            stats[gene_id] = gs
+        else:
+            gs = stats[gene_id]
+        gs.n_sites    += rec[0]
+        gs.C_freq_sum += rec[1]
+        gs.C_pi_sum   += rec[2]
+        gs.G_freq_sum += rec[3]
+        gs.G_pi_sum   += rec[4]
+
+
+def process_batch(lines):
+    local_stats = {}
+    for line in lines:
+        if line.startswith('#'):
+            continue
+
+        parsed = parse_vcf_line(line)
+        if parsed is None:
+            continue
+        chrom, pos, ref, alt, genotypes = parsed
+
+        if WORKER_TARGET_CHROM and chrom != WORKER_TARGET_CHROM:
+            continue
+
+        chrom_data = WORKER_INTERVALS.get(chrom)
+        if chrom_data is None:
+            continue
+
+        gene_id = find_gene(chrom_data, pos)
+        if gene_id is None:
+            continue
+
+        if WORKER_GENE_TO_STRAND.get(gene_id, '+') == '-':
+            ref = complement_base(ref)
+            if alt != '.':
+                alt = ','.join(complement_base(a) for a in alt.split(','))
+
+        add_site_to_stats(local_stats, gene_id, ref, alt, genotypes)
+
+    return local_stats
+
+
 # ---------------------------------------------------------------------------
 # Main processing
 # ---------------------------------------------------------------------------
 
-def process_vcf(vcf_file, intervals, gene_to_strand, target_chrom=None):
+def process_vcf(vcf_file, intervals, gene_to_strand, target_chrom=None,
+                buffer_bytes=16 * 1024 * 1024, workers=1, batch_size=20000):
     """
     Stream VCF, accumulate two-allele stats at intronic sites.
 
@@ -254,103 +376,81 @@ def process_vcf(vcf_file, intervals, gene_to_strand, target_chrom=None):
     stats = {}
     line_count = 0
 
-    with open(vcf_file) as fh:
-        for line in fh:
-            if line.startswith('#'):
-                continue
-            line_count += 1
-            if line_count % 1_000_000 == 0:
-                print(f"  {line_count:,} sites processed...", file=sys.stderr)
+    if workers <= 1:
+        with open(vcf_file, buffering=buffer_bytes) as fh:
+            for line in fh:
+                if line.startswith('#'):
+                    continue
+                line_count += 1
+                if line_count % 1_000_000 == 0:
+                    print(f"  {line_count:,} sites processed...", file=sys.stderr)
 
-            parsed = parse_vcf_line(line)
-            if parsed is None:
-                continue
-            chrom, pos, ref, alt, genotypes = parsed
+                parsed = parse_vcf_line(line)
+                if parsed is None:
+                    continue
+                chrom, pos, ref, alt, genotypes = parsed
 
-            if target_chrom and chrom != target_chrom:
-                continue
+                if target_chrom and chrom != target_chrom:
+                    continue
 
-            chrom_data = intervals.get(chrom)
-            if chrom_data is None:
-                continue
+                chrom_data = intervals.get(chrom)
+                if chrom_data is None:
+                    continue
 
-            gene_id = find_gene(chrom_data, pos)
-            if gene_id is None:
-                continue
+                gene_id = find_gene(chrom_data, pos)
+                if gene_id is None:
+                    continue
 
-            if gene_to_strand.get(gene_id, '+') == '-':
-                ref = complement_base(ref)
-                if alt != '.':
-                    alt = ','.join(complement_base(a) for a in alt.split(','))
+                if gene_to_strand.get(gene_id, '+') == '-':
+                    ref = complement_base(ref)
+                    if alt != '.':
+                        alt = ','.join(complement_base(a) for a in alt.split(','))
 
-            if gene_id not in stats:
-                stats[gene_id] = GeneStats()
-            gs = stats[gene_id]
-            gs.n_sites += 1
+                partial = {}
+                add_site_to_stats(partial, gene_id, ref, alt, genotypes)
+                merge_partial_stats(stats, partial)
 
-            # ---- invariant site ----------------------------------------
-            if alt == '.':
-                if ref == 'C':
-                    gs.C_freq_sum += 1.0
-                elif ref == 'G':
-                    gs.G_freq_sum += 1.0
-                # A/T sites contribute 0.0 to both sums (implicit)
-                continue
+        print(f"  Total VCF sites read: {line_count:,}", file=sys.stderr)
+        return stats
 
-            # ---- variant site ------------------------------------------
-            ref_hom, alt_hom = calc_hom_counts(genotypes)
-            nx = ref_hom + alt_hom
-            is_poly = nx >= 2 and min(ref_hom, alt_hom) > 0
+    print(f"  Parallel mode enabled: workers={workers}, batch_size={batch_size}", file=sys.stderr)
 
-            if is_poly:
-                # shared pi formula: 2*nx*p*(1-p)/(nx-1)
-                p_ref = ref_hom / nx
-                pi_val = 2.0 * nx * p_ref * (1.0 - p_ref) / (nx - 1.0)
-            else:
-                pi_val = 0.0
+    with multiprocessing.Pool(processes=workers,
+                              initializer=worker_init,
+                              initargs=(intervals, gene_to_strand, target_chrom)) as pool:
+        pending = []
+        batch = []
+        with open(vcf_file, buffering=buffer_bytes) as fh:
+            for line in fh:
+                if line.startswith('#'):
+                    continue
+                line_count += 1
+                if line_count % 1_000_000 == 0:
+                    print(f"  {line_count:,} sites processed...", file=sys.stderr)
 
-            # C system: C is preferred (vs non-C)
-            # Determine which allele is C (if any)
-            if ref == 'C':
-                # C = REF
-                if is_poly:
-                    q_C = p_ref            # C allele frequency = ref_hom/nx
-                    gs.C_pi_sum  += pi_val
-                else:
-                    q_C = 1.0 if ref_hom > 0 else 0.0
-                gs.C_freq_sum += q_C
-            elif alt == 'C':
-                # C = ALT
-                if is_poly:
-                    q_C = 1.0 - p_ref      # C allele frequency = alt_hom/nx
-                    gs.C_pi_sum  += pi_val
-                else:
-                    q_C = 1.0              # fixed for alt C allele
-                gs.C_freq_sum += q_C
-            # else: neither allele is C → site contributes 0 to C_freq_sum
+                batch.append(line)
+                if len(batch) >= batch_size:
+                    pending.append(pool.apply_async(process_batch, (batch,)))
+                    batch = []
 
-            # G system: G is preferred (vs non-G)
-            if ref == 'G':
-                if is_poly:
-                    q_G = p_ref
-                    gs.G_pi_sum  += pi_val
-                else:
-                    q_G = 1.0 if ref_hom > 0 else 0.0
-                gs.G_freq_sum += q_G
-            elif alt == 'G':
-                if is_poly:
-                    q_G = 1.0 - p_ref
-                    gs.G_pi_sum  += pi_val
-                else:
-                    q_G = 1.0              # fixed for alt G allele
-                gs.G_freq_sum += q_G
+                    # Apply light backpressure to bound memory during long runs
+                    if len(pending) >= workers * 8:
+                        drain_n = workers * 4
+                        for _ in range(drain_n):
+                            merge_partial_stats(stats, pending.pop(0).get())
+
+            if batch:
+                pending.append(pool.apply_async(process_batch, (batch,)))
+
+        for job in pending:
+            merge_partial_stats(stats, job.get())
 
     print(f"  Total VCF sites read: {line_count:,}", file=sys.stderr)
     return stats
 
 
-def write_output(stats, output_path):
-    with open(output_path, 'w') as out:
+def write_output(stats, output_path, buffer_bytes=16 * 1024 * 1024):
+    with open(output_path, 'w', buffering=buffer_bytes) as out:
         out.write("Gene,n_sites,q_pref_C,pi_2allele_C,q_pref_G,pi_2allele_G\n")
         for gene_id in sorted(stats):
             gs = stats[gene_id]
@@ -381,13 +481,23 @@ def main():
                         help="Minimum trimmed intron width in bp (default: 86)")
     parser.add_argument('--chrom',     default=None,
                         help="Restrict to this chromosome (default: all)")
+    parser.add_argument('--buffer-mb', type=int, default=16,
+                        help="Buffered I/O size in MB for GFF/VCF/CSV (default: 16)")
+    parser.add_argument('--workers',   type=int, default=1,
+                        help="Worker processes for parallel VCF batches (default: 1)")
+    parser.add_argument('--batch-size', type=int, default=20000,
+                        help="VCF lines per worker batch in parallel mode (default: 20000)")
     args = parser.parse_args()
+
+    buffer_bytes = max(1, args.buffer_mb) * 1024 * 1024
 
     print(f"Parsing GFF3: {args.gff3_file}", file=sys.stderr)
     print(f"  trim_bp={args.trim_bp}, min_width={args.min_width}", file=sys.stderr)
+    print(f"  io_buffer={args.buffer_mb} MB", file=sys.stderr)
     intervals, gene_to_strand = parse_gff3_introns(args.gff3_file,
                                                    trim_bp=args.trim_bp,
-                                                   min_width=args.min_width)
+                                                   min_width=args.min_width,
+                                                   buffer_bytes=buffer_bytes)
     n_ivs = sum(len(v[0]) for v in intervals.values())
     print(f"  {n_ivs:,} trimmed intron intervals across {len(intervals)} chromosomes",
           file=sys.stderr)
@@ -395,11 +505,16 @@ def main():
     print(f"Processing VCF: {args.vcf_file}", file=sys.stderr)
     if args.chrom:
         print(f"  Restricting to chromosome: {args.chrom}", file=sys.stderr)
-    stats = process_vcf(args.vcf_file, intervals, gene_to_strand, target_chrom=args.chrom)
+    print(f"  workers={args.workers}, batch_size={args.batch_size}", file=sys.stderr)
+    stats = process_vcf(args.vcf_file, intervals, gene_to_strand,
+                        target_chrom=args.chrom,
+                        buffer_bytes=buffer_bytes,
+                        workers=max(1, args.workers),
+                        batch_size=max(1000, args.batch_size))
     print(f"  {len(stats):,} genes with intronic data", file=sys.stderr)
 
     print(f"Writing output: {args.output}", file=sys.stderr)
-    write_output(stats, args.output)
+    write_output(stats, args.output, buffer_bytes=buffer_bytes)
     print("Done.", file=sys.stderr)
 
 
