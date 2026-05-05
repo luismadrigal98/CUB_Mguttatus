@@ -46,16 +46,33 @@ echo "CPUS: $CPUS, workers: $WORKERS, buffer_mb: $BUFFER_MB, batch_size: $BATCH_
 
 # Load modules if your cluster requires it (uncomment & adjust)
 
-module load conda
-set +u  # Temporarily allow unbound variables for conda setup
-eval "$(conda shell.bash hook)"
-conda activate PyR
-set -u  # Re-enable unbound variable check
+if command -v module >/dev/null 2>&1; then
+  module load conda
+fi
 
-cd /home/l338m483/scratch/CUB/CUB_Mguttatus
+if command -v conda >/dev/null 2>&1; then
+  set +u  # Temporarily allow unbound variables for conda setup
+  eval "$(conda shell.bash hook)"
+  if conda env list | awk '{print $1}' | grep -qx 'PyR'; then
+    conda activate PyR
+  else
+    echo "Warning: conda environment 'PyR' not found; using current Python." >&2
+  fi
+  set -u  # Re-enable unbound variable check
+fi
 
-# Stream-compressed VCF into the Python script. Use /dev/stdin as VCF path.
-zcat "$VCF_GZ" | python3 miscellanea_code/calculate_intronic_twostatepi.py /dev/stdin "$GFF3" "$OUT" \
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=${WORKDIR:-$(cd "$SCRIPT_DIR/.." && pwd)}
+cd "$REPO_ROOT"
+
+# Stream the VCF into the Python script. Auto-detect gzip-compressed vs plain text input.
+if file -b --mime-type "$VCF_GZ" | grep -q '^application/gzip$'; then
+  STREAM_CMD=(zcat "$VCF_GZ")
+else
+  STREAM_CMD=(cat "$VCF_GZ")
+fi
+
+"${STREAM_CMD[@]}" | python3 miscellanea_code/calculate_intronic_twostatepi.py /dev/stdin "$GFF3" "$OUT" \
   --buffer-mb "$BUFFER_MB" \
   --workers "$WORKERS" \
   --batch-size "$BATCH_SIZE" \
