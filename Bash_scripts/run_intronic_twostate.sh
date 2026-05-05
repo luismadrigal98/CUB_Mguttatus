@@ -1,11 +1,10 @@
 #!/bin/bash
-# SBATCH wrapper to run the intronic two-allele pi script on an HPC cluster
 # Usage: sbatch Bash_scripts/run_intronic_twostate.sbatch <vcf.gz> <gff3> <out.csv>
 # Example: sbatch Bash_scripts/run_intronic_twostate.sbatch data/all.vcf.gz data/annotations.gff3 results/Two_allele_pi.csv
 
 #SBATCH --job-name=intronic_pi
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=14
+#SBATCH --mem-per-cpu=6G
 #SBATCH --time=12:00:00
 #SBATCH --output=run_intronic_twostate.%j.out
 #SBATCH --error=run_intronic_twostate.%j.err
@@ -43,7 +42,12 @@ echo "OUT: $OUT"
 echo "CPUS: $CPUS, workers: $WORKERS, buffer_mb: $BUFFER_MB, batch_size: $BATCH_SIZE"
 
 # Load modules if your cluster requires it (uncomment & adjust)
-# module load python/3.10
+
+module load conda
+eval "$(conda shell.bash hook)"
+conda activate PyR
+
+cd /home/l338m483/scratch/CUB/CUB_Mguttatus
 
 # Stream-compressed VCF into the Python script. Use /dev/stdin as VCF path.
 zcat "$VCF_GZ" | python3 miscellanea_code/calculate_intronic_twostatepi.py /dev/stdin "$GFF3" "$OUT" \
