@@ -62,7 +62,20 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=${WORKDIR:-$(cd "$SCRIPT_DIR/.." && pwd)}
+DEFAULT_REPO_ROOT=/home/l338m483/scratch/CUB/CUB_Mguttatus
+if [[ -n "${WORKDIR:-}" ]]; then
+  REPO_ROOT=$WORKDIR
+elif [[ -f "$SCRIPT_DIR/../miscellanea_code/calculate_intronic_twostatepi.py" ]]; then
+  REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+elif [[ -f "$DEFAULT_REPO_ROOT/miscellanea_code/calculate_intronic_twostatepi.py" ]]; then
+  REPO_ROOT=$DEFAULT_REPO_ROOT
+else
+  echo "Could not locate miscellanea_code/calculate_intronic_twostatepi.py." >&2
+  echo "Set WORKDIR to your repo root or update DEFAULT_REPO_ROOT in the script." >&2
+  exit 1
+fi
+
+PYTHON_SCRIPT="$REPO_ROOT/miscellanea_code/calculate_intronic_twostatepi.py"
 cd "$REPO_ROOT"
 
 # Stream the VCF into the Python script. Auto-detect gzip-compressed vs plain text input.
@@ -72,7 +85,7 @@ else
   STREAM_CMD=(cat "$VCF_GZ")
 fi
 
-"${STREAM_CMD[@]}" | python3 miscellanea_code/calculate_intronic_twostatepi.py /dev/stdin "$GFF3" "$OUT" \
+"${STREAM_CMD[@]}" | python3 "$PYTHON_SCRIPT" /dev/stdin "$GFF3" "$OUT" \
   --buffer-mb "$BUFFER_MB" \
   --workers "$WORKERS" \
   --batch-size "$BATCH_SIZE" \
