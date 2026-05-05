@@ -1737,7 +1737,7 @@ wright_emp <- data.frame(
   pi_site = wright_pi(S_grid_emp, U = U_emp, V = V_emp)
 )
 
-# --- Two-state π calibration (preferred vs unpreferred sites) ----------
+# Two-state π calibration (preferred vs unpreferred sites) ----
 # Use the same neutral_pool (low-expression decile) but pull the
 # two-state per-gene heterozygosity `pi_2allele` from the precomputed
 # `data/Two_allele_pi.csv`.  Solve (U, V) from Q_neutral_obs and the
@@ -1746,7 +1746,7 @@ wright_emp <- data.frame(
 # File has 5 columns: Gene, n_pref_notpref, q_pref, p_notpref, pi_2allele.
 # Properly select and rename — old 2-name colnames() assignment silently
 # mapped column 2 (site counts) to pi_2allele, discarding q_pref entirely.
-pi_data <- tryCatch({
+pi_data_2 <- tryCatch({
   d <- read.csv("data/Two_allele_pi.csv")
   dplyr::transmute(d,
     Gene_name      = paste0("MgIM767.", Gene),
@@ -1756,9 +1756,9 @@ pi_data <- tryCatch({
   )
 }, error = function(e) NULL)
 
-if (!is.null(pi_data)) {
+if (!is.null(pi_data_2)) {
   neutral_pool_pi <- neutral_pool |>
-    dplyr::inner_join(pi_data, by = "Gene_name") |>
+    dplyr::inner_join(pi_data_2, by = "Gene_name") |>
     dplyr::filter(!is.na(pi_2allele), !is.na(q_pref_two))
   if (nrow(neutral_pool_pi) > 0) {
     # Q_neutral from two-allele preferred frequency, weighted by two-allele site count.
@@ -1777,7 +1777,7 @@ if (!is.null(pi_data)) {
 }
 
 # Diagnostic output for two-state calibration
-if (is.null(pi_data)) {
+if (is.null(pi_data_2)) {
   cat("[Branch B - two-state] data/Two_allele_pi.csv not found or unreadable.\n")
 } else {
   n_pi <- if (exists("neutral_pool_pi")) nrow(neutral_pool_pi) else 0
@@ -1807,6 +1807,10 @@ if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0)
   U_emp_two <- NA_real_; V_emp_two <- NA_real_
 }
 
+# Visualizations based on this data (q and pi for a two-allele system) ----
+
+
+
 # Operational thresholds for the two selection groups ----
 
 # S_BARRIER: median S_Wright of genes at/above the Q-vs-expression inflection.
@@ -1817,7 +1821,7 @@ if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0)
 #   wright_invert_Q(Q; U_emp, V_emp).  Sign-aware version kept as
 #   S_Wright_signed; genes below neutral Q are flagged is_drift = TRUE.
 
-# --- Theoretical neutral-pi reference ------------------------------------
+# Theoretical neutral-pi reference ----
 # S_BARRIER is derived below via the Q-vs-expression GAM inflection (after
 # per-gene S_Wright). Only pi_neutral_theory is needed here as a reference
 # line in downstream Wright plots.
@@ -1830,20 +1834,28 @@ cat(sprintf(
   pi_neutral_theory, pi_neutral_obs
 ))
 
-# --- Per-gene S_Wright -----------------------------------------------------
+# Per-gene S_Wright ----
 # Compute the SIGNED inversion first (full-information diagnostic), then
 # floor at zero for the operational column used downstream.
 # Use two-state calibration if available, otherwise fall back to original calibration.
 
+# This is the entry point of the U and V parameters. Several options are available
+# to explore. For compatibility, we are going to adopt intron-based if present. 
+# The second source in hierarchy are the parameters derived from the two-allele
+# system. And finally, the approximated parameters based on the regular pi.
+
 U_gene_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) U_emp_two else U_emp
 V_gene_calib <- if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
+
+# Override parameters if intron-based U and V are present
+
 
 msd_data$S_Wright_signed <- vapply(msd_data$Q_pref_base, function(q) {
   tryCatch(wright_invert_Q(q, U = U_gene_calib, V = V_gene_calib),
            error = function(e) NA_real_)
 }, numeric(1))
 msd_data$is_drift     <- !is.na(msd_data$S_Wright_signed) &
-                          msd_data$S_Wright_signed < 0
+                          msd_data$S_Wright_signed < S_BARRIER
 msd_data$S_Wright_raw <- pmax(msd_data$S_Wright_signed, 0)   # operational
 
 cat(sprintf(
@@ -1861,17 +1873,17 @@ cat(sprintf(
   100 * mean(msd_data$is_drift, na.rm = TRUE)
 ))
 
-# --- Join two-allele pi into msd_data -------------------------------------
+# Join two-allele pi into msd_data ----
 # pi_2allele (per-gene heterozygosity under the two-allele model) was read
 # during the two-state UV calibration above (Branch B). Join here so it is
 # available for downstream Wright comparisons alongside S_Wright_signed.
-if (!is.null(pi_data)) {
+if (!is.null(pi_data_2)) {
   msd_data <- msd_data |>
-    dplyr::left_join(pi_data |> dplyr::select(Gene_name, pi_2allele),
+    dplyr::left_join(pi_data_2 |> dplyr::select(Gene_name, pi_2allele),
                      by = "Gene_name")
 }
 
-# --- Expression-GAM inflection drift barrier --------------------------------
+# Expression-GAM inflection drift barrier ----
 # Fit a site-weighted GAM of Q_pref_base ~ expression. S_BARRIER is set to
 # the median S_Wright of genes at/above the expression inflection point —
 # defined as the first expression level where the GAM lower 95% CI exceeds
@@ -1970,9 +1982,9 @@ if (length(pos_vals) > 0 && any(is.finite(pos_vals))) {
 n_above_barrier <- nrow(above_infl)
 
 cat(sprintf("[S_BARRIER] Derived from Q-inflection at exp=%.3f\n", exp_inflection_diagnostic))
-cat(sprintf("            Genes at/above inflection: %d\n", n_above_barrier))
-cat(sprintf("            S_BARRIER = %.4f (source: %s)\n", S_BARRIER, S_BARRIER_source))
-cat(sprintf("            Positive S_Wright_raw values above inflection: %d / %d (%.1f%%)\n",
+cat(sprintf("Genes at/above inflection: %d\n", n_above_barrier))
+cat(sprintf("S_BARRIER = %.4f (source: %s)\n", S_BARRIER, S_BARRIER_source))
+cat(sprintf("Positive S_Wright_raw values above inflection: %d / %d (%.1f%%)\n",
             length(pos_vals), n_above_barrier, 100*length(pos_vals)/pmax(n_above_barrier, 1)))
 
 # Totals and informative counts
@@ -2029,7 +2041,7 @@ ggsave("./results/Wright_Q_vs_expression_diagnostic.pdf",
 rm(gam_q_exp, exp_grid, gam_pred_det, inflection_idx,
    exp_grid_full, gam_full, gam_ribbon_df, p_q_expression)
 
-# --- Three-metric correlation summary --------------------------------------
+# Three-metric correlation summary ----
 cat("\n=== Spearman correlations among selection metrics ===\n")
 metric_df <- msd_data |>
   dplyr::select(S_ROC, L_ROC, S_Wright_signed, Mean_Log10_Exp) |>
@@ -2089,8 +2101,8 @@ bin_sw <- msd_data |>
 bin_sw$pi_se <- sqrt(bin_sw$pi_bin * (1 - bin_sw$pi_bin / 2) /
                      pmax(bin_sw$sites_total, 1))
 
-# --- thr_sel: L_ROC threshold = load of the 50th-highest L_ROC gene -------
-# "Selection group" for GO / BGS isolation = top 50 by translational load.
+# thr_sel: L_ROC threshold = load of the 50th-highest L_ROC gene ----
+# "Outlier load group" for GO / BGS isolation = top 50 by translational load.
 
 thr_sel <- sort(integrated_data$L_ROC, decreasing = TRUE, na.last = NA)[50]
 if (!is.finite(thr_sel)) stop("thr_sel could not be determined: fewer than 50 finite L_ROC values.")
@@ -2196,8 +2208,7 @@ p_pi_validation <- ggplot(bin_roc, aes(x = mean_S_ROC, y = pi_bin)) +
 ggsave("./results/Wright_pi_vs_S_Wright_binned.pdf",
        p_pi_validation, width = 7, height = 5, device = cairo_pdf)
 
-
-# --- Per-gene S_ROC_4 vs S_Wright sanity-check scatter --------------------
+# Per-gene S_ROC_4 vs S_Wright sanity-check scatter ----
 # CRITICAL: Filter to genes where BOTH S_ROC_4 and S_Wright_raw are non-zero
 # to avoid noise contamination from genes with no detectable selection signal.
 # This avoids correlating noise with noise, preserving signal-to-noise in the
@@ -2217,7 +2228,7 @@ cat(sprintf(
   "[Validation] cor(S_ROC_4, S_Wright_raw): Spearman = %+.3f, Pearson = %+.3f (n = %d)\n",
   cor_sroc4_spearman, cor_sroc4_pearson, nrow(per_gene_pool)
 ))
-cat(sprintf("             Filtered to: S_Wright_raw > 0 & S_ROC_4 != 0 & N_4fold_sites >= 50\n"))
+cat(sprintf("Filtered to: S_Wright_raw > 0 & S_ROC_4 != 0 & N_4fold_sites >= 50\n"))
 
 p_SROC4_vs_SWright <- ggplot(per_gene_pool,
                               aes(x = S_ROC_4, y = S_Wright_signed)) +
@@ -2241,7 +2252,7 @@ ggsave("./results/Wright_S_ROC4_vs_S_Wright.pdf",
 
 # 8.3.5) Three-panel drift-barrier overview ----
 #
-# Panel A: S_Wright_raw histogram, filled by selection/drift group.
+# Panel A: S_Wright_signed histogram, filled by selection/drift group.
 #   The vertical dashed line marks S_BARRIER (GAM-inflection threshold).
 # Panel B: L_ROC density split by the same S_Wright classification.
 # Panel C: S_ROC density split by the same S_Wright classification.
@@ -2252,18 +2263,19 @@ ggsave("./results/Wright_S_ROC4_vs_S_Wright.pdf",
 # Overlaying on L_ROC and S_ROC provides cross-metric validation.
 
 plot_barrier <- msd_data |>
-  dplyr::filter(is.finite(S_Wright_raw), is.finite(L_ROC), is.finite(S_ROC)) |>
+  dplyr::filter(is.finite(S_Wright_signed), is.finite(L_ROC), is.finite(S_ROC)) |>
   dplyr::mutate(
-    SW_group = dplyr::if_else(S_Wright_raw >= S_BARRIER, "Selection", "Drift")
+    SW_group = dplyr::if_else(S_Wright_signed >= S_BARRIER, 
+                              "Selection", "Drift")
   )
 
-n_sel_barrier   <- sum(plot_barrier$SW_group == "Selection")
+n_sel_barrier <- sum(plot_barrier$SW_group == "Selection")
 n_drift_barrier <- sum(plot_barrier$SW_group == "Drift")
 
 barrier_colors <- c("Selection" = "#E41A1C", "Drift" = "#377EB8")
 
 # Panel A: S_Wright histogram coloured by group
-p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_raw, fill = SW_group)) +
+p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
   geom_histogram(bins = 80, color = "white", linewidth = 0.05, position = "dodge") +
   geom_vline(xintercept = S_BARRIER,
              linetype = "dashed", color = "black", linewidth = 0.8) +
@@ -2459,7 +2471,7 @@ rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
    p_advisor_Q, p_advisor_pi,
    S_grid_fid, S_grid_emp,
-   neutral_pool, neutral_pool_pi, pi_data,
+   neutral_pool, neutral_pool_pi, pi_data_2,
    Q_neutral_two, pi_neutral_two, hardy_max_two,
    chi2_pi_terms, sel_bins,
    per_gene_pool, p_pi_validation, p_SROC4_vs_SWright)
