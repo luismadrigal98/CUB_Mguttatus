@@ -2338,17 +2338,26 @@ plot_barrier <- msd_data |>
   dplyr::filter(is.finite(S_Wright_signed), is.finite(L_ROC), is.finite(S_ROC)) |>
   dplyr::mutate(
     SW_group = dplyr::if_else(S_Wright_signed >= S_BARRIER, 
-                              "Selection", "Drift")
+                              "Selection", 
+                              ifelse(S_Wright_signed < S_BARRIER & S_Wright_signed >= 0,
+                                     "Nearly neutral", "Drift"))
   )
 
 n_sel_barrier <- sum(plot_barrier$SW_group == "Selection")
+n_nearly_neutral <- sum(plot_barrier$SW_group == "Nearly neutral")
 n_drift_barrier <- sum(plot_barrier$SW_group == "Drift")
 
-barrier_colors <- c("Selection" = "#E41A1C", "Drift" = "#377EB8")
+barrier_colors <- c("Selection" = "#E41A1C", "Nearly neutral" = "gray", 
+                    "Drift" = "#377EB8")
 
 # Panel A: S_Wright histogram coloured by group
 p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
-  geom_histogram(bins = 80, color = "white", linewidth = 0.05, position = "dodge") +
+  # Removed position="dodge" and color="white" to create a continuous histogram
+  geom_histogram(
+    binwidth = 0.05, 
+    boundary = 0, 
+    position = "stack"
+  ) + 
   geom_vline(xintercept = S_BARRIER,
              linetype = "dashed", color = "black", linewidth = 0.8) +
   scale_fill_manual(values = barrier_colors, name = NULL) +
@@ -2360,8 +2369,8 @@ p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
     x        = expression(S[Wright] ~ "(per-gene, non-negative)"),
     y        = "Gene count (log1p)",
     subtitle = sprintf(
-      "S_BARRIER = %.4f  |  selection: %d genes  |  drift: %d genes",
-      S_BARRIER, n_sel_barrier, n_drift_barrier
+      "Drift %d genes  |  Nearly neutral: %d genes  |  Selection: %d genes",
+      n_drift_barrier, n_nearly_neutral, n_sel_barrier
     )
   ) +
   theme_custom() +
