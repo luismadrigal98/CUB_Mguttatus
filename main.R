@@ -1702,75 +1702,56 @@ cat(sprintf(
   nrow(msd_data)
 ))
 
-# Branch A: estimate U, V from introns ----
-# U and V are calibrated from the C two-allele system across all intronic sites.
-# C nucleotides are used universally (including for the Val/G-preferred family)
-# because C and G have near-identical stationary frequencies in introns, so a
-# single C-based (U, V) is a valid approximation for both systems.
-# The G-system Q and pi are printed as a diagnostic to verify this assumption.
-# Introns have highest priority; Branch B two-state and raw empirical are fallbacks.
-MIN_INTRON_SITES <- 50L
+# Branch A: estimate U, V from SFS-derived intronic neutral mutation parameters ----
+# The VCF-based two-allele approach averages Q and pi over polymorphic sites only
+# (invariant sites are absent from VCF records). This inflates both estimates:
+# the resulting conditional Q (~0.32) is far from the observed intronic C content
+# (~0.16), and pi is inflated ~5x, producing U and V that are biologically wrong.
+# The SFS fit uses the full allele-frequency spectrum at intronic sites; its
+# implied Q = V/(U+V) is consistent with observed nucleotide composition and is
+# the correct calibration source.
+#
+# Convention in neutral_mutation_parameters.csv:
+#   alpha_X = 4N*u for X  (unpreferred->preferred, i.e., rate TOWARD C/G)
+#   beta_X  = 4N*v for X  (preferred->unpreferred, i.e., rate AWAY FROM C/G)
+# Wright convention: V = 2N*v_toward_preferred = alpha/2
+#                    U = 2N*u_away_from_preferred = beta/2
 
-pi_intron <- tryCatch({
-  d <- read.csv("data/Two_allele_pi_intron.csv")
-  dplyr::filter(d, n_sites >= MIN_INTRON_SITES)
-}, error = function(e) NULL)
+neutral_params <- tryCatch(
+  read.csv("results/neutral_mutation_parameters.csv"),
+  error = function(e) NULL
+)
 
-if (!is.null(pi_intron) && nrow(pi_intron) > 0) {
-  Q_intron_C  <- with(pi_intron, weighted.mean(q_pref_C,     n_sites, na.rm = TRUE))
-  pi_intron_C <- with(pi_intron, weighted.mean(pi_2allele_C, n_sites, na.rm = TRUE))
-
-  cat(sprintf("[Branch A] %d genes with >= %d intronic sites\n",
-              nrow(pi_intron), MIN_INTRON_SITES))
-  cat(sprintf("[Branch A] Q_intron_C = %.5f, pi_intron_C = %.6f\n",
-              Q_intron_C, pi_intron_C))
-
-  # Diagnostic: print G-system statistics to verify C ≈ G approximation
-  Q_intron_G  <- with(pi_intron, weighted.mean(q_pref_G,     n_sites, na.rm = TRUE))
-  pi_intron_G <- with(pi_intron, weighted.mean(pi_2allele_G, n_sites, na.rm = TRUE))
-  cat(sprintf("[Branch A - approx check] Q_intron_G = %.5f, pi_intron_G = %.6f  (C used for both systems)\n",
-              Q_intron_G, pi_intron_G))
-
-  # Solve (U, V) from C-system intronic Q and pi
-  hardy_max_C <- 2 * Q_intron_C * (1 - Q_intron_C)
-  if (is.finite(pi_intron_C) && pi_intron_C > 0 && pi_intron_C < hardy_max_C) {
-    UV_intron <- wright_solve_UV(Q_intron_C, pi_intron_C)
-    U_intron  <- UV_intron["U"]; V_intron <- UV_intron["V"]
-    cat(sprintf("[Branch A] U_intron = %.6f, V_intron = %.6f, V/U = %.3f\n",
-                U_intron, V_intron, V_intron / U_intron))
-  } else {
-    U_intron <- NA_real_; V_intron <- NA_real_
-    cat(sprintf("[Branch A] pi_intron_C = %.6f fails Hardy bound (%.6f); skipping.\n",
-                pi_intron_C, hardy_max_C))
+if (!is.null(neutral_params)) {
+  get_np <- function(nm) {
+    v <- neutral_params$Value[neutral_params$Parameter == nm]
+    if (length(v)) v[1L] else NA_real_
   }
 
-  # Cross-check against SFS-derived genome-wide intronic alpha/beta
-  # Convention: V = alpha/2 (toward preferred), U = beta/2 (away from preferred)
-  neutral_params_check <- tryCatch(read.csv("results/neutral_mutation_parameters.csv"),
-                                   error = function(e) NULL)
-  if (!is.null(neutral_params_check)) {
-    get_param <- function(nm) {
-      v <- neutral_params_check$Value[neutral_params_check$Parameter == nm]
-      if (length(v)) v[1] else NA_real_
-    }
-    cat(sprintf(
-      "[Branch A - SFS cross-check] C: V_SFS=%.5f U_SFS=%.5f | G: V_SFS=%.5f U_SFS=%.5f\n",
-      get_param("alpha_C") / 2, get_param("beta_C") / 2,
-      get_param("alpha_G") / 2, get_param("beta_G") / 2
-    ))
-    rm(neutral_params_check, get_param)
-  }
+  alpha_C <- get_np("alpha_C"); beta_C <- get_np("beta_C")
+  alpha_G <- get_np("alpha_G"); beta_G <- get_np("beta_G")
+
+  V_intron <- alpha_C / 2   # rate toward preferred (C)
+  U_intron <- beta_C  / 2   # rate away from preferred (C)
+
+  Q_implied_C <- V_intron / (U_intron + V_intron)
+  Q_implied_G <- (alpha_G / 2) / (alpha_G / 2 + beta_G / 2)
+
+  cat(sprintf("[Branch A] U_intron = %.6f, V_intron = %.6f, V/U = %.3f\n",
+              U_intron, V_intron, V_intron / U_intron))
+  cat(sprintf(
+    "[Branch A] Implied Q_C = %.4f  (cross-check: observed intronic C content ~0.16)\n",
+    Q_implied_C))
+  cat(sprintf(
+    "[Branch A - G approx check] Implied Q_G = %.4f  (C used for both systems)\n",
+    Q_implied_G))
+
+  rm(neutral_params, get_np, alpha_C, beta_C, alpha_G, beta_G,
+     Q_implied_C, Q_implied_G)
 } else {
   U_intron <- NA_real_; V_intron <- NA_real_
-  if (is.null(pi_intron)) {
-    cat("[Branch A] data/Two_allele_pi_intron.csv not found; intron calibration skipped.\n")
-  } else {
-    cat(sprintf("[Branch A] No genes pass n_sites >= %d filter; intron calibration skipped.\n",
-                MIN_INTRON_SITES))
-  }
+  cat("[Branch A] results/neutral_mutation_parameters.csv not found; intron calibration skipped.\n")
 }
-rm(pi_intron)
-
 # Branch B: estimate U, V from a low-expression near-neutral pool ----
 # Use the bottom expression decile (rather than bottom L_ROC quartile) so
 # the "neutral" sample is selected on a covariate independent of the L_ROC
@@ -3659,63 +3640,74 @@ integrated_data <- integrated_data |>
 cat(sprintf("300 bp decomposition: %d genes matched\n",
             sum(!is.na(integrated_data$Sites_4fold_first300))))
 
-# 12.0b) π by feature size window — exon (4-fold) vs intron (all sites) ----
-# Feature length is total surveyed sites from the "all" degeneracy row.
-# Exons use 4-fold synonymous π; introns only carry an "all" row so all-site π
-# is used as the neutral comparator.
+# 12.0b) π by distance from gene start — exon (4-fold) vs intron ----
+# Assigns each feature a cumulative genomic position by interleaving exons and
+# introns in Feature_Num order: exon k → genomic rank 2k-1, intron k → 2k.
+# Feature bp length is approximated by "all"-degeneracy Sites (surveyed sites).
+# Exons use 4-fold π; introns use all-site π (the only class they carry).
 
-feat_length <- pi_feature[Degeneracy == "all",
-                           .(Gene, Feature_Type, Feature_Num, length_bp = Sites)]
+feat_pos <- pi_feature[Degeneracy == "all",
+                        .(Gene, Feature_Type, Feature_Num, feat_bp = Sites)]
 
-feat_4f_exon <- pi_feature[Feature_Type == "exon" & Degeneracy == "4-fold",
-                            .(Gene, Feature_Type, Feature_Num, Pi_sum, n_sites = Sites)]
+feat_pos[Feature_Type == "exon",   genomic_order := 2L * Feature_Num - 1L]
+feat_pos[Feature_Type == "intron", genomic_order := 2L * Feature_Num]
+data.table::setorder(feat_pos, Gene, genomic_order)
 
-feat_all_intron <- pi_feature[Feature_Type == "intron" & Degeneracy == "all",
-                               .(Gene, Feature_Type, Feature_Num, Pi_sum, n_sites = Sites)]
+# Cumulative distance from gene start (approximation via surveyed-site lengths)
+feat_pos[, cum_end   := cumsum(feat_bp),           by = Gene]
+feat_pos[, cum_start := cum_end - feat_bp,          by = Gene]
+feat_pos[, midpoint  := (cum_start + cum_end) / 2L, by = Gene]
 
-feat_win <- data.table::rbindlist(list(feat_4f_exon, feat_all_intron))
-feat_win <- merge(feat_win, feat_length,
-                  by = c("Gene", "Feature_Type", "Feature_Num"), all.x = TRUE)
+# 1 kb windows up to 10 kb, last bin 10–20 kb
+dist_breaks <- c(0, seq(1000, 10000, 1000), 20000)
+dist_labels <- c(as.character(seq(1000, 10000, 1000)), "10k-20k")
 
-feat_win[, size_bin := cut(
-  length_bp,
-  breaks = c(0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, Inf),
-  labels = c("[0,1k)", "[1k,2k)", "[2k,3k)", "[3k,4k)",
-             "[4k,5k)", "[5k,6k)", "[6k,7k)", "[7k,8k)",
-             "[8k,9k)", "[9k,10k)", "[10k+]"),
-  right = FALSE
-)]
+feat_pos[, dist_bin := cut(midpoint, breaks = dist_breaks, labels = dist_labels,
+                            right = TRUE, include.lowest = FALSE)]
 
-pi_size_window <- feat_win[n_sites > 0 & !is.na(size_bin), .(
+# π values at the appropriate degeneracy class per feature type
+pi_exon_4f <- pi_feature[Feature_Type == "exon"   & Degeneracy == "4-fold",
+                          .(Gene, Feature_Type, Feature_Num, Pi_sum, n_pi = Sites)]
+pi_int_all <- pi_feature[Feature_Type == "intron" & Degeneracy == "all",
+                          .(Gene, Feature_Type, Feature_Num, Pi_sum, n_pi = Sites)]
+pi_vals_dist <- data.table::rbindlist(list(pi_exon_4f, pi_int_all))
+
+feat_pi_dist <- merge(
+  pi_vals_dist,
+  feat_pos[, .(Gene, Feature_Type, Feature_Num, dist_bin)],
+  by = c("Gene", "Feature_Type", "Feature_Num"), all.x = TRUE
+)
+
+# Weighted mean π per feature type × distance window
+pi_by_dist <- feat_pi_dist[n_pi > 0 & !is.na(dist_bin), .(
   n_features = .N,
-  Pi_mean    = sum(Pi_sum) / sum(n_sites)
-), by = .(Feature_Type, size_bin)]
+  Pi_mean    = sum(Pi_sum) / sum(n_pi)
+), by = .(Feature_Type, dist_bin)]
 
-data.table::setorder(pi_size_window, Feature_Type, size_bin)
+pi_by_dist[, dist_bin := factor(dist_bin, levels = dist_labels)]
+data.table::setorder(pi_by_dist, Feature_Type, dist_bin)
 
-plot_pi_size_window <- ggplot(
-    pi_size_window,
-    aes(x = size_bin, y = Pi_mean, fill = Feature_Type)
+plot_pi_by_dist <- ggplot(
+    pi_by_dist,
+    aes(x = dist_bin, y = Pi_mean, fill = Feature_Type)
   ) +
   geom_col(position = position_dodge(width = 0.8), width = 0.7) +
   scale_fill_manual(
-    values = c("exon" = "#2166AC", "intron" = "#D6604D"),
-    labels = c("exon" = "Exon (4-fold)", "intron" = "Intron (all sites)")
+    values = c("exon" = "#1F4E79", "intron" = "#E07830"),
+    labels = c("exon" = "Exon (4-fold)", "intron" = "Intron")
   ) +
   labs(
-    x = "Feature length (bp)",
-    y = expression(bar(pi)),
-    fill = NULL,
-    title = expression(pi ~ "by feature size — exon (4-fold) vs intron")
+    x = "Distance from gene start (bp)",
+    y = "Nucleotide Diversity",
+    fill = NULL
   ) +
   theme_custom() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-ggsave("./results/pi_by_feature_size_window.pdf", plot_pi_size_window,
-       width = 10, height = 6)
+ggsave("./results/pi_by_gene_distance.pdf", plot_pi_by_dist, width = 10, height = 6)
 
-rm(feat_length, feat_4f_exon, feat_all_intron, feat_win, pi_size_window,
-   plot_pi_size_window)
+rm(feat_pos, pi_exon_4f, pi_int_all, pi_vals_dist, feat_pi_dist, pi_by_dist,
+   plot_pi_by_dist, dist_breaks, dist_labels)
 
 rm(pi_feature, exon_all, exon_4fold, exon_0fold, exon_data, pi_300bp)
 gc()
