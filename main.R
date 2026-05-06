@@ -1985,8 +1985,161 @@ ggsave("./results/pi_4fold_by_expression_asym.pdf",
 
 # Including non-synonimous pi values
 
+pi_non_syn <- read.csv('data/NonSynPi.csv') |>
+  dplyr::mutate(Gene_name = paste0("MgIM767.", Gene)) |>
+  dplyr::rename(pi_non_syn = pi)
+
+pi_data_operational <- pi_data_operational |>
+  left_join(pi_non_syn |> dplyr::select(Gene_name, pi_non_syn))
+
+pi_non_syn_by_exp <- pi_data_operational |>
+  # Remove rows with missing data
+  dplyr::filter(!is.na(MeanLog10_exp), !is.na(q_pref), !is.na(pi_non_syn)) |>
+  
+  dplyr::mutate(
+    exp_bin = as.numeric(as.character(
+      cut(MeanLog10_exp, 
+          # Extend breaks to 2.4, then catch the rest with Inf
+          breaks = c(seq(0, 2.4, by = 0.2), Inf), 
+          # Shift labels to start at 0 (lower bounds)
+          labels = seq(0, 2.4, by = 0.2),
+          include.lowest = TRUE,
+          right = FALSE) 
+    ))
+  ) |>
+  
+  dplyr::filter(!is.na(exp_bin)) |>
+  
+  dplyr::group_by(exp_bin) |>
+  dplyr::summarise(
+    size = n(),
+    mean_pi_non_syn = mean(pi_non_syn),
+    ci = 1.96 * (sd(pi_non_syn) / sqrt(n())),
+    .groups = 'drop'
+  )
+
+p_pi_by_expression <- ggplot(pi_non_syn_by_exp, 
+                             aes(x = exp_bin, 
+                                 y = mean_pi_non_syn)) +
+  geom_point(size = 3, color = "#377EB8") +
+  geom_errorbar(aes(ymin = mean_pi_non_syn - ci,
+                    ymax = mean_pi_non_syn + ci),
+                width = 0.1, color = "#377EB8") +
+  labs(
+    title = expression(paste("Mean Non_synonimous Nucleotide Diversity (", pi, 
+                             ") by Expression Level")),
+    x = "Expression level category",
+    y = expression(paste("nuc_diversity (non synonimous)"))
+  ) +
+  scale_x_continuous(breaks = seq(0.0, 2.4, by = 0.2)) +
+  theme_custom()
+
+ggsave("./results/pi_non_syn_by_expression_asym.pdf", 
+       p_pi_by_expression, width = 10, height = 6)
+
+# Combined pi plot ----
+
+# 1. Create a unified summary dataframe
+combined_pi_summary <- pi_data_operational |>
+  dplyr::filter(!is.na(MeanLog10_exp), !is.na(pi_4fold), !is.na(pi_non_syn)) |>
+  dplyr::mutate(
+    exp_bin = as.numeric(as.character(
+      cut(MeanLog10_exp, 
+          breaks = c(seq(0, 2.4, by = 0.2), Inf), 
+          labels = seq(0, 2.4, by = 0.2),
+          include.lowest = TRUE, right = FALSE) 
+    ))
+  ) |>
+  dplyr::filter(!is.na(exp_bin)) |>
+  dplyr::group_by(exp_bin) |>
+  dplyr::summarise(
+    size = n(),
+    mean_4fold = mean(pi_4fold),
+    ci_4fold = 1.96 * (sd(pi_4fold) / sqrt(n())),
+    mean_nonsyn = mean(pi_non_syn),
+    ci_nonsyn = 1.96 * (sd(pi_non_syn) / sqrt(n())),
+    .groups = 'drop'
+  )
+
+# Pivot data for faceting
+long_pi_summary <- combined_pi_summary |>
+  pivot_longer(
+    cols = c(mean_4fold, mean_nonsyn),
+    names_to = "metric",
+    values_to = "mean_val"
+  ) |>
+  dplyr::mutate(
+    # Match the correct CI to the correct metric
+    ci = ifelse(metric == "mean_4fold", ci_4fold, ci_nonsyn),
+    # Create clean labels for the graph
+    metric_label = ifelse(metric == "mean_4fold", "4-fold Diversity", "Non-synonymous Diversity")
+  )
+
+# The Faceted Plot
+p_faceted <- ggplot(long_pi_summary, aes(x = exp_bin, y = mean_val, color = metric_label)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_val - ci, ymax = mean_val + ci), width = 0.1) +
+  facet_wrap(~ metric_label, ncol = 1, scales = "free_y") + # 'free_y' prevents compression
+  scale_color_manual(values = c("4-fold Diversity" = "#377EB8", "Non-synonymous Diversity" = "#E41A1C")) +
+  scale_x_continuous(breaks = seq(0.0, 2.4, by = 0.2)) +
+  labs(
+    title = expression(paste("Mean Nucleotide Diversity (", pi, ") by Expression Level")),
+    x = "Expression level category",
+    y = expression(paste("Nucleotide Diversity (", pi, ")"))
+  ) +
+  theme_custom() +
+  theme(legend.position = "none") # Facet labels make the legend redundant
+
+ggsave("./results/pi_combined_faceted.pdf", p_faceted, width = 10, height = 8)
 
 # Operational thresholds for the two selection groups ----
+
+# 1. Calculate dynamic transformation parameters based on your data ranges
+min_4f <- min(combined_pi_summary$mean_4fold, na.rm = TRUE)
+max_4f <- max(combined_pi_summary$mean_4fold, na.rm = TRUE)
+min_ns <- min(combined_pi_summary$mean_nonsyn, na.rm = TRUE)
+max_ns <- max(combined_pi_summary$mean_nonsyn, na.rm = TRUE)
+
+# Calculate the slope (b_scale) and intercept (a_shift)
+b_scale <- (max_4f - min_4f) / (max_ns - min_ns)
+a_shift <- min_4f - b_scale * min_ns
+
+# 2. Plot the aligned dual-axis graph
+p_dual_aligned <- ggplot(combined_pi_summary, aes(x = exp_bin)) +
+  
+  # --- PRIMARY METRIC (4-fold) ---
+  geom_point(aes(y = mean_4fold, color = "4-fold"), size = 3) +
+  geom_errorbar(aes(y = mean_4fold, 
+                    ymin = mean_4fold - ci_4fold, 
+                    ymax = mean_4fold + ci_4fold, 
+                    color = "4-fold"), width = 0.1) +
+  
+  # --- SECONDARY METRIC (Non-synonymous) ---
+  # Apply both the shift and the scale so the trends map perfectly onto the primary axis space
+  geom_point(aes(y = a_shift + b_scale * mean_nonsyn, color = "Non-synonymous"), size = 3) +
+  geom_errorbar(aes(y = a_shift + b_scale * mean_nonsyn, 
+                    ymin = a_shift + b_scale * (mean_nonsyn - ci_nonsyn), 
+                    ymax = a_shift + b_scale * (mean_nonsyn + ci_nonsyn), 
+                    color = "Non-synonymous"), width = 0.1) +
+  
+  # --- AXIS SCALING ---
+  scale_y_continuous(
+    name = expression(paste("4-fold Diversity (", pi, ")")),
+    # Back-transform the secondary axis labels so they show the true non-synonymous values
+    sec.axis = sec_axis(~ (. - a_shift) / b_scale, 
+                        name = expression(paste("Non-synonymous Diversity (", pi, ")")))
+  ) +
+  scale_color_manual(name = "Metric", 
+                     values = c("4-fold" = "#377EB8", "Non-synonymous" = "#E41A1C")) +
+  scale_x_continuous(breaks = seq(0.0, 2.4, by = 0.2)) +
+  labs(
+    title = expression(paste("Mean Nucleotide Diversity (", pi, ") by Expression Level")),
+    x = "Expression level category"
+  ) +
+  theme_custom() +
+  theme(legend.position = "top")
+
+ggsave("./results/pi_combined_dual_axis_aligned.pdf", p_dual_aligned, width = 10, height = 6)
 
 # S_BARRIER: median S_Wright of genes at/above the Q-vs-expression inflection.
 #   Genes with S_Wright_signed >= S_BARRIER are in the "selection group".
@@ -2168,6 +2321,8 @@ bin_sw <- msd_data |>
     Q_bin         = sum(N_preferred_base) / sum(N_4fold_sites),
     pi_bin        = sum(Pi_sum_4fold, na.rm = TRUE) /
                     sum(Sites_4fold,  na.rm = TRUE),
+    pi_se = sd(sum(Pi_sum_4fold, na.rm = TRUE) /
+               sum(Sites_4fold,  na.rm = TRUE)) / sqrt(n()),
     .groups = "drop"
   )
 bin_sw$pi_se <- sqrt(bin_sw$pi_bin * (1 - bin_sw$pi_bin / 2) /
@@ -2429,7 +2584,8 @@ mu_ratio <- (1 - Q_neutral_obs) / Q_neutral_obs   # U/V = μ_away / μ_toward
 # in the binning.  Compute a relative S for plotting: S_rel = (mean_S - min)/(max-min).
 bin_sw_rel <- bin_sw |>
   dplyr::mutate(
-    pi_rel    = pi_bin / pi_neutral_obs,
+    pi_moe = 1.96 * pi_se,
+    pi_rel = pi_bin / pi_neutral_obs,
     pi_rel_lo = (pi_bin - 2 * pi_se) / pi_neutral_obs,
     pi_rel_hi = (pi_bin + 2 * pi_se) / pi_neutral_obs
   )
@@ -2456,33 +2612,20 @@ theory_sw  <- data.frame(
 S_BARRIER_rel <- (S_BARRIER - min_S) / (max_S - min_S)
 S_BARRIER_rel <- pmin(pmax(S_BARRIER_rel, 0), 1)
 
-p_hump_sw <- ggplot(bin_sw_rel, aes(x = S_rel, y = pi_rel)) +
-  geom_hline(yintercept = 1,
-             linetype = "dotted", color = "grey40") +
-  geom_vline(xintercept = S_BARRIER_rel,
+p_hump_sw <- ggplot(bin_sw_rel, aes(x = mean_S_Wright, y = pi_bin)) +
+  geom_vline(xintercept = S_BARRIER,
              linetype = "dashed", color = "#377EB8") +
-  geom_errorbar(aes(x = S_rel, ymin = pi_rel_lo, ymax = pi_rel_hi),
-                width = 0, color = "#377EB8", alpha = 0.6) +
-  geom_point(aes(x = S_rel, size = sites_total),
+  geom_errorbar(aes(x = mean_S_Wright, ymin = pi_bin - pi_moe, ymax = pi_bin + pi_moe),
+                width = 0.1, color = "#377EB8", alpha = 0.6) +
+  geom_point(aes(x = mean_S_Wright, size = sites_total),
              color = "#377EB8", alpha = 0.9) +
-  geom_line(data = theory_sw,
-            aes(x = x_rel, y = pi_rel),
-            color = "#E41A1C", linewidth = 0.8, inherit.aes = FALSE) +
   scale_size_continuous(name = "4-fold sites / bin",
                         range = c(2, 6),
                         labels = scales::comma_format()) +
-  scale_x_continuous(labels = scales::number_format(accuracy = 0.01),
-                     limits = c(0, 1)) +
+  scale_x_continuous(labels = scales::number_format(accuracy = 0.01)) +
   labs(
-    title    = expression(paste("Relative ", pi[4*fold], " vs ", S[Wright],
-                                "  (McVean & Charlesworth 1999)")),
-    subtitle = sprintf(
-      paste0("μ₁₀/μ₀₁ = U/V ≈ %.2f",
-             "  |  S_BARRIER = %.4f  |  red: Wright π(S) / π(0)"),
-      mu_ratio, S_BARRIER
-    ),
-    x = "Relative mean(S[Wright]) (0 = min, 1 = max, 30 bins)",
-    y = expression(pi[4*fold] / pi[neutral] ~ "(relative diversity)")
+    x = "Mean(S[Wright])",
+    y = expression(pi[4*fold])
   ) +
   theme_custom()
 
