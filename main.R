@@ -1702,6 +1702,43 @@ cat(sprintf(
   nrow(msd_data)
 ))
 
+# Generate neutral mutation parameters from intronic SFS ----
+# Fits the two-allele Wright model to the intronic site-frequency spectrum to
+# recover alpha (4N*u toward C/G) and beta (4N*v away from C/G) for each
+# nucleotide system.  Output is written to results/ so Branch A can read it;
+# if either SFS file is missing the write is skipped and Branch A falls back
+# to whatever file already exists on disk (or NA if none).
+
+sfs_G_file <- "./data/sfs_introns_G.csv"
+sfs_C_file <- "./data/sfs_introns_C.csv"
+
+if (file.exists(sfs_G_file) && file.exists(sfs_C_file)) {
+  neutral_params_sfs <- load_and_estimate_neutral_params(sfs_G_file, sfs_C_file)
+
+  neutral_params_df <- data.frame(
+    Parameter = c("alpha_G", "beta_G", "alpha_C", "beta_C",
+                  "pi_G_expected", "pi_C_expected"),
+    Value = c(neutral_params_sfs$alpha_G, neutral_params_sfs$beta_G,
+              neutral_params_sfs$alpha_C, neutral_params_sfs$beta_C,
+              neutral_params_sfs$pi_G_expected, neutral_params_sfs$pi_C_expected),
+    Description = c("4N*u for G (unpreferred->preferred)",
+                    "4N*v for G (preferred->unpreferred)",
+                    "4N*u for C (unpreferred->preferred)",
+                    "4N*v for C (preferred->unpreferred)",
+                    "Expected nucleotide diversity at G sites",
+                    "Expected nucleotide diversity at C sites")
+  )
+
+  write.csv(neutral_params_df, "./results/neutral_mutation_parameters.csv",
+            row.names = FALSE)
+  cat("[SFS fit] neutral_mutation_parameters.csv written.\n")
+  rm(neutral_params_sfs, neutral_params_df)
+} else {
+  cat("[SFS fit] One or both SFS files not found; skipping regeneration.\n")
+  cat(sprintf("  G: %s\n  C: %s\n", sfs_G_file, sfs_C_file))
+}
+rm(sfs_G_file, sfs_C_file)
+
 # Branch A: estimate U, V from SFS-derived intronic neutral mutation parameters ----
 # The VCF-based two-allele approach averages Q and pi over polymorphic sites only
 # (invariant sites are absent from VCF records). This inflates both estimates:
