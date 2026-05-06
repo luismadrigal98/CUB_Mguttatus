@@ -1997,9 +1997,13 @@ ggsave("./results/pi_4fold_by_expression_asym.pdf",
 #   S_Wright_signed; genes below neutral Q are flagged is_drift = TRUE.
 
 # Theoretical neutral-pi reference ----
-# S_BARRIER is derived below via the Q-vs-expression GAM inflection (after
-# per-gene S_Wright). Only pi_neutral_theory is needed here as a reference
-# line in downstream Wright plots.
+# S_BARRIER: fixed at the 2N_e*s = 1 threshold (selection dominates drift) ----
+# The GAM-inflection derived value (~0.54) classified genes where drift is still
+# the dominant force as being under selection. S = 1 is the canonical boundary
+# where selection overcomes drift. The inflection-based derivation is archived.
+
+S_BARRIER        <- 1
+S_BARRIER_source <- "fixed_2Ns_gt_1"
 
 pi_neutral_theory <- wright_pi(0,
   U = if (is.finite(U_intron)) U_intron else U_emp,
@@ -2065,126 +2069,13 @@ if (!is.null(pi_data_operational)) {
                      by = "Gene_name")
 }
 
-# Expression-GAM inflection drift barrier ----
-# Fit a site-weighted GAM of Q_pref_base ~ expression. S_BARRIER is set to
-# the median S_Wright of genes at/above the expression inflection point —
-# defined as the first expression level where the GAM lower 95% CI exceeds
-# Q_neutral_obs. This anchors the selection/drift boundary to the empirically
-# visible inflection in Q vs expression (the ~1300-gene inflection in Fig 4A).
 
+# Figure: Q vs expression with GAM fit ----
 gam_q_exp <- mgcv::gam(
   Q_pref_base ~ s(Mean_Log10_Exp, k = 10),
   data    = msd_data |> dplyr::filter(!is.na(Q_pref_base), !is.na(Mean_Log10_Exp)),
   weights = N_4fold_sites
 )
-
-exp_grid     <- seq(quantile(msd_data$Mean_Log10_Exp, 0.05, na.rm = TRUE),
-                    quantile(msd_data$Mean_Log10_Exp, 0.99, na.rm = TRUE),
-                    length.out = 500)
-
-# Predict GAM fit + se on the grid
-gam_pred_det <- predict(gam_q_exp,
-                        newdata = data.frame(Mean_Log10_Exp = exp_grid),
-                        type = "response", se.fit = TRUE)
-
-# CI-based inflection: first grid point where lower 95% CI exceeds neutral Q
-inflection_idx_ci <- which(gam_pred_det$fit - 1.96 * gam_pred_det$se.fit > Q_neutral_obs)
-
-# Monotonicity-based inflection: look for the first position where the
-# fitted curve starts a sustained increase. We require 'win_len' consecutive
-# positive differences to avoid noise-driven spikes.
-fit_vals <- gam_pred_det$fit
-df_fit   <- diff(fit_vals)
-win_len  <- 7
-tol      <- 1e-8
-mon_idx  <- NA_integer_
-
-# Find global minimum of the fitted curve and search for a sustained
-# increase after that minimum. This avoids picking small early upticks.
-min_idx <- which.min(fit_vals)
-min_increase <- max(1e-3, 0.01 * (max(fit_vals) - min(fit_vals)))
-if (length(df_fit) >= win_len) {
-  start_search <- min_idx
-  # ensure we have room to check a window
-  for (i in seq.int(start_search, length(df_fit) - win_len + 1)) {
-    window_pos <- df_fit[i:(i + win_len - 1)] > tol
-    if (all(window_pos)) {
-      # check magnitude of increase relative to minimum
-      reach_idx <- i + win_len - 1 + 1  # map diff-window end -> fit index
-      if (reach_idx <= length(fit_vals) && (fit_vals[reach_idx] - fit_vals[min_idx]) >= min_increase) {
-        # use the fit index corresponding to the end of the positive run
-        mon_idx <- reach_idx
-        break
-      }
-    }
-  }
-}
-
-# Select inflection: prefer monotonicity-based, else CI-based, else fallback
-# (Note: inflection is used only for diagnostic visualization of Q trends, and
-#  now also for deriving S_BARRIER as a biologically-motivated threshold)
-
-if (!is.na(mon_idx)) {
-  exp_inflection_diagnostic <- exp_grid[mon_idx]
-  inflection_method_diagnostic <- "monotonic"
-} else if (length(inflection_idx_ci) > 0) {
-  exp_inflection_diagnostic <- exp_grid[min(inflection_idx_ci)]
-  inflection_method_diagnostic <- "ci_lower_exceeds_Q_neutral"
-} else {
-  exp_inflection_diagnostic <- as.numeric(quantile(msd_data$Mean_Log10_Exp, 0.94, na.rm = TRUE))
-  inflection_method_diagnostic <- "fallback_94pctile"
-}
-
-cat(sprintf("[Inflection] method=%s exp=%.3f (used for S_BARRIER derivation + diagnostic plots)\n", 
-            inflection_method_diagnostic, exp_inflection_diagnostic))
-
-# Theoretically-motivated yet empirically-grounded S_BARRIER derivation:
-# S_BARRIER is set to the median S_Wright_raw (non-negative) of genes at/above
-# the Q-vs-expression inflection point. This inflection marks where codon preference
-# becomes statistically elevated above the neutral baseline (Q_neutral_obs).
-#
-# Using S_Wright_raw (floored at 0) rather than S_Wright_signed avoids
-# conceptual ambiguity: we measure "how much selection" not "is there drift".
-# S_BARRIER thus represents the typical selection strength of genes that have
-# crossed into the "selected" expression regime.
-
-above_infl <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_raw), Mean_Log10_Exp >= exp_inflection_diagnostic)
-
-# Compute barrier from strictly positive S_Wright_raw (non-zero signal)
-pos_vals <- above_infl$S_Wright_raw[above_infl$S_Wright_raw > 0]
-if (length(pos_vals) > 0 && any(is.finite(pos_vals))) {
-  S_BARRIER <- median(pos_vals, na.rm = TRUE)
-  S_BARRIER_source <- "median_positive_S_Wright_raw_above_inflection"
-} else {
-  S_BARRIER <- median(above_infl$S_Wright_raw, na.rm = TRUE)
-  S_BARRIER_source <- "median_all_S_Wright_raw_fallback"
-}
-
-n_above_barrier <- nrow(above_infl)
-
-cat(sprintf("[S_BARRIER] Derived from Q-inflection at exp=%.3f\n", exp_inflection_diagnostic))
-cat(sprintf("Genes at/above inflection: %d\n", n_above_barrier))
-cat(sprintf("S_BARRIER = %.4f (source: %s)\n", S_BARRIER, S_BARRIER_source))
-cat(sprintf("Positive S_Wright_raw values above inflection: %d / %d (%.1f%%)\n",
-            length(pos_vals), n_above_barrier, 100*length(pos_vals)/pmax(n_above_barrier, 1)))
-
-# Totals and informative counts
-total_genes_with_S <- sum(!is.na(msd_data$S_Wright_raw))
-n_selected_ge_barrier <- sum(msd_data$S_Wright_raw >= S_BARRIER, na.rm = TRUE)
-n_selected_gt_zero <- sum(msd_data$S_Wright_raw > 0, na.rm = TRUE)
-
-cat(sprintf("  Genes with S_Wright_raw >= S_BARRIER: %d / %d (%.1f%%)\n",
-            n_selected_ge_barrier, total_genes_with_S,
-            100 * n_selected_ge_barrier / pmax(total_genes_with_S, 1)))
-cat(sprintf("  Genes with S_Wright_raw > 0 (any positive S): %d / %d (%.1f%%)\n",
-            n_selected_gt_zero, total_genes_with_S,
-            100 * n_selected_gt_zero / pmax(total_genes_with_S, 1)))
-cat(sprintf("  Genes flagged is_drift (S_Wright_signed < 0): %d / %d (%.1f%%)\n",
-            sum(msd_data$is_drift, na.rm = TRUE), total_genes_with_S,
-            100 * mean(msd_data$is_drift, na.rm = TRUE)))
-
-# Figure: Q vs expression with GAM fit and inflection line
 exp_grid_full <- seq(min(msd_data$Mean_Log10_Exp, na.rm = TRUE),
                      max(msd_data$Mean_Log10_Exp, na.rm = TRUE),
                      length.out = 300)
@@ -2207,12 +2098,10 @@ p_q_expression <- ggplot(msd_data |> dplyr::filter(!is.na(Q_pref_base)),
   geom_line(data = gam_ribbon_df, aes(x = x, y = fit),
             inherit.aes = FALSE, color = "#E41A1C", linewidth = 0.9) +
   geom_hline(yintercept = Q_neutral_obs, linetype = "dotted", color = "grey40") +
-  geom_vline(xintercept = exp_inflection_diagnostic, linetype = "dashed", color = "#377EB8", linewidth = 0.8) +
   labs(
     title    = "Preferred-base frequency (Q) vs expression",
-    subtitle = sprintf(
-      "Blue dashed: Q-inflection at log10(phi) = %.2f | Q_neutral = %.3f | S_BARRIER = %.4f",
-      exp_inflection_diagnostic, Q_neutral_obs, S_BARRIER),
+    subtitle = sprintf("Q_neutral = %.3f | S_BARRIER = %.4f (2N_e*s = 1 threshold)",
+                       Q_neutral_obs, S_BARRIER),
     x = expression(Log[10](expression)),
     y = "Q (preferred-base freq., 4-fold sites)"
   ) +
@@ -2220,8 +2109,7 @@ p_q_expression <- ggplot(msd_data |> dplyr::filter(!is.na(Q_pref_base)),
 ggsave("./results/Wright_Q_vs_expression_diagnostic.pdf",
        p_q_expression, width = 7, height = 5, device = cairo_pdf)
 
-rm(gam_q_exp, exp_grid, gam_pred_det, inflection_idx,
-   exp_grid_full, gam_full, gam_ribbon_df, p_q_expression)
+rm(gam_q_exp, exp_grid_full, gam_full, gam_ribbon_df, p_q_expression)
 
 # Three-metric correlation summary ----
 cat("\n=== Spearman correlations among selection metrics ===\n")
@@ -2619,11 +2507,9 @@ write.csv(
 )
 write.csv(
   data.frame(
-    criterion                    = "GAM_Q_inflection",
+    criterion                    = "fixed_2Ns_gt_1",
     S_BARRIER                    = S_BARRIER,
     S_BARRIER_advisor            = S_BARRIER_advisor,
-    exp_inflection               = exp_inflection,
-    n_above_barrier              = n_above_barrier,
     U_empirical                  = U_emp,
     V_empirical                  = V_emp,
     Q_neutral_obs                = Q_neutral_obs,
@@ -2650,7 +2536,7 @@ write.csv(
 
 # Memory cleanup -- keep: thr_sel, U_emp, V_emp, Q_neutral_obs,
 # pi_neutral_obs, pi_neutral_theory, S_BARRIER, S_BARRIER_advisor,
-# exp_inflection, n_above_barrier, msd_data, bin_roc, bin_sw, integrated_data.
+# msd_data, bin_roc, bin_sw, integrated_data.
 rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
    p_advisor_Q, p_advisor_pi,
