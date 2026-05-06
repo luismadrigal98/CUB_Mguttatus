@@ -447,7 +447,7 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
       N = .N,
       Rho = cor_test$estimate,
       P_value = cor_test$p.value,
-      Mean_S_ROC = mean(L_ROC, na.rm = TRUE),
+      Mean_ROC_eff = mean(L_ROC, na.rm = TRUE),
       Mean_Gamma = mean(Gamma_Mean, na.rm = TRUE)
     )
   }, by = Expression_Group]
@@ -486,8 +486,8 @@ test_sroc_gamma_correlation <- function(integrated_data, gamma_gene, output_dir)
   # Summary table
   summary_by_group <- merged[, .(
     N = .N,
-    Mean_S_ROC = mean(L_ROC, na.rm = TRUE),
-    SD_S_ROC = sd(L_ROC, na.rm = TRUE),
+    Mean_ROC_eff = mean(L_ROC, na.rm = TRUE),
+    SD_ROC_eff = sd(L_ROC, na.rm = TRUE),
     Mean_Gamma = mean(Gamma_Mean, na.rm = TRUE),
     SD_Gamma = sd(Gamma_Mean, na.rm = TRUE)
   ), by = Expression_Group]

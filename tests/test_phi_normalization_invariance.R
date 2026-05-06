@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #
-# Mathematical proof + numerical verification that S_ROC is invariant to
+# Mathematical proof + numerical verification that ROC_eff is invariant to
 # multiplicative scaling of phi (observed expression).
 #
 # Background
@@ -8,7 +8,7 @@
 # The AnaCoDa ROC model pipeline divides all CPM values by their grand mean
 # (~60.85) before passing them to the MCMC.  This raises the question: does
 # scaling phi change the estimated selection coefficients and, ultimately, the
-# S_ROC values used downstream?
+# ROC_eff values used downstream?
 #
 # Mathematical proof
 # ------------------
@@ -25,7 +25,7 @@
 # Proof (one line):
 #   -eta'_i * phi'  =  -(k * eta_i) * (phi / k)  =  -eta_i * phi   QED.
 #
-# Consequence for S_ROC
+# Consequence for ROC_eff
 # ---------------------
 # AnaCoDa's calculateSelectionCoefficients computes (for each codon i):
 #
@@ -38,7 +38,7 @@
 #          =  phi * ( eta_i - min(eta) )
 #          =  S_i
 #
-# S_ROC is therefore EXACTLY invariant to multiplicative scaling of phi.
+# ROC_eff is therefore EXACTLY invariant to multiplicative scaling of phi.
 #
 # Observation noise model
 # -----------------------
@@ -59,7 +59,7 @@
 # ____________________________________________________________________________
 
 cat("=================================================================\n")
-cat("Test: S_ROC invariance to phi normalization\n")
+cat("Test: ROC_eff invariance to phi normalization\n")
 cat("=================================================================\n\n")
 
 n_pass <- 0L
@@ -91,12 +91,12 @@ roc_log_lik <- function(counts, phi, mu, eta) {
   sum(counts * (log_p_unnorm - log_z))
 }
 
-# ── S_ROC per-codon for one gene ─────────────────────────────────────────────
+# ── ROC_eff per-codon for one gene ─────────────────────────────────────────────
 #
 # phi_est : estimated synthesis rate (scalar)
 # eta     : full selection vector length n_codons (reference appended as 0)
 #
-sroc_vector <- function(phi_est, eta) {
+roc_eff_vector <- function(phi_est, eta) {
   phi_est * (eta - min(eta))
 }
 
@@ -142,20 +142,20 @@ for (k in k_values) {
 }
 
 
-# ── Section 2: S_ROC = phi * eta is exactly invariant ───────────────────────
-cat("\n--- Section 2: S_ROC invariance ---\n")
+# ── Section 2: ROC_eff = phi * eta is exactly invariant ───────────────────────
+cat("\n--- Section 2: ROC_eff invariance ---\n")
 
 for (k in k_values) {
   eta_full    <- c(eta_true, 0)
   eta_scaled  <- c(eta_true * k, 0)
 
-  sroc_orig   <- vapply(phi_true,
-                        sroc_vector, numeric(n_codons), eta = eta_full)
-  sroc_scaled <- vapply(phi_true / k,
-                        sroc_vector, numeric(n_codons), eta = eta_scaled)
+  roc_eff_orig   <- vapply(phi_true,
+                        roc_eff_vector, numeric(n_codons), eta = eta_full)
+  roc_eff_scaled <- vapply(phi_true / k,
+                        roc_eff_vector, numeric(n_codons), eta = eta_scaled)
   assert_near(
-    sprintf("S_ROC invariant           (k = %8.2f)", k),
-    sroc_orig, sroc_scaled
+    sprintf("ROC_eff invariant           (k = %8.2f)", k),
+    roc_eff_orig, roc_eff_scaled
   )
 }
 
@@ -246,7 +246,7 @@ if (n_fail > 0L) {
   quit(status = 1L)
 } else {
   cat("\nConclusion: phi normalization is mathematically safe.\n")
-  cat("S_ROC = phi_estimated * eta is invariant to multiplicative\n")
-  cat("scaling of phi.  The S_ROC > 1 threshold retains its\n")
+  cat("ROC_eff = phi_estimated * eta is invariant to multiplicative\n")
+  cat("scaling of phi.  The ROC_eff > 1 threshold retains its\n")
   cat("population-genetic meaning regardless of the CPM scale.\n")
 }

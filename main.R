@@ -1342,31 +1342,31 @@ syn_counts <- counts_aligned[, synonymous_codons_aligned]
 
 n_4fold_syn_sites <- rowSums(syn_counts[, fourfold_codons_syn, drop = FALSE], na.rm = TRUE)
 
-# S_ROC: per-gene signed codon-usage efficacy at strictly 4-fold sites.
+# ROC_eff: per-gene signed codon-usage efficacy at strictly 4-fold sites.
 # Defined as −mean(η) weighted by 4-fold site counts. Preferred codons (η < 0)
-# make this positive; well-optimized genes have S_ROC > 0.
+# make this positive; well-optimized genes have ROC_eff > 0.
 # Diagnostic shows Spearman rho ≈ +0.77 with S_Wright (vs −0.16 for old φ×Δη).
 # φ is deliberately NOT used: AnaCoDa φ scale is incompatible with Wright 4Nes.
 eta_4fold_vec <- eta_vec[fourfold_codons_syn]
-S_ROC <- ifelse(
+ROC_eff <- ifelse(
   n_4fold_syn_sites > 0,
   -as.numeric(syn_counts[, fourfold_codons_syn, drop = FALSE] %*% eta_4fold_vec) /
     n_4fold_syn_sites,
   NA_real_
 )
-names(S_ROC) <- common_genes
-S_ROC_4 <- S_ROC   # backwards-compatible alias (same formula)
-names(S_ROC_4) <- common_genes
+names(ROC_eff) <- common_genes
+ROC_eff_4 <- ROC_eff   # backwards-compatible alias (same formula)
+names(ROC_eff_4) <- common_genes
 
 selection_metrics <- data.frame(
   Gene_name = common_genes,
 
   # Signed codon-usage efficacy at 4-fold sites: −mean(η_4fold).
   # Positive = gene uses preferred codons (well-optimized).
-  S_ROC = S_ROC,
+  ROC_eff = ROC_eff,
 
-  # Backwards-compatible alias for S_ROC (same formula).
-  S_ROC_4 = S_ROC_4,
+  # Backwards-compatible alias for ROC_eff (same formula).
+  ROC_eff_4 = ROC_eff_4,
 
   # Phi-scaled translational load: mean |Δη × φ| per synonymous codon.
   L_ROC = L_ROC,
@@ -1460,10 +1460,10 @@ integrated_data <- integrated_data |>
 
 # Correlation between selection metrics and CUB metrics
 cor_S_and_bias <- corrr::correlate(
-  x = as.matrix(integrated_data[, c("L_ROC", "S_ROC", "CAI", "CDC", "ENC")]),
+  x = as.matrix(integrated_data[, c("L_ROC", "ROC_eff", "CAI", "CDC", "ENC")]),
   method = "spearman", use = "complete.obs"
 )
-cat("\n=== Spearman correlations among L_ROC / S_ROC / CUB metrics ===\n")
+cat("\n=== Spearman correlations among L_ROC / ROC_eff / CUB metrics ===\n")
 print(cor_S_and_bias)
 
 cat("\n--- L_ROC (load) vs CUB metrics ---\n")
@@ -1473,10 +1473,10 @@ print(cor.test(integrated_data$L_ROC[integrated_data$Max_Log10_Exp > 3.5],
                integrated_data$CDC[integrated_data$Max_Log10_Exp > 3.5],
                method = "spearman", exact = FALSE))
 
-cat("\n--- S_ROC (signed codon efficacy, 4-fold) vs CUB metrics ---\n")
-print(cor.test(integrated_data$S_ROC, integrated_data$CAI, method = "spearman", exact = FALSE))
-print(cor.test(integrated_data$S_ROC, integrated_data$CDC, method = "spearman", exact = FALSE))
-print(cor.test(integrated_data$S_ROC[integrated_data$Max_Log10_Exp > 3.5],
+cat("\n--- ROC_eff (signed codon efficacy, 4-fold) vs CUB metrics ---\n")
+print(cor.test(integrated_data$ROC_eff, integrated_data$CAI, method = "spearman", exact = FALSE))
+print(cor.test(integrated_data$ROC_eff, integrated_data$CDC, method = "spearman", exact = FALSE))
+print(cor.test(integrated_data$ROC_eff[integrated_data$Max_Log10_Exp > 3.5],
                integrated_data$CDC[integrated_data$Max_Log10_Exp > 3.5],
                method = "spearman", exact = FALSE))
 
@@ -1507,10 +1507,10 @@ cat("\n=== Selection Efficacy Stats (For Manuscript) ===\n")
 # Define common color scale limits
 phi_range <- range(plot_data$Log_Phi, na.rm = TRUE)
 
-# Panel A: S_ROC distribution (signed efficacy at 4-fold sites; linear scale)
+# Panel A: ROC_eff distribution (signed efficacy at 4-fold sites; linear scale)
 y_max_anno <- 10000
 
-p1 <- ggplot(plot_data |> dplyr::filter(!is.na(S_ROC)), aes(x = S_ROC)) +
+p1 <- ggplot(plot_data |> dplyr::filter(!is.na(ROC_eff)), aes(x = ROC_eff)) +
   geom_histogram(bins = 100, fill = "#69b3a2", color = "white", linewidth = 0.05) +
   scale_y_continuous(trans = "log1p", breaks = c(0, 10, 100, 1000, 10000),
                      labels = scales::comma_format(accuracy = 1), expand = c(0, 0)) +
@@ -1539,7 +1539,7 @@ ggsave("results/Selection_Landscape_Final.pdf", combined_plot, width = 14, heigh
 #
 # Three metrics presented alongside each other:
 #   L_ROC:         per-gene translational load (phi-scaled |Δη|); used for GO/BGS.
-#   S_ROC:         per-gene codon-usage efficacy (-mean η at 4-fold sites); no phi.
+#   ROC_eff:         per-gene codon-usage efficacy (-mean η at 4-fold sites); no phi.
 #   S_Wright:      per-gene selection coefficient from Wright Q inversion; population-genetic units.
 #
 # Drift barrier (S_BARRIER):
@@ -1646,7 +1646,7 @@ gene_Q_4fold <- data.frame(
 #   - For per-gene π (Pi_mean_4fold), use whichever denominator is available
 
 msd_data <- integrated_data |>
-  dplyr::select(Gene_name, S_ROC, S_ROC_4, L_ROC, Pi_mean_4fold, Mean_Log10_Exp,
+  dplyr::select(Gene_name, ROC_eff, ROC_eff_4, L_ROC, Pi_mean_4fold, Mean_Log10_Exp,
                 Max_Log10_Exp, Exp_breadth, CDS_length_nt, Sites_4fold,
                 Pi_sum_4fold) |>
   dplyr::inner_join(gene_Q_4fold, by = "Gene_name") |>
@@ -2267,13 +2267,13 @@ rm(gam_q_exp, exp_grid_full, gam_full, gam_ribbon_df, p_q_expression)
 # Three-metric correlation summary ----
 cat("\n=== Spearman correlations among selection metrics ===\n")
 metric_df <- msd_data |>
-  dplyr::select(S_ROC, L_ROC, S_Wright_signed, Mean_Log10_Exp) |>
+  dplyr::select(ROC_eff, L_ROC, S_Wright_signed, Mean_Log10_Exp) |>
   dplyr::filter(dplyr::if_all(dplyr::everything(), is.finite))
 cat(sprintf("  n = %d genes with all four metrics finite\n", nrow(metric_df)))
 print(round(cor(metric_df, method = "spearman"), 3))
 rm(metric_df)
 
-# --- Binned S_ROC and S_Wright tables ----------------------------------------
+# --- Binned ROC_eff and S_Wright tables ----------------------------------------
 # 30 site-weighted ntile bins used for the pi-consistency validation (bin_roc)
 # and the diversity-hump figure (bin_sw). Use two-state calibration if available.
 
@@ -2283,13 +2283,13 @@ V_bin_calib <- if (is.finite(U_intron) && is.finite(V_intron)) V_intron else
                if (exists("U_emp_two") && is.finite(U_emp_two) && is.finite(V_emp_two)) V_emp_two else V_emp
 
 bin_roc <- msd_data |>
-  dplyr::filter(!is.na(S_ROC), !is.na(Q_pref_base)) |>
-  dplyr::arrange(S_ROC) |>
-  dplyr::mutate(Sroc_bin = ntile(S_ROC, 30)) |>
-  dplyr::group_by(Sroc_bin) |>
+  dplyr::filter(!is.na(ROC_eff), !is.na(Q_pref_base)) |>
+  dplyr::arrange(ROC_eff) |>
+  dplyr::mutate(ROC_eff_bin = ntile(ROC_eff, 30)) |>
+  dplyr::group_by(ROC_eff_bin) |>
   dplyr::summarize(
     n_genes    = dplyr::n(),
-    mean_S_ROC = mean(S_ROC),
+    mean_ROC_eff = mean(ROC_eff),
     sites_total = sum(N_4fold_sites),
     Q_bin      = sum(N_preferred_base) / sum(N_4fold_sites),
     pi_bin     = sum(Pi_sum_4fold, na.rm = TRUE) /
@@ -2367,11 +2367,11 @@ cat(sprintf(
 #
 # No fitted parameter, so df = n_bins.  Drift bins (negative S_Wright_bin)
 # reflect residual selection in the empirical neutral pool that nudges
-# (U_emp, V_emp) -- they surface as inflated pi_residual at low S_ROC bins.
+# (U_emp, V_emp) -- they surface as inflated pi_residual at low ROC_eff bins.
 # We therefore also report the chi^2 restricted to the selection regime
 # (S_Wright_bin >= S_BARRIER), the regime where the model is identifiable.
 
-# Bin-level pi consistency using S_ROC bins (parameter-free Wright validation)
+# Bin-level pi consistency using ROC_eff bins (parameter-free Wright validation)
 bin_roc$pi_pred_wright <- wright_pi(bin_roc$S_Wright_bin,
                                     U = U_bin_calib, V = V_bin_calib)
 bin_roc$pi_residual    <- bin_roc$pi_bin - bin_roc$pi_pred_wright
@@ -2382,7 +2382,7 @@ chi2_pi_stat  <- sum(chi2_pi_terms, na.rm = TRUE)
 chi2_pi_df    <- sum(!is.na(chi2_pi_terms))
 chi2_pi_p     <- pchisq(chi2_pi_stat, df = chi2_pi_df, lower.tail = FALSE)
 cat(sprintf(
-  "\n[Validation] Bin-level pi consistency (S_ROC bins): chi^2 = %.2f / df = %d -> p = %.3g\n",
+  "\n[Validation] Bin-level pi consistency (ROC_eff bins): chi^2 = %.2f / df = %d -> p = %.3g\n",
   chi2_pi_stat, chi2_pi_df, chi2_pi_p
 ))
 
@@ -2405,8 +2405,8 @@ cat(sprintf(
   if (is.finite(chi2_pi_sel_p))    sprintf("%.3g", chi2_pi_sel_p)    else "NA"
 ))
 
-# Bin-level pi consistency figure (S_ROC bins)
-p_pi_validation <- ggplot(bin_roc, aes(x = mean_S_ROC, y = pi_bin)) +
+# Bin-level pi consistency figure (ROC_eff bins)
+p_pi_validation <- ggplot(bin_roc, aes(x = mean_ROC_eff, y = pi_bin)) +
   geom_errorbar(aes(ymin = pi_bin - 2 * pi_se,
                     ymax = pi_bin + 2 * pi_se),
                 width = 0, color = "#377EB8", alpha = 0.6) +
@@ -2435,30 +2435,30 @@ p_pi_validation <- ggplot(bin_roc, aes(x = mean_S_ROC, y = pi_bin)) +
 ggsave("./results/Wright_pi_vs_S_Wright_binned.pdf",
        p_pi_validation, width = 7, height = 5, device = cairo_pdf)
 
-# Per-gene S_ROC_4 vs S_Wright sanity-check scatter ----
-# CRITICAL: Filter to genes where BOTH S_ROC_4 and S_Wright_raw are non-zero
+# Per-gene ROC_eff_4 vs S_Wright sanity-check scatter ----
+# CRITICAL: Filter to genes where BOTH ROC_eff_4 and S_Wright_raw are non-zero
 # to avoid noise contamination from genes with no detectable selection signal.
 # This avoids correlating noise with noise, preserving signal-to-noise in the
 # subset of genes actually exhibiting codon usage optimization.
 
 per_gene_pool <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_signed), !is.na(S_ROC_4), 
+  dplyr::filter(!is.na(S_Wright_signed), !is.na(ROC_eff_4), 
                 N_4fold_sites >= 50,        # Non-zero S_Wright (positive selection)
-                S_ROC_4 != 0)            # Non-zero S_ROC (detectable codon preference)
+                ROC_eff_4 != 0)            # Non-zero ROC_eff (detectable codon preference)
 
-cor_sroc4_spearman <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_signed,
+cor_roc_eff_4_spearman <- cor(per_gene_pool$ROC_eff_4, per_gene_pool$S_Wright_signed,
                           method = "spearman")
-cor_sroc4_pearson  <- cor(per_gene_pool$S_ROC_4, per_gene_pool$S_Wright_signed,
+cor_roc_eff_4_pearson  <- cor(per_gene_pool$ROC_eff_4, per_gene_pool$S_Wright_signed,
                           method = "pearson")
 
 cat(sprintf(
-  "[Validation] cor(S_ROC_4, S_Wright_raw): Spearman = %+.3f, Pearson = %+.3f (n = %d)\n",
-  cor_sroc4_spearman, cor_sroc4_pearson, nrow(per_gene_pool)
+  "[Validation] cor(ROC_eff_4, S_Wright_raw): Spearman = %+.3f, Pearson = %+.3f (n = %d)\n",
+  cor_roc_eff_4_spearman, cor_roc_eff_4_pearson, nrow(per_gene_pool)
 ))
-cat(sprintf("Filtered to: S_Wright_raw > 0 & S_ROC_4 != 0 & N_4fold_sites >= 50\n"))
+cat(sprintf("Filtered to: S_Wright_raw > 0 & ROC_eff_4 != 0 & N_4fold_sites >= 50\n"))
 
-p_SROC4_vs_SWright <- ggplot(per_gene_pool,
-                              aes(x = S_ROC_4, y = S_Wright_signed)) +
+p_ROC_eff_4_vs_SWright <- ggplot(per_gene_pool,
+                              aes(x = ROC_eff_4, y = S_Wright_signed)) +
   geom_hex(bins = 60) +
   scale_fill_viridis_c(option = "plasma", trans = "log10", name = "Gene\nCount") +
   geom_smooth(method = "lm", color = "#E41A1C", linewidth = 0.9, se = TRUE) +
@@ -2467,30 +2467,30 @@ p_SROC4_vs_SWright <- ggplot(per_gene_pool,
   labs(
     title = expression(paste(S[ROC][",4"], " vs ", S[Wright], "  (non-zero genes only)")),
     subtitle = sprintf(
-      "Spearman rho = %+.3f (n = %d, S_Wright & S_ROC) | S_BARRIER = %.4f",
-      cor_sroc4_spearman, nrow(per_gene_pool), S_BARRIER
+      "Spearman rho = %+.3f (n = %d, S_Wright & ROC_eff) | S_BARRIER = %.4f",
+      cor_roc_eff_4_spearman, nrow(per_gene_pool), S_BARRIER
     ),
     x = expression(S[ROC] ~ "(AnaCoDa efficacy, 4-fold)"),
     y = expression(S[Wright] ~ "(per-gene, non-negative)")
   ) +
   theme_custom()
-ggsave("./results/Wright_S_ROC4_vs_S_Wright.pdf",
-       p_SROC4_vs_SWright, width = 7, height = 5, device = cairo_pdf)
+ggsave("./results/Wright_ROC_eff_4_vs_S_Wright.pdf",
+       p_ROC_eff_4_vs_SWright, width = 7, height = 5, device = cairo_pdf)
 
 # 8.3.5) Three-panel drift-barrier overview ----
 #
 # Panel A: S_Wright_signed histogram, filled by selection/drift group.
 #   The vertical dashed line marks S_BARRIER (GAM-inflection threshold).
 # Panel B: L_ROC density split by the same S_Wright classification.
-# Panel C: S_ROC density split by the same S_Wright classification.
+# Panel C: ROC_eff density split by the same S_Wright classification.
 #
 # Logic: the barrier is derived from Q-inflection (expression level where
 # selection becomes detectable). Genes at/above inflection are classified as
 # "selection" if S_Wright_raw >= S_BARRIER (median of selected genes).
-# Overlaying on L_ROC and S_ROC provides cross-metric validation.
+# Overlaying on L_ROC and ROC_eff provides cross-metric validation.
 
 plot_barrier <- msd_data |>
-  dplyr::filter(is.finite(S_Wright_signed), is.finite(L_ROC), is.finite(S_ROC)) |>
+  dplyr::filter(is.finite(S_Wright_signed), is.finite(L_ROC), is.finite(ROC_eff)) |>
   dplyr::mutate(
     SW_group = dplyr::if_else(S_Wright_signed >= S_BARRIER, 
                               "Selection", 
@@ -2545,8 +2545,8 @@ p_lroc_split <- ggplot(plot_barrier, aes(x = L_ROC, fill = SW_group)) +
   theme_custom() +
   theme(legend.position = "none")
 
-# Panel C: S_ROC density split by group
-p_sroc_split <- ggplot(plot_barrier, aes(x = S_ROC, fill = SW_group)) +
+# Panel C: ROC_eff density split by group
+p_roc_eff_split <- ggplot(plot_barrier, aes(x = ROC_eff, fill = SW_group)) +
   geom_density(alpha = 0.55, color = NA) +
   scale_fill_manual(values = barrier_colors, name = NULL) +
   labs(
@@ -2556,14 +2556,14 @@ p_sroc_split <- ggplot(plot_barrier, aes(x = S_ROC, fill = SW_group)) +
   theme_custom() +
   theme(legend.position = "none")
 
-p_barrier_overview <- (p_sw_dist / (p_lroc_split | p_sroc_split)) +
+p_barrier_overview <- (p_sw_dist / (p_lroc_split | p_roc_eff_split)) +
   patchwork::plot_annotation(tag_levels = "A")
 
 ggsave("./results/Drift_barrier_overview.pdf",
        p_barrier_overview, width = 11, height = 9, device = cairo_pdf)
 
 rm(plot_barrier, n_sel_barrier, n_drift_barrier,
-   barrier_colors, p_sw_dist, p_lroc_split, p_sroc_split, p_barrier_overview)
+   barrier_colors, p_sw_dist, p_lroc_split, p_roc_eff_split, p_barrier_overview)
 
 # 8.3.6) Diversity hump: pi vs S_Wright ----
 #
@@ -2632,10 +2632,10 @@ p_hump_sw <- ggplot(bin_sw_rel, aes(x = mean_S_Wright, y = pi_bin)) +
 ggsave("./results/Diversity_hump_S_Wright.pdf",
        p_hump_sw, width = 7, height = 5.5, device = cairo_pdf)
 
-write.csv(bin_roc |> dplyr::select(Sroc_bin, n_genes, mean_S_ROC, sites_total,
+write.csv(bin_roc |> dplyr::select(ROC_eff_bin, n_genes, mean_ROC_eff, sites_total,
                                    Q_bin, S_Wright_bin, pi_bin, pi_se,
                                    pi_pred_wright, pi_residual),
-          "./results/Diversity_hump_pi_vs_S_ROC_binned.csv",
+          "./results/Diversity_hump_pi_vs_ROC_eff_binned.csv",
           row.names = FALSE)
 write.csv(bin_sw_rel |> dplyr::select(Ssw_bin, n_genes, mean_S_Wright, sites_total,
                                       Q_bin, pi_bin, pi_se, pi_rel),
@@ -2651,11 +2651,11 @@ write.csv(wright_fid,
 write.csv(wright_emp,
           "./results/Wright_curve_empirical.csv",        row.names = FALSE)
 write.csv(
-  msd_data |> dplyr::select(Gene_name, S_ROC, S_ROC_4, L_ROC, Q_pref_base,
+  msd_data |> dplyr::select(Gene_name, ROC_eff, ROC_eff_4, L_ROC, Q_pref_base,
                             S_Wright_signed, S_Wright_raw, is_drift,
                             pi_2allele,
                             Mean_Log10_Exp, Max_Log10_Exp, N_4fold_sites),
-  "./results/Wright_per_gene_S_ROC_S_Wright.csv", row.names = FALSE
+  "./results/Wright_per_gene_ROC_eff_S_Wright.csv", row.names = FALSE
 )
 write.csv(
   data.frame(
@@ -2680,8 +2680,8 @@ write.csv(
     chi2_pi_sel_stat             = if (is.finite(chi2_pi_sel_stat)) chi2_pi_sel_stat else NA_real_,
     chi2_pi_sel_df               = chi2_pi_sel_df,
     chi2_pi_sel_p                = if (is.finite(chi2_pi_sel_p))    chi2_pi_sel_p    else NA_real_,
-    cor_S_ROC4_S_Wright_spearman = cor_sroc4_spearman,
-    cor_S_ROC4_S_Wright_pearson  = cor_sroc4_pearson
+    cor_ROC_eff_4_S_Wright_spearman = cor_roc_eff_4_spearman,
+    cor_ROC_eff_4_S_Wright_pearson  = cor_roc_eff_4_pearson
   ),
   "./results/Wright_threshold_adopted.csv", row.names = FALSE
 )
@@ -2696,7 +2696,7 @@ rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    neutral_pool, neutral_pool_pi, pi_data_operational,
    Q_neutral_two, pi_neutral_two, hardy_max_two,
    chi2_pi_terms, sel_bins,
-   per_gene_pool, p_pi_validation, p_SROC4_vs_SWright)
+   per_gene_pool, p_pi_validation, p_ROC_eff_4_vs_SWright)
 gc()
 
 # 8.4) GO-enrichment for two selection groups ----
@@ -2718,7 +2718,7 @@ GO_results_load <- gost(query = subset_load_paying,
                         domain_scope = "custom", custom_bg = custom_bag,
                         user_threshold = 0.05)
 write.csv(x = GO_results_load$result |> dplyr::select(-parents),
-          file = "./results/Go_enrichment_load_S_ROC.csv",
+          file = "./results/Go_enrichment_load_ROC_eff.csv",
           quote = TRUE, row.names = FALSE)
 cat(sprintf("[GO] Load-paying group (top 50 L_ROC; thr_sel = %.6f): n = %d genes\n",
             as.numeric(thr_sel), length(subset_load_paying)))
@@ -2758,23 +2758,23 @@ detailed_annotation_full <- read.delim(
   dplyr::distinct()
 
 # Top 50 by L_ROC (load-paying)
-top_S_ROC <- integrated_data |>
+top_ROC_eff <- integrated_data |>
   dplyr::filter(L_ROC > thr_sel) |>
   dplyr::arrange(desc(L_ROC)) |>
-  dplyr::select(Gene_name, L_ROC, S_ROC, Mean_Log10_Exp) |>
+  dplyr::select(Gene_name, L_ROC, ROC_eff, Mean_Log10_Exp) |>
   dplyr::left_join(detailed_annotation_full,
                    by = c("Gene_name" = "locusName"))
-write.csv(top_S_ROC,
+write.csv(top_ROC_eff,
           "./results/Top_genes_strong_selection_load.csv",
           quote = TRUE, row.names = FALSE)
 cat(sprintf("[Top genes] Top 50 by L_ROC (thr_sel = %.6f): %d genes (load-paying; e.g. Rubisco/photosynthesis)\n",
-            as.numeric(thr_sel), nrow(top_S_ROC)))
+            as.numeric(thr_sel), nrow(top_ROC_eff)))
 
 # Selection group: S_Wright >= S_BARRIER
 top_selection <- msd_data |>
   dplyr::filter(!is.na(S_Wright_raw), S_Wright_raw >= S_BARRIER) |>
   dplyr::arrange(desc(S_Wright_raw)) |>
-  dplyr::select(Gene_name, S_Wright_raw, S_ROC_4, L_ROC, Mean_Log10_Exp) |>
+  dplyr::select(Gene_name, S_Wright_raw, ROC_eff_4, L_ROC, Mean_Log10_Exp) |>
   dplyr::left_join(detailed_annotation_full,
                    by = c("Gene_name" = "locusName"))
 write.csv(top_selection,
@@ -2784,7 +2784,7 @@ cat(sprintf("[Top genes] S_Wright_raw >= %.4f: %d genes (Q-inflection-derived se
             S_BARRIER, nrow(top_selection)))
 
 # Compatibility alias for downstream sections expecting `detailed_annotation`
-detailed_annotation <- top_S_ROC |>
+detailed_annotation <- top_ROC_eff |>
   dplyr::transmute(locusName = Gene_name, Best.hit.arabi.name,
                    Best.hit.arabi.defline)
 

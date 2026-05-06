@@ -97,17 +97,17 @@ wright_solve_UV <- function(Q_neutral, pi_neutral) {
 #' Uses bin-aggregated empirical Q (more stable than per-gene fits, since
 #' per-gene Q has high sampling noise from small 4-fold-site counts).
 #'
-#' @param S_ROC_bin   Numeric vector of mean L_ROC per bin.
+#' @param ROC_eff_bin   Numeric vector of mean L_ROC per bin.
 #' @param Q_obs_bin   Numeric vector of mean preferred-codon frequency per bin.
 #' @param weights     Optional bin weights (e.g. site counts) for weighted LS.
 #' @param U,V         Wright mutation parameters.
 #' @param alpha_init  Starting value for alpha.
 #' @return List with fitted `alpha`, residual sd, and the nls fit.
-wright_calibrate_alpha <- function(S_ROC_bin, Q_obs_bin,
+wright_calibrate_alpha <- function(ROC_eff_bin, Q_obs_bin,
                                    weights = NULL, U, V, alpha_init = 1) {
-  stopifnot(length(S_ROC_bin) == length(Q_obs_bin))
-  if (is.null(weights)) weights <- rep(1, length(S_ROC_bin))
-  df <- data.frame(s = S_ROC_bin, q = Q_obs_bin, w = weights)
+  stopifnot(length(ROC_eff_bin) == length(Q_obs_bin))
+  if (is.null(weights)) weights <- rep(1, length(ROC_eff_bin))
+  df <- data.frame(s = ROC_eff_bin, q = Q_obs_bin, w = weights)
   fit <- tryCatch(
     nls(q ~ wright_Q(alpha * s, U = U, V = V),
         data = df, start = list(alpha = alpha_init), weights = w,

@@ -7,7 +7,7 @@
 #' Site Frequency Spectrum (SFS) based selection estimates (γ = 4Nes).
 #' 
 #' KEY QUESTION: Why does ROC show expression-dependent selection intensity
-#' (S_ROC varies 100-1000× with expression) while SFS shows uniform γ (~1.4)?
+#' (ROC_eff varies 100-1000× with expression) while SFS shows uniform γ (~1.4)?
 #' 
 #' CRITICAL FIX: The original γ estimation used global α,β from introns.
 #' For proper per-amino-acid analysis, we need AA-specific parameters.
@@ -68,12 +68,12 @@ cat(sprintf("Figures directory: %s\n\n", figures_dir))
 
 cat("Loading data...\n\n")
 
-# 1. Load existing gamma vs S_ROC data (already computed!)
+# 1. Load existing gamma vs ROC_eff data (already computed!)
 gamma_sroc_file <- "./results/gamma_vs_Sroc_scaling_data.csv"
 
 if (file.exists(gamma_sroc_file)) {
   gamma_sroc_data <- fread(gamma_sroc_file)
-  cat(sprintf("✓ Loaded gamma vs S_ROC data: %d expression bins\n", nrow(gamma_sroc_data)))
+  cat(sprintf("✓ Loaded gamma vs ROC_eff data: %d expression bins\n", nrow(gamma_sroc_data)))
   has_gamma_data <- TRUE
 } else {
   cat("⚠ gamma_vs_Sroc_scaling_data.csv not found\n")
