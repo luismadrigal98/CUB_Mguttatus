@@ -3659,6 +3659,64 @@ integrated_data <- integrated_data |>
 cat(sprintf("300 bp decomposition: %d genes matched\n",
             sum(!is.na(integrated_data$Sites_4fold_first300))))
 
+# 12.0b) π by feature size window — exon (4-fold) vs intron (all sites) ----
+# Feature length is total surveyed sites from the "all" degeneracy row.
+# Exons use 4-fold synonymous π; introns only carry an "all" row so all-site π
+# is used as the neutral comparator.
+
+feat_length <- pi_feature[Degeneracy == "all",
+                           .(Gene, Feature_Type, Feature_Num, length_bp = Sites)]
+
+feat_4f_exon <- pi_feature[Feature_Type == "exon" & Degeneracy == "4-fold",
+                            .(Gene, Feature_Type, Feature_Num, Pi_sum, n_sites = Sites)]
+
+feat_all_intron <- pi_feature[Feature_Type == "intron" & Degeneracy == "all",
+                               .(Gene, Feature_Type, Feature_Num, Pi_sum, n_sites = Sites)]
+
+feat_win <- data.table::rbindlist(list(feat_4f_exon, feat_all_intron))
+feat_win <- merge(feat_win, feat_length,
+                  by = c("Gene", "Feature_Type", "Feature_Num"), all.x = TRUE)
+
+feat_win[, size_bin := cut(
+  length_bp,
+  breaks = c(0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, Inf),
+  labels = c("[0,1k)", "[1k,2k)", "[2k,3k)", "[3k,4k)",
+             "[4k,5k)", "[5k,6k)", "[6k,7k)", "[7k,8k)",
+             "[8k,9k)", "[9k,10k)", "[10k+]"),
+  right = FALSE
+)]
+
+pi_size_window <- feat_win[n_sites > 0 & !is.na(size_bin), .(
+  n_features = .N,
+  Pi_mean    = sum(Pi_sum) / sum(n_sites)
+), by = .(Feature_Type, size_bin)]
+
+data.table::setorder(pi_size_window, Feature_Type, size_bin)
+
+plot_pi_size_window <- ggplot(
+    pi_size_window,
+    aes(x = size_bin, y = Pi_mean, fill = Feature_Type)
+  ) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(
+    values = c("exon" = "#2166AC", "intron" = "#D6604D"),
+    labels = c("exon" = "Exon (4-fold)", "intron" = "Intron (all sites)")
+  ) +
+  labs(
+    x = "Feature length (bp)",
+    y = expression(bar(pi)),
+    fill = NULL,
+    title = expression(pi ~ "by feature size — exon (4-fold) vs intron")
+  ) +
+  theme_custom() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("./results/pi_by_feature_size_window.pdf", plot_pi_size_window,
+       width = 10, height = 6)
+
+rm(feat_length, feat_4f_exon, feat_all_intron, feat_win, pi_size_window,
+   plot_pi_size_window)
+
 rm(pi_feature, exon_all, exon_4fold, exon_0fold, exon_data, pi_300bp)
 gc()
 
