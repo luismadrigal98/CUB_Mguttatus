@@ -2758,17 +2758,18 @@ detailed_annotation_full <- read.delim(
   dplyr::distinct()
 
 # Top 50 by L_ROC (load-paying)
-top_ROC_eff <- integrated_data |>
-  dplyr::filter(L_ROC > thr_sel) |>
+top_L_ROC <- integrated_data |>
   dplyr::arrange(desc(L_ROC)) |>
-  dplyr::select(Gene_name, L_ROC, ROC_eff, Mean_Log10_Exp) |>
-  dplyr::left_join(detailed_annotation_full,
-                   by = c("Gene_name" = "locusName"))
-write.csv(top_ROC_eff,
+  dplyr::select(Gene_name, L_ROC)
+
+top_L_ROC <- top_L_ROC[1:50,]
+
+top_L_ROC <- top_L_ROC |>
+  left_join(detailed_annotation_full, by = join_by("Gene_name" == "locusName"))
+
+write.csv(top_L_ROC,
           "./results/Top_genes_strong_selection_load.csv",
           quote = TRUE, row.names = FALSE)
-cat(sprintf("[Top genes] Top 50 by L_ROC (thr_sel = %.6f): %d genes (load-paying; e.g. Rubisco/photosynthesis)\n",
-            as.numeric(thr_sel), nrow(top_ROC_eff)))
 
 # Selection group: S_Wright >= S_BARRIER
 top_selection <- msd_data |>
