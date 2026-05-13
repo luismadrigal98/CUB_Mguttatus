@@ -1708,9 +1708,51 @@ cat(sprintf(
 # nucleotide system.  Output is written to results/ so Branch A can read it;
 # if either SFS file is missing the write is skipped and Branch A falls back
 # to whatever file already exists on disk (or NA if none).
+#
+# SFS GENERATION (when sfs_introns_{G,C}.csv are missing):
+#   The intronic SFS files are produced from a population VCF + GFF3 by
+#     miscellanea_code/filter_vcf_for_introns.py
+#   wrapped for SLURM at
+#     Bash_scripts/run_sfs_introns.sh <vcf.gz> <gff3> <out_dir>
+#   Below, if both SFS CSVs are missing AND a local VCF is reachable (via
+#   the SFS_INTRONS_VCF env var, e.g. `export SFS_INTRONS_VCF=...`), we
+#   invoke the Python script directly so the rest of main.R can proceed
+#   end-to-end on a fresh dataset. On the cluster, prefer the sbatch path.
 
 sfs_G_file <- "./data/sfs_introns_G.csv"
 sfs_C_file <- "./data/sfs_introns_C.csv"
+
+if (!file.exists(sfs_G_file) || !file.exists(sfs_C_file)) {
+  sfs_vcf_env <- Sys.getenv("SFS_INTRONS_VCF", unset = "")
+  gff_path    <- "./data/Mguttatusvar_IM767_887_v2.1.gene.gff3"
+  py_path     <- "./miscellanea_code/filter_vcf_for_introns.py"
+  if (nzchar(sfs_vcf_env) && file.exists(sfs_vcf_env) &&
+      file.exists(gff_path) && file.exists(py_path)) {
+    cat(sprintf("[SFS gen] Building intronic SFS from %s ...\n", sfs_vcf_env))
+    stream_cmd <- if (grepl("\\.gz$", sfs_vcf_env)) "zcat" else "cat"
+    cmd <- sprintf("%s %s | python3 %s --stream --gff %s",
+                   stream_cmd, shQuote(sfs_vcf_env),
+                   shQuote(py_path), shQuote(gff_path))
+    exit_code <- system(cmd)
+    if (exit_code == 0) {
+      # Python writes sfs_introns_{G,C}.csv to CWD; move them under ./data/.
+      for (sfs_fname in c("sfs_introns_G.csv", "sfs_introns_C.csv")) {
+        if (file.exists(sfs_fname)) {
+          file.rename(sfs_fname, file.path("data", sfs_fname))
+        }
+      }
+      cat("[SFS gen] sfs_introns_{G,C}.csv written to ./data/.\n")
+    } else {
+      cat(sprintf("[SFS gen] python3 invocation failed (exit %d).\n", exit_code))
+    }
+    rm(stream_cmd, cmd, exit_code)
+  } else {
+    cat("[SFS gen] SFS CSVs missing and no local VCF available.\n")
+    cat("  To regenerate: sbatch Bash_scripts/run_sfs_introns.sh <vcf.gz> <gff3> data/\n")
+    cat("  Or set env var SFS_INTRONS_VCF=/path/to/vcf.gz before sourcing main.R.\n")
+  }
+  rm(sfs_vcf_env, gff_path, py_path)
+}
 
 if (file.exists(sfs_G_file) && file.exists(sfs_C_file)) {
   neutral_params_sfs <- load_and_estimate_neutral_params(sfs_G_file, sfs_C_file)
@@ -1895,7 +1937,14 @@ pi_data_operational <- pi_data_operational |>
   dplyr::filter(MeanLog10_exp != 0)
 
 if (!is.null(pi_data_operational)) {
+  # Drop any columns from neutral_pool that pi_data_operational is about to
+  # contribute. Otherwise, on a rerun within the same R session, msd_data
+  # already carries pi_2allele (joined in below at the "Join two-allele pi"
+  # block) and the inner_join here would produce pi_2allele.x / pi_2allele.y,
+  # breaking the bare `pi_2allele` reference in the filter.
+  op_cols <- setdiff(names(pi_data_operational), "Gene_name")
   neutral_pool_pi <- neutral_pool |>
+    dplyr::select(-tidyselect::any_of(op_cols)) |>
     dplyr::inner_join(pi_data_operational, by = "Gene_name") |>
     dplyr::filter(!is.na(pi_2allele), !is.na(q_pref))
   if (nrow(neutral_pool_pi) > 0) {
@@ -2272,7 +2321,10 @@ cat(sprintf(
 # during the two-state UV calibration above (Branch B). Join here so it is
 # available for downstream Wright comparisons alongside S_Wright_signed.
 if (!is.null(pi_data_operational)) {
+  # Defensive: drop any pre-existing pi_2allele on msd_data so reruns in the
+  # same R session do not produce .x/.y suffixes from the left_join below.
   msd_data <- msd_data |>
+    dplyr::select(-tidyselect::any_of("pi_2allele")) |>
     dplyr::left_join(pi_data_operational |> dplyr::select(Gene_name, pi_2allele),
                      by = "Gene_name")
 }

@@ -1,0 +1,7 @@
+"Parameter","Value","Description"
+"alpha_G",0.00542093680621023,"4N*u for G (unpreferred->preferred)"
+"beta_G",0.0272382015532753,"4N*v for G (preferred->unpreferred)"
+"alpha_C",0.00509112183618932,"4N*u for C (unpreferred->preferred)"
+"beta_C",0.0287273928703253,"4N*v for C (preferred->unpreferred)"
+"pi_G_expected",0.00875630850138103,"Expected nucleotide diversity at G sites"
+"pi_C_expected",0.00836644314990464,"Expected nucleotide diversity at C sites"

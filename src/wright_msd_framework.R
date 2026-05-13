@@ -4,19 +4,34 @@
 ##'
 ##' Theoretical machinery for predicting equilibrium preferred-codon
 ##' frequency Q and per-site nucleotide diversity pi as functions of the
-##' scaled selection coefficient S = 2 N s (haploid convention) under a
-##' two-allele Wright model with biased mutation.
+##' scaled selection coefficient S under a two-allele Wright model with
+##' biased mutation.
 ##'
 ##' The stationary density (Wright 1937, "Evolution and the genetics of
 ##' populations") is
 ##'
 ##'     phi(p) ∝ p^(V-1) * (1-p)^(U-1) * exp(S * p)
 ##'
-##' with V = 2*N*v (scaled mutation rate TO the preferred allele) and
-##' U = 2*N*u (scaled mutation rate FROM the preferred allele).  The
-##' normalization and moments are available in closed form via Kummer's
-##' confluent hypergeometric function M(a, b, z) = 1F1(a; b; z), so we
-##' avoid the numerical pitfalls of integrating across the boundary
+##' where U and V are the Beta-distribution shape parameters of the
+##' equilibrium stationary distribution under drift + mutation.  Under the
+##' standard DIPLOID Wright-Fisher diffusion (Crow & Kimura 1970, §8.5)
+##' these shape parameters equal
+##'
+##'     V = 4 * Ne * v   (scaled mutation rate TO   the preferred allele)
+##'     U = 4 * Ne * u   (scaled mutation rate FROM the preferred allele)
+##'     S = 4 * Ne * s   (scaled selection coefficient, additive)
+##'
+##' so the values passed to these functions are 4N-scaled (matching the
+##' alpha/beta returned by `solve_alpha_and_beta_from_introns()` and stored
+##' in `results/neutral_mutation_parameters.csv`).  Do NOT halve them when
+##' calling these routines — the moment formulas below treat U and V
+##' literally as the Beta shape parameters, so any other scaling produces
+##' a biased pi (Q remains invariant under scaling because V/(U+V) is a
+##' ratio).
+##'
+##' The normalization and moments are available in closed form via
+##' Kummer's confluent hypergeometric function M(a, b, z) = 1F1(a; b; z),
+##' so we avoid the numerical pitfalls of integrating across the boundary
 ##' singularities at p = 0 and p = 1.
 ##'
 ##' Identities used (gsl::hyperg_1F1):
@@ -37,9 +52,13 @@
 
 #' Q(S) = E[p] under Wright's stationary distribution
 #'
-#' @param S Numeric vector of scaled selection coefficients (2 N s).
-#' @param U Scaled mutation rate FROM preferred (2 N u). Must be > 0.
-#' @param V Scaled mutation rate TO preferred (2 N v). Must be > 0.
+#' @param S Numeric vector of scaled selection coefficients (diploid additive
+#'   convention: S = 4*Ne*s). Q is computed as a ratio of 1F1 functions so
+#'   the result is scale-invariant in (U, V) when S = 0.
+#' @param U Beta-distribution shape parameter for the FROM-preferred allele;
+#'   equals 4*Ne*u under diploid Wright-Fisher. Must be > 0.
+#' @param V Beta-distribution shape parameter for the TO-preferred allele;
+#'   equals 4*Ne*v under diploid Wright-Fisher. Must be > 0.
 #' @return Numeric vector of equilibrium preferred-codon frequencies.
 wright_Q <- function(S, U, V) {
   stopifnot(U > 0, V > 0, all(is.finite(S)))
@@ -50,7 +69,12 @@ wright_Q <- function(S, U, V) {
 
 #' pi(S) = 2 * E[p (1 - p)] under Wright's stationary distribution
 #'
-#' This is the per-site heterozygosity in a two-allele model.
+#' Per-site heterozygosity in a two-allele model. At S = 0 this reduces to
+#' the closed form pi = 2 * V * U / ((U + V) * (U + V + 1)) — the standard
+#' moment formula for a Beta(V, U) random variable. U and V are passed
+#' directly as the Beta-distribution shape parameters; under diploid
+#' Wright-Fisher they equal 4*Ne*u and 4*Ne*v (do NOT divide by 2). Unlike
+#' Q, pi is NOT scale-invariant in (U, V): halving both inputs halves pi.
 wright_pi <- function(S, U, V) {
   stopifnot(U > 0, V > 0, all(is.finite(S)))
   num <- vapply(S, function(s) gsl::hyperg_1F1(V + 1, U + V + 2, s), numeric(1))
@@ -63,15 +87,19 @@ wright_pi <- function(S, U, V) {
 ## Closed-form neutral solver: recover (U, V) from observed Q and pi at S = 0
 ## ___________________________________________________________________________
 
-#' Recover scaled mutation parameters from observed neutral Q and pi
+#' Recover Beta-distribution shape parameters from observed neutral Q and pi
 #'
 #' Given Q_neutral = V/(U+V) and pi_neutral = 2*V*U/((U+V)*(U+V+1)),
 #' the system has a unique solution in U, V > 0 whenever
 #' 0 < Q_neutral < 1 and pi_neutral < 2 * Q_neutral * (1 - Q_neutral).
+#' The returned U and V are the Beta shape parameters consumed by
+#' wright_pi/wright_Q above (4*Ne*u, 4*Ne*v under diploid Wright-Fisher),
+#' on the same scale as the alpha/beta produced by
+#' `solve_alpha_and_beta_from_introns()`.
 #'
 #' @param Q_neutral Observed preferred-codon frequency in the (near-)neutral pool.
 #' @param pi_neutral Observed nucleotide diversity in the same pool.
-#' @return Named numeric vector with elements `U`, `V`, `W` (= U+V, total scaled mutation).
+#' @return Named numeric vector with elements `U`, `V`, `W` (= U+V).
 wright_solve_UV <- function(Q_neutral, pi_neutral) {
   stopifnot(Q_neutral > 0, Q_neutral < 1, pi_neutral > 0)
   hardy_max <- 2 * Q_neutral * (1 - Q_neutral)
