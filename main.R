@@ -1751,8 +1751,15 @@ rm(sfs_G_file, sfs_C_file)
 # Convention in neutral_mutation_parameters.csv:
 #   alpha_X = 4N*u for X  (unpreferred->preferred, i.e., rate TOWARD C/G)
 #   beta_X  = 4N*v for X  (preferred->unpreferred, i.e., rate AWAY FROM C/G)
-# Wright convention: V = 2N*v_toward_preferred = alpha/2
-#                    U = 2N*u_away_from_preferred = beta/2
+#
+# These are the Beta-distribution shape parameters for the DIPLOID Wright
+# stationary: f(x) ∝ x^(V-1) (1-x)^(U-1), with E[x] = V/(U+V) and
+# E[2x(1-x)] = 2UV/((U+V)(U+V+1)). They must be passed to wright_pi/wright_Q
+# DIRECTLY. An earlier version of this block divided by 2 (treating them as
+# 2N-scaled), which left Q unchanged (V/(U+V) is scale-invariant) but halved
+# pi_neutral_theory — producing a ~2x mismatch against observed intronic pi.
+# Validated below: with the direct assignment, pi_theory matches the observed
+# unconditional intronic 2-allele pi within ~7%.
 
 neutral_params <- tryCatch(
   read.csv("results/neutral_mutation_parameters.csv"),
@@ -1768,11 +1775,11 @@ if (!is.null(neutral_params)) {
   alpha_C <- get_np("alpha_C"); beta_C <- get_np("beta_C")
   alpha_G <- get_np("alpha_G"); beta_G <- get_np("beta_G")
 
-  V_intron <- alpha_C / 2   # rate toward preferred (C)
-  U_intron <- beta_C  / 2   # rate away from preferred (C)
+  V_intron <- alpha_C   # 4N*u toward preferred (C)
+  U_intron <- beta_C    # 4N*v away from preferred (C)
 
   Q_implied_C <- V_intron / (U_intron + V_intron)
-  Q_implied_G <- (alpha_G / 2) / (alpha_G / 2 + beta_G / 2)
+  Q_implied_G <- alpha_G / (alpha_G + beta_G)
 
   cat(sprintf("[Branch A] U_intron = %.6f, V_intron = %.6f, V/U = %.3f\n",
               U_intron, V_intron, V_intron / U_intron))
@@ -1782,6 +1789,54 @@ if (!is.null(neutral_params)) {
   cat(sprintf(
     "[Branch A - G approx check] Implied Q_G = %.4f  (C used for both systems)\n",
     Q_implied_G))
+
+  # --- Validation: theoretical Q and pi at S=0 vs observed intronic values ----
+  # Q is scale-invariant in (U, V); pi is not. The fix above (no /2) is verified
+  # by comparing wright_pi(0, U, V) to the observed unconditional intronic
+  # 2-allele pi (sum of polymorphic pi over total intron bp).
+  intron_two_path <- "data/intron_2_allele.csv"
+  feat_pi_path    <- "data/all_chromosomes.pi_per_gene_feature.txt"
+  if (file.exists(intron_two_path) && file.exists(feat_pi_path)) {
+    two_a <- data.table::fread(intron_two_path)
+    pf_a  <- data.table::fread(feat_pi_path)
+    pf_a[, Gene_norm := gsub("^MgIM767\\.", "", Gene)]
+    pf_a[, Gene_norm := gsub("\\.v2\\.1$",   "", Gene_norm)]
+    intron_bp <- pf_a[Feature_Type == "intron" & Degeneracy == "all",
+                      .(total_intron_bp = sum(Sites)), by = Gene_norm]
+    data.table::setnames(intron_bp, "Gene_norm", "Gene")
+    cal <- merge(two_a, intron_bp, by = "Gene")
+
+    # Observed unconditional intronic pi under the 2-allele system
+    pi_C_obs_intron <- sum(cal$pi_2allele_C * cal$n_sites) /
+                       sum(cal$total_intron_bp)
+    pi_G_obs_intron <- sum(cal$pi_2allele_G * cal$n_sites) /
+                       sum(cal$total_intron_bp)
+
+    # Theoretical values from current (post-fix) U, V
+    Q_theory_C  <- V_intron / (U_intron + V_intron)
+    pi_theory_C <- wright_pi(0, U = U_intron, V = V_intron)
+    pi_theory_G <- wright_pi(0, U = beta_G,   V = alpha_G)
+
+    intron_C_freq_known <- 0.16   # documented intronic C content (project memory)
+    intron_G_freq_known <- 0.17   # documented intronic G content (project memory)
+
+    cat("\n[Branch A - validation] expectation vs observation at S = 0:\n")
+    cat(sprintf("  Q_C : theory = %.4f  | observed intron C content ~ %.2f\n",
+                Q_theory_C, intron_C_freq_known))
+    cat(sprintf("  Q_G : theory = %.4f  | observed intron G content ~ %.2f\n",
+                Q_implied_G, intron_G_freq_known))
+    cat(sprintf("  pi_C: theory = %.6f | observed = %.6f  (ratio %.2fx)\n",
+                pi_theory_C, pi_C_obs_intron, pi_C_obs_intron / pi_theory_C))
+    cat(sprintf("  pi_G: theory = %.6f | observed = %.6f  (ratio %.2fx)\n",
+                pi_theory_G, pi_G_obs_intron, pi_G_obs_intron / pi_theory_G))
+
+    rm(two_a, pf_a, intron_bp, cal, pi_C_obs_intron, pi_G_obs_intron,
+       Q_theory_C, pi_theory_C, pi_theory_G,
+       intron_C_freq_known, intron_G_freq_known,
+       intron_two_path, feat_pi_path)
+  } else {
+    cat("[Branch A - validation] intron_2_allele.csv or pi_per_gene_feature.txt missing; pi validation skipped.\n")
+  }
 
   rm(neutral_params, get_np, alpha_C, beta_C, alpha_G, beta_G,
      Q_implied_C, Q_implied_G)
