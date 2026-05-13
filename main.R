@@ -2380,7 +2380,7 @@ cat(sprintf("  n = %d genes with all four metrics finite\n", nrow(metric_df)))
 print(round(cor(metric_df, method = "spearman"), 3))
 rm(metric_df)
 
-# --- Binned ROC_eff and S_Wright tables ----------------------------------------
+# Binned ROC_eff and S_Wright tables ----
 # 30 site-weighted ntile bins used for the pi-consistency validation (bin_roc)
 # and the diversity-hump figure (bin_sw). Use two-state calibration if available.
 
