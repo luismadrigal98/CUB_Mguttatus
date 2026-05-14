@@ -85,8 +85,19 @@ set_environment <- function(required_pckgs,
   
   # Source required functions
   message("Sourcing the required functions")
-  source_files <- list.files(path = src_dir, pattern = "*.R", full.names = TRUE)
+  source_files <- list.files(path = src_dir, pattern = "\\.R$", full.names = TRUE)
   source_files <- setdiff(source_files, './src/set_environment.R')
+  
+  is_executable_script <- function(file_path) {
+    file_text <- tryCatch(
+      paste(readLines(file_path, warn = FALSE, n = 80), collapse = "\n"),
+      error = function(e) ""
+    )
+    grepl("commandArgs\\s*\\(", file_text, perl = TRUE) ||
+      grepl("Usage: Rscript", file_text, fixed = TRUE)
+  }
+  
+  source_files <- source_files[!vapply(source_files, is_executable_script, logical(1))]
   
   sapply(source_files, function(x) source(x))
   

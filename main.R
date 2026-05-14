@@ -35,7 +35,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'FSA', 'matrixStats', 'ggpubr',
                         'boot', 'gratia', 'marginaleffects',
                         'corrr', 'nortest', 'patchwork',
-                        'betareg', 'brms', 'cmdstanr')
+                        'betareg')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
