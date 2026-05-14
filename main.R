@@ -35,7 +35,7 @@ required_libraries <- c('data.table', 'Biostrings', 'assertthat',
                         'FSA', 'matrixStats', 'ggpubr',
                         'boot', 'gratia', 'marginaleffects',
                         'corrr', 'nortest', 'patchwork',
-                        'betareg')
+                        'betareg')#, 'brms', 'cmdstanr')
 
 set_environment(required_pckgs = required_libraries, personal_seed = 1998, 
                 parallel_backend = T)
@@ -1229,7 +1229,21 @@ genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscri
                                  match.expression.by.id = TRUE,
                                  observed.expression.file = 'data/compiled_expression_IM767.txt') # Warnings are expected if genes are missing from expression file
 
+# Strip organellar genes (.O####) to match the gene set used during MCMC
+# (see R_scripts_remotes/AnaCoDa_pipeline.R:344-353). Without this, the
+# fresh genome has N genes while parameter_object has N - k, and
+# getSelectionCoefficients() fails on rownames assignment.
+gene_names_all <- getNames(genome)
+organellar_in_genome <- grepl("\\.O[0-9]", gene_names_all)
+if (any(organellar_in_genome)) {
+  nuclear_indices <- which(!organellar_in_genome)
+  genome <- genome$getGenomeForGeneIndices(nuclear_indices, FALSE)
+}
+
 parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/R_objects/parameter.Rda")
+
+stopifnot(length(getNames(genome)) ==
+          nrow(parameter_object$calculateSelectionCoefficients(1)))
 
 # Visualizing cost per codons and confidence intervals
 
@@ -1382,7 +1396,7 @@ selection_metrics <- selection_metrics |>
 
 
 # Memory cleanup: AnaCoDa genome/parameter objects and selection matrices ---
-rm(genome, parameter_object, selection_coeff,
+rm(genome, parameter_object,
    counts_df, sel_mat, counts_aligned, sel_aligned,
    common_genes, common_codons, phi_hat_dM_fixed_with_phi, p,
    eta_vec, m_eta, eta_4fold_vec,
