@@ -86,20 +86,58 @@ set_environment <- function(required_pckgs,
   # Source required functions
   message("Sourcing the required functions")
   source_files <- list.files(path = src_dir, pattern = "\\.R$", full.names = TRUE)
-  source_files <- setdiff(source_files, './src/set_environment.R')
-  
+  # Exclude set_environment.R using basename so the match works with any path form
+  source_files <- source_files[basename(source_files) != "set_environment.R"]
+
   is_executable_script <- function(file_path) {
     file_text <- tryCatch(
       paste(readLines(file_path, warn = FALSE, n = 80), collapse = "\n"),
       error = function(e) ""
     )
-    grepl("commandArgs\\s*\\(", file_text, perl = TRUE) ||
-      grepl("Usage: Rscript", file_text, fixed = TRUE)
+    # Any CLI marker triggers exclusion
+    grepl("^#!.*Rscript", file_text, perl = TRUE) ||
+      grepl("commandArgs\\s*\\(", file_text, perl = TRUE) ||
+      grepl("Usage:\\s*Rscript", file_text, perl = TRUE) ||
+      grepl("\\bquit\\s*\\(", file_text, perl = TRUE) ||
+      grepl("\\bq\\s*\\(\\s*['\"]", file_text, perl = TRUE)  # q("no"), q('yes'), etc.
   }
-  
-  source_files <- source_files[!vapply(source_files, is_executable_script, logical(1))]
-  
-  sapply(source_files, function(x) source(x))
-  
+
+  exec_flags <- vapply(source_files, is_executable_script, logical(1))
+  if (any(exec_flags)) {
+    message(sprintf("Skipping %d executable script(s): %s",
+                    sum(exec_flags),
+                    paste(basename(source_files[exec_flags]), collapse = ", ")))
+  }
+  source_files <- source_files[!exec_flags]
+
+  # Defensive override: mask base::quit / base::q in globalenv for the duration
+  # of sourcing, so a stray quit() in a sourced file warns instead of tearing
+  # down the R session (which triggers the "Save workspace image?" prompt).
+  had_quit <- exists("quit", envir = globalenv(), inherits = FALSE)
+  had_q    <- exists("q",    envir = globalenv(), inherits = FALSE)
+  old_quit <- if (had_quit) get("quit", envir = globalenv()) else NULL
+  old_q    <- if (had_q)    get("q",    envir = globalenv()) else NULL
+  on.exit({
+    if (had_quit) assign("quit", old_quit, envir = globalenv()) else suppressWarnings(rm("quit", envir = globalenv()))
+    if (had_q)    assign("q",    old_q,    envir = globalenv()) else suppressWarnings(rm("q",    envir = globalenv()))
+  }, add = TRUE)
+
+  safe_quit <- function(...) {
+    warning("Suppressed quit()/q() call from a sourced file", call. = FALSE)
+    invisible(NULL)
+  }
+  assign("quit", safe_quit, envir = globalenv())
+  assign("q",    safe_quit, envir = globalenv())
+
+  for (f in source_files) {
+    tryCatch(
+      source(f, local = FALSE),
+      error = function(e) {
+        warning(sprintf("Error sourcing %s: %s", f, conditionMessage(e)),
+                call. = FALSE)
+      }
+    )
+  }
+
   return(invisible())
 }
