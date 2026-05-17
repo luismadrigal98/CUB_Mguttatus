@@ -189,7 +189,7 @@ gc()
 ## 5) CDC-based analysis ----
 ## _____________________________________________________________________________
 
-# Full integration with your pipeline
+# Full integration with the pipeline
 integrated_data <- integrate_cdc_analysis(codon_usage, 
                                       genetic_code_dna_long, 
                                       integrated_data, 
@@ -334,11 +334,13 @@ pi_data <- pi_data |>
   dplyr::mutate(Gene = paste0("MgIM767.", pi_data[['Gene']])) |>
   dplyr::rename(Gene_name = Gene)
 
+n_pre_pi_join <- nrow(integrated_data)
 integrated_data <- integrated_data |>
   dplyr::left_join(pi_data, by = "Gene_name") |>
   na.exclude()
-
-rm(pi_data)
+cat(sprintf("integrated_data: %d -> %d genes after left_join(pi_data) + na.exclude() (dropped %d)\n",
+            n_pre_pi_join, nrow(integrated_data), n_pre_pi_join - nrow(integrated_data)))
+rm(n_pre_pi_join, pi_data)
 
 ## *****************************************************************************
 ## 6) Modeling relationship between CDC and Expression profiles ----
@@ -707,8 +709,13 @@ cai_values <- cai_results$cai_values
 w_table <- cai_results$w_table
 
 # Merge CAI with expression and integrated data
+n_pre_cai_join <- nrow(integrated_data)
 integrated_data <- integrated_data |>
   left_join(cai_values, by = "Gene_name")
+cat(sprintf("integrated_data: %d -> %d genes after left_join(cai_values) (CAI NA: %d)\n",
+            n_pre_cai_join, nrow(integrated_data),
+            sum(is.na(integrated_data$CAI))))
+rm(n_pre_cai_join)
 
 cat("\n=== CAI vs Expression Level ===\n")
 # Compare CAI across expression groups
@@ -1229,10 +1236,6 @@ genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscri
                                  match.expression.by.id = TRUE,
                                  observed.expression.file = 'data/compiled_expression_IM767.txt') # Warnings are expected if genes are missing from expression file
 
-# Strip organellar genes (.O####) to match the gene set used during MCMC
-# (see R_scripts_remotes/AnaCoDa_pipeline.R:344-353). Without this, the
-# fresh genome has N genes while parameter_object has N - k, and
-# getSelectionCoefficients() fails on rownames assignment.
 gene_names_all <- getNames(genome)
 organellar_in_genome <- grepl("\\.O[0-9]", gene_names_all)
 if (any(organellar_in_genome)) {
@@ -1240,7 +1243,7 @@ if (any(organellar_in_genome)) {
   genome <- genome$getGenomeForGeneIndices(nuclear_indices, FALSE)
 }
 
-parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/R_objects/parameter.Rda")
+parameter_object <- loadParameterObject(file = "/home/l338m483/scratch/CUB/CUB_Mguttatus/results/MCMC_results/results_dM_fixed_with_phi_final/run_1/R_objects/parameter.Rda")
 
 stopifnot(length(getNames(genome)) ==
           nrow(parameter_object$calculateSelectionCoefficients(1)))
@@ -1468,9 +1471,13 @@ gc()
 
 # 8.3.2) Analyzing the correlation between total selective pressure and CAI and CDC ----
 
+n_pre_sel_join <- nrow(integrated_data)
 integrated_data <- integrated_data |>
   dplyr::left_join(selection_metrics, by = "Gene_name") |>
   dplyr::filter(!is.na(L_ROC))
+cat(sprintf("integrated_data: %d -> %d genes after left_join(selection_metrics) + filter(!is.na(L_ROC)) (dropped %d; these lack AnaCoDa estimates)\n",
+            n_pre_sel_join, nrow(integrated_data), n_pre_sel_join - nrow(integrated_data)))
+rm(n_pre_sel_join)
 
 # Correlation between selection metrics and CUB metrics
 cor_S_and_bias <- corrr::correlate(
@@ -1659,6 +1666,8 @@ gene_Q_4fold <- data.frame(
 #   - Use Sites_4fold (VCF-derived) with Pi_sum_4fold for π_bin
 #   - For per-gene π (Pi_mean_4fold), use whichever denominator is available
 
+n_pre_msd_join <- nrow(integrated_data)
+n_gene_Q_4fold <- nrow(gene_Q_4fold)
 msd_data <- integrated_data |>
   dplyr::select(Gene_name, ROC_eff, ROC_eff_4, L_ROC, Pi_mean_4fold, Mean_Log10_Exp,
                 Max_Log10_Exp, Exp_breadth, CDS_length_nt, Sites_4fold,
@@ -1667,6 +1676,9 @@ msd_data <- integrated_data |>
   dplyr::filter(!is.na(Q_pref_base), !is.na(Pi_mean_4fold),
                 !is.na(Mean_Log10_Exp), !is.na(Exp_breadth),
                 N_4fold_sites >= 20)
+cat(sprintf("msd_data: integrated_data %d x gene_Q_4fold %d -> %d genes after inner_join + NA/Site filters\n",
+            n_pre_msd_join, n_gene_Q_4fold, nrow(msd_data)))
+rm(n_pre_msd_join, n_gene_Q_4fold)
 
 # Diagnostic: quantify discrepancies and document
 n_4fold_match <- sum(msd_data$N_4fold_sites == msd_data$Sites_4fold, na.rm = TRUE)
@@ -3792,6 +3804,9 @@ pi_feature <- data.table::fread("data/all_chromosomes.pi_per_gene_feature.txt")
 # integrated_data has "MgIM767.01G000100"
 pi_feature[, Gene := sub("\\.v[0-9.]+$", "", Gene)]
 
+cat(sprintf("\n=== Section 12.0: Positional pi decomposition | %d unique genes in feature file (no AnaCoDa filter applied) ===\n",
+            length(unique(pi_feature$Gene))))
+
 # Per-exon CDS sizes (from "all" degeneracy) and degeneracy-specific pi
 exon_all <- pi_feature[Feature_Type == "exon" & Degeneracy == "all",
                        .(Gene, Feature_Num, Exon_Sites = Sites)]
@@ -3842,6 +3857,9 @@ cat(sprintf("300 bp decomposition: %d genes matched\n",
 # introns in Feature_Num order: exon k → genomic rank 2k-1, intron k → 2k.
 # Feature bp length is approximated by "all"-degeneracy Sites (surveyed sites).
 # Exons use 4-fold π; introns use all-site π (the only class they carry).
+
+cat(sprintf("\n=== Section 12.0b: pi vs distance from gene start | %d unique genes (pi_feature; no AnaCoDa filter) ===\n",
+            length(unique(pi_feature$Gene))))
 
 feat_pos <- pi_feature[Degeneracy == "all",
                         .(Gene, Feature_Type, Feature_Num, feat_bp = Sites)]
@@ -3912,6 +3930,11 @@ gc()
 # 12.1) Expression-ranked 4-fold π analysis (Kelly replication) ----
 # Bin genes into groups of ~1000 ranked by Mean_Log10_Exp, calculate
 # weighted mean 4-fold nucleotide diversity within each bin.
+
+cat(sprintf("\n=== Section 12.1: Expression-ranked 4-fold pi | integrated_data N = %d (with Mean_Log10_Exp: %d, with Pi_sum_4fold: %d) ===\n",
+            nrow(integrated_data),
+            sum(!is.na(integrated_data$Mean_Log10_Exp)),
+            sum(!is.na(integrated_data$Pi_sum_4fold))))
 
 bin_size <- 1000
 
@@ -4090,7 +4113,10 @@ rm(p_pi_by_expression, bin_size, mutation_types)
 
 # 12.2) Tracking frequency of preferred allele as a function of expression ----
 
-preferred_data <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt", 
+cat(sprintf("\n=== Section 12.2: Preferred-allele frequency vs expression | integrated_data N = %d ===\n",
+            nrow(integrated_data)))
+
+preferred_data <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt",
                              stringsAsFactors = FALSE) |>
   dplyr::mutate(Gene = paste0("MgIM767.", Gene))
 
@@ -4261,7 +4287,9 @@ p_surface_pref <- plot_selection_surface(
 # preferred codons, which reduces noise from mixing two distinct nucleotide
 # biases that selection must act against.
 
-cat("\n=== Contour Plot: Preferred Codon Frequency ~ Expression x Gene Length ===\n")
+cat(sprintf("\n=== Section 12.3: Contour, preferred codon freq ~ Expression x Length | integrated_data N = %d (with Mean_preferred_freq: %d) ===\n",
+            nrow(integrated_data),
+            sum(!is.na(integrated_data$Mean_preferred_freq))))
 
 # --- 12.4a: Overall (all preferred codons pooled) ---
 
@@ -4270,6 +4298,8 @@ contour_data <- integrated_data |>
                 !is.na(Max_Log10_Exp),
                 Total_Codons > 0) |>
   dplyr::mutate(log10_length = log10(Total_Codons))
+cat(sprintf("contour_data: integrated_data %d -> %d genes after NA filter on (Mean_preferred_freq, Max_Log10_Exp, Total_Codons > 0)\n",
+            nrow(integrated_data), nrow(contour_data)))
 
 contour_gam <- mgcv::gam(
   Mean_preferred_freq ~ te(Max_Log10_Exp, Exp_breadth, log10_length, k = c(10, 10)),
@@ -4355,6 +4385,9 @@ cat("Saved: ./results/Preferred_freq_contour_exp_x_length_narrow.pdf\n")
 
 # 12.3b: Split by C-ending vs G-ending preferred codons ----
 # Re-read the per-position file to compute separate per-gene frequencies
+
+cat(sprintf("\n=== Section 12.3b: C-ending vs G-ending preferred codons | integrated_data N = %d ===\n",
+            nrow(integrated_data)))
 
 preferred_raw <- read.delim("./data/all_chromosomes.codon_frequencies_preferred.txt",
                             stringsAsFactors = FALSE) |>
@@ -4457,12 +4490,15 @@ rm(preferred_raw, pref_by_ending, contour_split)
 #   (c) 4-fold pi after the first 300 bp (gene body)
 # The "selection group" (L_ROC > thr_sel) is isolated as an independent point.
 
-cat("\n=== Background Selection: Nonsynonymous Pi vs Expression ===\n")
+cat(sprintf("\n=== Section 12.4: Background selection (pi_0fold vs expression) | integrated_data N = %d ===\n",
+            nrow(integrated_data)))
 
 bgs_data <- integrated_data |>
   dplyr::filter(Sites_0fold >= 10, Pi_mean_0fold >= 0,
                 !is.na(Mean_Log10_Exp)) |>
   dplyr::mutate(log10_length = log10(CDS_length_nt))
+cat(sprintf("Section 12.4 filter: %d -> %d genes after (Sites_0fold>=10, Pi_mean_0fold>=0, !is.na(Mean_Log10_Exp))\n",
+            nrow(integrated_data), nrow(bgs_data)))
 
 # Spearman correlation: pi_0fold vs expression
 cor_0fold <- cor.test(bgs_data$Mean_Log10_Exp, bgs_data$Pi_mean_0fold,
@@ -4758,7 +4794,9 @@ gc()
 # 4-fold degenerate sites: all four nucleotides at the 3rd position are
 # synonymous (Ala, Gly, Pro, Thr, Val, Leu_4, Ser_4, Arg_4).
 
-cat("\n=== Nucleotide Composition at 4-Fold Degenerate Sites ===\n")
+cat(sprintf("\n=== Section 13: Nucleotide composition at 4-fold sites | integrated_data N = %d (with Sites_4fold > 0: %d) ===\n",
+            nrow(integrated_data),
+            sum(integrated_data$Sites_4fold > 0, na.rm = TRUE)))
 
 # Identify 4-fold degenerate amino acid families
 fourfold_families <- c("Ala", "Gly", "Pro", "Thr", "Val", "Leu_4", "Ser_4", "Arg_4")
@@ -4897,6 +4935,9 @@ gc()
 
 pi_compartment <- read.table(file = "./data/all_chromosomes.pi_by_compartment.txt",
                              header = T)
+
+cat(sprintf("\n=== Section 14: Diversity across genomic compartments | pi_compartment N = %d rows (compartments x nucleotide categories; not gene-keyed) ===\n",
+            nrow(pi_compartment)))
 
 # HUMP EFFECT TEST ----
 # 1. Aggregate Data by "Selection Potential"
@@ -5052,14 +5093,23 @@ gc()
 # ______________________________________________________________________________
 
 # 15.1) Reference based analysis (historic) ----
-binary_preferred <- codons_to_preferred_state_bernoulli(trans, 
+binary_preferred <- codons_to_preferred_state_bernoulli(trans,
                                                         as.character(preferred_codons$Codon))
 
+cat(sprintf("\n=== Section 15.1: Translational ramp (reference-based) | binary_preferred starts with %d gene-codon rows over %d unique genes ===\n",
+            nrow(binary_preferred),
+            dplyr::n_distinct(binary_preferred$GeneID)))
+
+n_pre_join_15.1 <- nrow(binary_preferred)
 binary_preferred <- binary_preferred |>
-  left_join(integrated_data |> dplyr::select(Gene_name, Max_Log10_Exp, 
-                                             Exp_breadth), 
+  left_join(integrated_data |> dplyr::select(Gene_name, Max_Log10_Exp,
+                                             Exp_breadth),
             by = join_by("GeneID" == "Gene_name")) |>
   na.exclude()
+cat(sprintf("Section 15.1 join+na.exclude: %d -> %d rows (over %d unique genes after intersection with integrated_data)\n",
+            n_pre_join_15.1, nrow(binary_preferred),
+            dplyr::n_distinct(binary_preferred$GeneID)))
+rm(n_pre_join_15.1)
 
 clean_data <- binary_preferred |>
   dplyr::filter(!is.na(Max_Log10_Exp), !is.na(Exp_breadth)) %>%

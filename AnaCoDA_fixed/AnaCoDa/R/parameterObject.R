@@ -1535,7 +1535,7 @@ setBaseInfo <- function(parameter, files)
 
       withPhi <- tempEnv$paramBase$withPhi
       if (withPhi){
-        phiGroups <- length(tempEnv$synthesisOffsetTrace)
+        phiGroups <- length(tempEnv$paramBase$synthesisOffsetTrace)
         synthesisOffsetTrace <- c()
         for (j in 1:phiGroups) {
           synthesisOffsetTrace[[j]] <- tempEnv$paramBase$synthesisOffsetTrace[[j]][1:max]
