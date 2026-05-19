@@ -559,14 +559,11 @@ if (length(middle_cdc_de) > 0 && length(bottom5_cdc_de) > 0) {
 cat("\nInterpretation: |d| < 0.2 = negligible, 0.2-0.5 = small, 0.5-0.8 = medium, > 0.8 = large\n")
 
 # Memory cleanup: Section 5-6 plots and intermediate objects ---
-# Keeping: selection_table, test_broad_vs_narrow, test_medium_vs_narrow,
-#          kw_detrended, cdc_position_summary, slopes, contrasts
+# Keeping: selection_table, kw_detrended.
 rm(m_null, m_additive, m_complex, m_interaction, model_list,
    justification_list, justification_table, plot_list, combined_plot,
-   p_effects, p_slopes,
-   m_noise, confounder_model_gam, p_detrended,
-   p_boxplot_detrended, p_medians, p_constraint, p_enc_cdc,
-   expected_curve, gc3s_range, enc_expected,
+   p_effects,
+   p_boxplot_detrended, p_medians,
    plot_data, my_comparisons,
    top5_cdc_de, middle_cdc_de, bottom5_cdc_de,
    n_sig, n_total, pct_sig,
@@ -609,8 +606,74 @@ cat(sprintf("integrated_data: %d -> %d genes after left_join(cai_values) (CAI NA
             sum(is.na(integrated_data$CAI))))
 rm(n_pre_cai_join)
 
+# CAI by Expression_Group: summary, Kruskal-Wallis test, Cohen's d, boxplot ----
+cai_by_group <- integrated_data |>
+  dplyr::group_by(Expression_Group) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean_CAI = mean(CAI, na.rm = TRUE),
+    median_CAI = median(CAI, na.rm = TRUE),
+    sd_CAI = sd(CAI, na.rm = TRUE),
+    mean_ENC = mean(ENC, na.rm = TRUE),
+    .groups = "drop"
+  )
+print(cai_by_group)
+
+kw_test <- kruskal.test(CAI ~ Expression_Group, data = integrated_data)
+print(kw_test)
+
+top_cai    <- integrated_data |> dplyr::filter(Expression_Group == "Top 5%")    |> pull(CAI)
+middle_cai <- integrated_data |> dplyr::filter(Expression_Group == "Middle 90%") |> pull(CAI)
+bottom_cai <- integrated_data |> dplyr::filter(Expression_Group == "Bottom 5%") |> pull(CAI)
+
+if (length(top_cai) > 0 && length(middle_cai) > 0) {
+  cat(sprintf("CAI Top 5%% vs Middle 90%%: d = %.3f\n", cohens_d_calc(top_cai, middle_cai)))
+}
+if (length(top_cai) > 0 && length(bottom_cai) > 0) {
+  cat(sprintf("CAI Top 5%% vs Bottom 5%%: d = %.3f\n", cohens_d_calc(top_cai, bottom_cai)))
+}
+if (length(middle_cai) > 0 && length(bottom_cai) > 0) {
+  cat(sprintf("CAI Middle 90%% vs Bottom 5%%: d = %.3f\n", cohens_d_calc(middle_cai, bottom_cai)))
+}
+
+p_cai_boxplot <- ggplot(integrated_data,
+                        aes(x = Expression_Group, y = CAI, fill = Expression_Group)) +
+  geom_violin(alpha = 0.3) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
+  scale_fill_manual(values = c("Top 5%" = "#E41A1C",
+                               "Bottom 5%" = "#377EB8",
+                               "Middle 90%" = "#999999")) +
+  labs(title = "Codon Adaptation Index by Expression Level",
+       subtitle = "Diamond = mean, box = median +/- IQR",
+       y = "CAI (Codon Adaptation Index)",
+       x = "Expression Group") +
+  theme_custom() +
+  theme(legend.position = "none")
+ggsave("./results/CAI_by_expression_group.pdf", p_cai_boxplot, width = 8, height = 6)
+
+plot_data_cai <- integrated_data |>
+  dplyr::mutate(Exp_Group = factor(Expression_Group,
+                                   levels = c("Bottom 5%", "Middle 90%", "Top 5%"))) |>
+  dplyr::filter(!is.na(Exp_Group))
+
+p_cai_median <- ggplot(plot_data_cai, aes(x = Exp_Group, y = CAI)) +
+  stat_summary(fun.data = median_cl_boot,
+               geom = "errorbar", width = 0.15, linewidth = 0.8, color = "black") +
+  stat_summary(fun = median, geom = "point", size = 4, aes(color = Exp_Group)) +
+  scale_color_manual(values = c("Bottom 5%" = "#377EB8",
+                                "Middle 90%" = "#999999",
+                                "Top 5%" = "#E41A1C")) +
+  labs(y = "CAI (Codon Adaptation Index)", x = NULL) +
+  theme_custom() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 11, face = "bold", color = "black"),
+        panel.grid.major.x = element_blank())
+ggsave("./results/CAI_by_expression_group_Median_CI.pdf", p_cai_median,
+       width = 4, height = 3.5)
+
 # Memory cleanup: Section 7 CAI intermediates ---
-# Keeping: cai_results, w_table, cai_by_group, kw_test, comparison_table, wilcox_test
+# Keeping: cai_results, w_table, cai_by_group, kw_test
 rm(p_cai_boxplot, p_cai_median, plot_data_cai,
    top_cai, middle_cai, bottom_cai, reference_genes)
 gc()
@@ -919,13 +982,10 @@ phi_dM_fixed_with_phi_intergenic <- exp_complete |>
 cor.test(phi_dM_fixed_with_phi_intergenic$Mean.log10.Phi, 
          phi_dM_fixed_with_phi_intergenic$Mean_Log10_Exp)
 
-# Memory cleanup: convergence diagnostics, phi comparisons, trace objects ---
+# Memory cleanup: convergence diagnostics and phi comparisons ---
 # Keeping: dM_fixed_with_phi_conv, dM_fixed_intergenic, dM_fixed_with_phi_intergenic,
-#          phi_hat_dM_fixed_intergenic, phi_hat_dM_fixed_with_phi_intergenic, exp_complete
-rm(phi_dM_fixed_with_phi, phi_dM_fixed_intergenic,
-   phi_dM_fixed_with_phi_intergenic,
-   parameters_objects, plot_data, p1, p2, p3, acf_val, acf_df,
-   codon_index, run_dirs)
+#          phi_hat_dM_fixed_with_phi_intergenic, exp_complete
+rm(phi_dM_fixed_with_phi, phi_dM_fixed_with_phi_intergenic, run_dirs)
 gc()
 
 # 8.2) Getting the preferred codon from the best model (dM-fixed-with_phi) ----
@@ -967,7 +1027,7 @@ genome <- initializeGenomeObject(file = 'data/IM767_887_v2.1.cds_primaryTranscri
                                  match.expression.by.id = TRUE,
                                  observed.expression.file = 'data/compiled_expression_IM767.txt') # Warnings are expected if genes are missing from expression file
 
-parameter_object <- loadParameterObject(file = "/home/l338m483/scratch/CUB/CUB_Mguttatus/results/MCMC_results/results_dM_fixed_with_phi_final/run_1/R_objects/parameter.Rda")
+parameter_object <- loadParameterObject(file = "./results/MCMC_results/results_dM_fixed_with_phi_final/run_1/R_objects/parameter.Rda")
 
 stopifnot(length(getNames(genome)) ==
           nrow(parameter_object$calculateSelectionCoefficients(1)))
@@ -1868,6 +1928,57 @@ cat(sprintf(
   S_BARRIER,
   sum(msd_data$S_Wright_raw >= S_BARRIER, na.rm = TRUE)
 ))
+
+# Bin-level pi consistency: parameter-free Wright validation ----
+# pi_pred_wright is wright_pi evaluated at S_Wright_bin (already inverted from
+# Q_bin). chi^2 = sum((pi_bin - pi_pred_wright)^2 / pi_se^2). No fitted
+# parameter, so df = number of bins. The selection-regime subset isolates the
+# regime where the Wright model is identifiable.
+bin_roc$pi_pred_wright <- wright_pi(bin_roc$S_Wright_bin,
+                                    U = U_bin_calib, V = V_bin_calib)
+bin_roc$pi_residual    <- bin_roc$pi_bin - bin_roc$pi_pred_wright
+
+chi2_pi_terms <- (bin_roc$pi_residual)^2 /
+                 pmax(bin_roc$pi_se, .Machine$double.eps)^2
+chi2_pi_stat  <- sum(chi2_pi_terms, na.rm = TRUE)
+chi2_pi_df    <- sum(!is.na(chi2_pi_terms))
+chi2_pi_p     <- pchisq(chi2_pi_stat, df = chi2_pi_df, lower.tail = FALSE)
+cat(sprintf(
+  "[Validation] Bin-level pi consistency (ROC_eff bins): chi^2 = %.2f / df = %d -> p = %.3g\n",
+  chi2_pi_stat, chi2_pi_df, chi2_pi_p
+))
+
+sel_bins <- bin_roc |>
+  dplyr::filter(!is.na(S_Wright_bin), S_Wright_bin >= S_BARRIER)
+chi2_pi_sel_stat <- if (nrow(sel_bins) > 0) {
+  sum((sel_bins$pi_residual)^2 /
+      pmax(sel_bins$pi_se, .Machine$double.eps)^2, na.rm = TRUE)
+} else NA_real_
+chi2_pi_sel_df <- nrow(sel_bins)
+chi2_pi_sel_p  <- if (chi2_pi_sel_df > 0 && is.finite(chi2_pi_sel_stat)) {
+  pchisq(chi2_pi_sel_stat, df = chi2_pi_sel_df, lower.tail = FALSE)
+} else NA_real_
+cat(sprintf(
+  "[Validation] Selection-regime subset (S_Wright_bin >= %.4f): chi^2 = %s / df = %d -> p = %s\n",
+  S_BARRIER,
+  if (is.finite(chi2_pi_sel_stat)) sprintf("%.2f", chi2_pi_sel_stat) else "NA",
+  chi2_pi_sel_df,
+  if (is.finite(chi2_pi_sel_p))    sprintf("%.3g", chi2_pi_sel_p)    else "NA"
+))
+
+# Per-gene ROC_eff_4 vs S_Wright correlations (non-zero, well-covered genes) ----
+per_gene_pool <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_signed), !is.na(ROC_eff_4),
+                N_4fold_sites >= 50, ROC_eff_4 != 0)
+cor_roc_eff_4_spearman <- cor(per_gene_pool$ROC_eff_4, per_gene_pool$S_Wright_signed,
+                              method = "spearman")
+cor_roc_eff_4_pearson  <- cor(per_gene_pool$ROC_eff_4, per_gene_pool$S_Wright_signed,
+                              method = "pearson")
+cat(sprintf(
+  "[Validation] cor(ROC_eff_4, S_Wright_signed): Spearman = %+.3f, Pearson = %+.3f (n = %d)\n",
+  cor_roc_eff_4_spearman, cor_roc_eff_4_pearson, nrow(per_gene_pool)
+))
+
 # 8.3.5) Three-panel drift-barrier overview ----
 #
 # Panel A: S_Wright_signed histogram, filled by selection/drift group.
@@ -1955,8 +2066,7 @@ ggsave("./results/Drift_barrier_overview.pdf",
 
 rm(plot_barrier, n_sel_barrier, n_drift_barrier,
    barrier_colors, p_sw_dist, p_lroc_split, p_roc_eff_split, p_barrier_overview)
-write.csv(wright_fid,
-          "./results/Wright_curve_advisor_fiducial.csv", row.names = FALSE)
+
 write.csv(wright_emp,
           "./results/Wright_curve_empirical.csv",        row.names = FALSE)
 write.csv(
@@ -2000,12 +2110,10 @@ write.csv(
 # msd_data, bin_roc, bin_sw, integrated_data.
 rm(codon_4fold_counts, N_4fold_sites, N_preferred_base, gene_Q_4fold,
    preferred_codon_set, fourfold_codon_table, preferred_per_AA,
-   p_advisor_Q, p_advisor_pi,
-   S_grid_fid, S_grid_emp,
+   S_grid_emp,
    neutral_pool, neutral_pool_pi, pi_data_operational,
-   Q_neutral_two, pi_neutral_two, hardy_max_two,
-   chi2_pi_terms, sel_bins,
-   per_gene_pool, p_pi_validation, p_ROC_eff_4_vs_SWright)
+   Q_neutral_two, pi_neutral_two,
+   chi2_pi_terms, sel_bins, per_gene_pool)
 gc()
 
 # 8.4) GO-enrichment for two selection groups ----
@@ -2876,11 +2984,12 @@ pred_grid_pref_narrow <- expand.grid(
                       length.out = 200),
   Exp_breadth = 1) # Holding breadth constant (narrowly expressed genes)
 
-pred_grid_pref$Predicted_broad <- predict(contour_gam, newdata = pred_grid_pref_broad,
-                                    type = "response")
-
+# Shared (x, y) grid for plotting; the two predictions only differ in Exp_breadth
+pred_grid_pref <- pred_grid_pref_broad[, c("Max_Log10_Exp", "log10_length")]
+pred_grid_pref$Predicted_broad  <- predict(contour_gam, newdata = pred_grid_pref_broad,
+                                           type = "response")
 pred_grid_pref$Predicted_narrow <- predict(contour_gam, newdata = pred_grid_pref_narrow,
-                                          type = "response")
+                                           type = "response")
 
 # Broad
 p_pref_contour <- ggplot(pred_grid_pref,
@@ -3094,10 +3203,9 @@ print("=== Paired Test: Does Selection Boost GC Diversity More than AT? ===")
 print(t_test_result)
 
 # Memory cleanup: Section 14 plot objects and raw data ---
-# Keeping: overall_pi_stats, t_test_result, boost_comparison, hump_test_data
-rm(pi_compartment, compartment_order, pi_compart,
-   hump_per_chrom, hump_summary, p_hump,
-   paired_test_data, plot_data, additivity_check)
+# Keeping: t_test_result, boost_comparison, hump_test_data
+rm(pi_compartment, hump_per_chrom, hump_summary, p_hump,
+   paired_test_data)
 gc()
 ## ============================================================================
 ## RESULTS 10 — Translational ramp: preferred codons cluster near the 5' end
@@ -3112,10 +3220,94 @@ gc()
 # 15) Testing the translational ramp hypothesis ----
 # ______________________________________________________________________________
 
-# 15.1) Reference based analysis (historic) ----
-binary_preferred <- codons_to_preferred_state_bernoulli(trans,
-                                                        as.character(preferred_codons$Codon))
+# 15.1) Polymorphism-based ramp models ----
+# Per-codon preferred-allele frequencies in the first 200 codons; aggregate into
+# 5-codon windows; fit beta-regression bam() with random intercept by gene.
+# We subsample 3,000 genes (seed = 1998) — the gene RE makes the full set
+# prohibitively slow without changing the population-level smooth.
 
+poly_data <- fread(
+  "data/all_chromosomes.codon_frequencies_preferred.txt",
+  select = c("Gene", "Codon_Pos", "Preferred_Freq", "Non_Preferred_Freq"),
+  showProgress = FALSE
+)
+
+poly_data <- poly_data |>
+  dplyr::mutate(Gene_clean = paste0("MgIM767.", Gene)) |>
+  dplyr::rename(Position = Codon_Pos) |>
+  dplyr::filter(Position <= 200)
+
+poly_with_exp <- poly_data |>
+  dplyr::left_join(
+    integrated_data |>
+      dplyr::select(Gene_name, Max_Log10_Exp, Exp_breadth),
+    by = c("Gene_clean" = "Gene_name")
+  ) |>
+  dplyr::filter(!is.na(Max_Log10_Exp), !is.na(Exp_breadth)) |>
+  dplyr::mutate(
+    Exp_Z = as.numeric(scale(Max_Log10_Exp)),
+    Breadth_Z = as.numeric(scale(Exp_breadth)),
+    Gene_clean = factor(Gene_clean)
+  )
+
+cat(sprintf("Loaded %d codon positions from %d genes\n",
+            nrow(poly_with_exp), length(unique(poly_with_exp$Gene_clean))))
+
+n_subsample_genes <- 3000
+all_genes_15 <- unique(poly_with_exp$Gene_clean)
+set.seed(1998)
+sampled_genes_15 <- sample(all_genes_15,
+                           size = min(n_subsample_genes, length(all_genes_15)))
+poly_with_exp <- poly_with_exp |>
+  dplyr::filter(Gene_clean %in% sampled_genes_15) |>
+  dplyr::mutate(Gene_clean = droplevels(Gene_clean))
+
+cat(sprintf("After subsampling: %d codon positions from %d genes (seed = 1998)\n",
+            nrow(poly_with_exp), length(unique(poly_with_exp$Gene_clean))))
+
+window_size <- 5
+poly_agg <- poly_with_exp |>
+  dplyr::mutate(Window = ceiling(Position / window_size)) |>
+  dplyr::group_by(Gene_clean, Window, Exp_Z, Breadth_Z) |>
+  dplyr::summarize(
+    Position_mid = mean(Position),
+    Preferred_Freq_mean = mean(Preferred_Freq, na.rm = TRUE),
+    n_codons = dplyr::n(),
+    .groups = "drop"
+  ) |>
+  dplyr::filter(Position_mid <= 200) |>
+  dplyr::mutate(
+    Preferred_Freq_beta = dplyr::case_when(
+      Preferred_Freq_mean <= 0.001 ~ 0.001,
+      Preferred_Freq_mean >= 0.999 ~ 0.999,
+      TRUE ~ Preferred_Freq_mean
+    )
+  )
+
+if (any(poly_agg$Preferred_Freq_beta <= 0 | poly_agg$Preferred_Freq_beta >= 1)) {
+  stop("Beta regression requires values strictly between 0 and 1")
+}
+
+fit_ramp_poly <- bam(
+  Preferred_Freq_beta ~
+    s(Position_mid, k = 10, bs = "tp") +
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(Gene_clean, bs = "re"),
+  data = poly_agg, family = betar(),
+  method = "fREML", discrete = TRUE, nthreads = 1
+)
+
+fit_ramp_int_poly <- bam(
+  Preferred_Freq_beta ~
+    s(Position_mid, k = 10, bs = "tp") +
+    s(Position_mid, by = Exp_Z, k = 10, bs = "tp") +
+    Exp_Z + Breadth_Z + Exp_Z:Breadth_Z +
+    s(Gene_clean, bs = "re"),
+  data = poly_agg, family = betar(),
+  method = "fREML", discrete = TRUE, nthreads = 1
+)
+
+# Plot 1: Global ramp shape from polymorphism data
 pred_positions <- data.frame(
   Position_mid = seq(5, 200, by = 2),
   Exp_Z = 0,
@@ -3123,12 +3315,12 @@ pred_positions <- data.frame(
   Gene_clean = poly_agg$Gene_clean[1]
 )
 
-pred_ramp <- predict(fit_ramp_poly, newdata = pred_positions, 
-                     type = "response", se.fit = TRUE, 
+pred_ramp <- predict(fit_ramp_poly, newdata = pred_positions,
+                     type = "response", se.fit = TRUE,
                      exclude = "s(Gene_clean)",
                      unconditional = TRUE)
 
-pred_positions$fit <- pred_ramp$fit
+pred_positions$fit   <- pred_ramp$fit
 pred_positions$lower <- pred_ramp$fit - 1.96 * pred_ramp$se.fit
 pred_positions$upper <- pred_ramp$fit + 1.96 * pred_ramp$se.fit
 
@@ -3141,14 +3333,14 @@ plot_ramp_poly <- ggplot(pred_positions, aes(x = Position_mid)) +
     subtitle = "Frequency of preferred codons across positions",
     x = "Codon Position",
     y = "Mean Preferred Codon Frequency",
-    caption = "Ribbon = ±1.96 SE | Data from population genomics"
+    caption = "Ribbon = +/-1.96 SE | Data from population genomics"
   ) +
   theme_bw(base_size = 12)
 
-ggsave("./results/translational_ramp_polymorphism.pdf", 
+ggsave("./results/translational_ramp_polymorphism.pdf",
        plot_ramp_poly, width = 10, height = 6)
 
-# PLOT 2: Ramp by expression level
+# Plot 2: Ramp by expression level
 pred_grid_exp <- expand.grid(
   Position_mid = seq(5, 200, by = 5),
   Exp_Z = c(-1.5, 0, 1.5),
@@ -3163,15 +3355,15 @@ pred_grid_exp <- expand.grid(
     )
   )
 
-pred_exp <- predict(fit_ramp_int_poly, newdata = pred_grid_exp, 
-                    type = "response", se.fit = TRUE, 
+pred_exp <- predict(fit_ramp_int_poly, newdata = pred_grid_exp,
+                    type = "response", se.fit = TRUE,
                     exclude = "s(Gene_clean)")
 
-pred_grid_exp$fit <- pred_exp$fit
+pred_grid_exp$fit   <- pred_exp$fit
 pred_grid_exp$lower <- pred_exp$fit - 1.96 * pred_exp$se.fit
 pred_grid_exp$upper <- pred_exp$fit + 1.96 * pred_exp$se.fit
 
-plot_ramp_exp_poly <- ggplot(pred_grid_exp, 
+plot_ramp_exp_poly <- ggplot(pred_grid_exp,
                              aes(x = Position_mid, color = Exp_level, fill = Exp_level)) +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
   geom_line(aes(y = fit), linewidth = 1.2) +
@@ -3183,14 +3375,20 @@ plot_ramp_exp_poly <- ggplot(pred_grid_exp,
     subtitle = "Does selection for preferred codons vary by expression level?",
     x = "Codon Position",
     y = "Mean Preferred Codon Frequency",
-    color = NULL,
-    fill = NULL
+    color = NULL, fill = NULL
   ) +
   theme_bw(base_size = 12) +
   theme(legend.position = "top")
 
-ggsave("./results/ramp_by_expression_polymorphism.pdf", 
+ggsave("./results/ramp_by_expression_polymorphism.pdf",
        plot_ramp_exp_poly, width = 10, height = 6)
+
+# Memory cleanup: Section 15 large intermediates ---
+rm(poly_data, poly_with_exp, poly_agg,
+   pred_positions, pred_ramp, plot_ramp_poly,
+   pred_grid_exp, pred_exp, plot_ramp_exp_poly,
+   sampled_genes_15, all_genes_15, n_subsample_genes, window_size)
+gc()
 ## 16) GAM models for codon-based analysis ----
 ## _____________________________________________________________________________
 
@@ -3276,6 +3474,10 @@ cat(sprintf("  After expression merge: %s sites in %s genes\n",
 cat(sprintf("  dist_norm: mean=%.3f, sd=%.3f  |  exp_norm: mean=%.3f, sd=%.3f\n",
             mean(codon_4fold$dist_norm), sd(codon_4fold$dist_norm),
             mean(codon_4fold$exp_norm),  sd(codon_4fold$exp_norm)))
+
+# 3rd-position base of the ROC-preferred codon at each site
+# (downstream gene-level GAMs in 16.11 split sites by C-ending vs G-ending).
+codon_4fold[, pref_base3 := substr(Preferred_Codon, 3, 3)]
 
 # 16.4: Compute per-site π at the 3rd codon position ----
 ## For 4-fold degenerate sites, only the 3rd position is degenerate.
