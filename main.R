@@ -2166,23 +2166,24 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
 
 # 8.4b) GO enrichment dot-plot visualisation ----
 #
-# Filters out overly generic terms (term_size > 500) and shows the top N
-# most significant remaining terms. Gene ratio (precision) drives the x-axis;
-# dot size = overlap count; colour = -log10(FDR p-value).
+# Shows ALL significant terms after removing overly generic ones
+# (term_size > 500). Plot height scales automatically with term count.
+# Gene ratio (precision) drives the x-axis; dot size = overlap count;
+# colour = -log10(FDR p-value).
 
-.go_dotplot <- function(go_result, title, max_terms = 20, max_term_size = 500) {
-  if (is.null(go_result) || nrow(go_result$result) == 0) {
-    return(
-      ggplot() +
-        labs(title = title, subtitle = "No significant GO terms after filtering") +
-        theme_void()
-    )
+.go_dotplot <- function(go_result, title, max_term_size = 500) {
+  empty_plot <- function(sub) {
+    ggplot() +
+      labs(title = title, subtitle = sub) +
+      theme_void()
   }
+
+  if (is.null(go_result) || nrow(go_result$result) == 0)
+    return(list(plot = empty_plot("No significant GO terms"), nterms = 0L))
 
   df <- go_result$result |>
     dplyr::filter(term_size <= max_term_size) |>
     dplyr::arrange(p_value) |>
-    dplyr::slice_head(n = max_terms) |>
     dplyr::mutate(
       neg_log10_p = -log10(p_value),
       gene_ratio  = precision,
@@ -2192,18 +2193,13 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
       )
     )
 
-  if (nrow(df) == 0) {
-    return(
-      ggplot() +
-        labs(title = title, subtitle = "No specific GO terms (all filtered as generic)") +
-        theme_void()
-    )
-  }
+  if (nrow(df) == 0)
+    return(list(plot = empty_plot("No specific terms (all filtered as generic)"), nterms = 0L))
 
-  ggplot(df, aes(x = gene_ratio,
-                 y = reorder(term_label, gene_ratio),
-                 size = intersection_size,
-                 colour = neg_log10_p)) +
+  p <- ggplot(df, aes(x = gene_ratio,
+                      y = reorder(term_label, gene_ratio),
+                      size = intersection_size,
+                      colour = neg_log10_p)) +
     geom_point() +
     scale_colour_viridis_c(
       name   = expression(-log[10](italic(p))),
@@ -2222,29 +2218,31 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
       plot.title        = element_text(size = 9, face = "bold"),
       legend.key.height = unit(0.5, "cm")
     )
+
+  list(plot = p, nterms = nrow(df))
 }
 
-p_go_load <- .go_dotplot(
+.go_height <- function(n) max(5, 2 + n * 0.32)
+
+res_load <- .go_dotplot(
   GO_results_load,
   sprintf("High translational load  (top 50 by L_ROC,  n = %d)", length(subset_load_paying))
 )
-
-p_go_sel <- .go_dotplot(
+res_sel <- .go_dotplot(
   GO_results_selection,
-  sprintf("Population-genetic selection  (S_Wright ≥ %.1f,  n = %d)",
+  sprintf("Population-genetic selection  (S_Wright >= %.1f,  n = %d)",
           S_BARRIER, length(subset_selection))
 )
 
-ggsave("./results/GO_dotplot_load.pdf",      p_go_load, width = 8, height = 6)
-ggsave("./results/GO_dotplot_selection.pdf", p_go_sel,  width = 8, height = 6)
+ggsave("./results/GO_dotplot_load.pdf",
+       res_load$plot, width = 8, height = .go_height(res_load$nterms))
+ggsave("./results/GO_dotplot_selection.pdf",
+       res_sel$plot,  width = 8, height = .go_height(res_sel$nterms))
 
-p_go_combined <- (p_go_load | p_go_sel) +
-  patchwork::plot_annotation(tag_levels = "A") &
-  theme(plot.tag = element_text(face = "bold", size = 12))
+cat(sprintf("[GO plots] Load: %d terms shown | Selection: %d terms shown\n",
+            res_load$nterms, res_sel$nterms))
 
-ggsave("./results/GO_dotplot_combined.pdf", p_go_combined, width = 16, height = 7)
-
-rm(p_go_load, p_go_sel, p_go_combined, .go_dotplot)
+rm(res_load, res_sel, .go_dotplot, .go_height)
 gc()
 
 # 8.5) Top genes by L_ROC (load) and by S_Wright (selection) -----------------------------------
