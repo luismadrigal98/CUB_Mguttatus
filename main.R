@@ -2164,6 +2164,89 @@ write.csv(x = GO_results$result |> dplyr::select(-parents),
           file = "./results/Go_enrichment.csv",
           quote = TRUE, row.names = FALSE)
 
+# 8.4b) GO enrichment dot-plot visualisation ----
+#
+# Filters out overly generic terms (term_size > 500) and shows the top N
+# most significant remaining terms. Gene ratio (precision) drives the x-axis;
+# dot size = overlap count; colour = -log10(FDR p-value).
+
+.go_dotplot <- function(go_result, title, max_terms = 20, max_term_size = 500) {
+  if (is.null(go_result) || nrow(go_result$result) == 0) {
+    return(
+      ggplot() +
+        labs(title = title, subtitle = "No significant GO terms after filtering") +
+        theme_void()
+    )
+  }
+
+  df <- go_result$result |>
+    dplyr::filter(term_size <= max_term_size) |>
+    dplyr::arrange(p_value) |>
+    dplyr::slice_head(n = max_terms) |>
+    dplyr::mutate(
+      neg_log10_p = -log10(p_value),
+      gene_ratio  = precision,
+      term_label  = sapply(
+        term_name,
+        function(x) paste(strwrap(x, width = 45), collapse = "\n")
+      )
+    )
+
+  if (nrow(df) == 0) {
+    return(
+      ggplot() +
+        labs(title = title, subtitle = "No specific GO terms (all filtered as generic)") +
+        theme_void()
+    )
+  }
+
+  ggplot(df, aes(x = gene_ratio,
+                 y = reorder(term_label, gene_ratio),
+                 size = intersection_size,
+                 colour = neg_log10_p)) +
+    geom_point() +
+    scale_colour_viridis_c(
+      name   = expression(-log[10](italic(p))),
+      option = "plasma",
+      begin  = 0.2, end = 0.95
+    ) +
+    scale_size_continuous(name = "Genes", range = c(2, 9)) +
+    scale_x_continuous(
+      labels = scales::percent_format(accuracy = 1),
+      expand = expansion(mult = c(0.05, 0.2))
+    ) +
+    labs(title = title, x = "Gene ratio", y = NULL) +
+    theme_custom() +
+    theme(
+      axis.text.y       = element_text(size = 8, lineheight = 1.15),
+      plot.title        = element_text(size = 9, face = "bold"),
+      legend.key.height = unit(0.5, "cm")
+    )
+}
+
+p_go_load <- .go_dotplot(
+  GO_results_load,
+  sprintf("High translational load  (top 50 by L_ROC,  n = %d)", length(subset_load_paying))
+)
+
+p_go_sel <- .go_dotplot(
+  GO_results_selection,
+  sprintf("Population-genetic selection  (S_Wright ≥ %.1f,  n = %d)",
+          S_BARRIER, length(subset_selection))
+)
+
+ggsave("./results/GO_dotplot_load.pdf",      p_go_load, width = 8, height = 6)
+ggsave("./results/GO_dotplot_selection.pdf", p_go_sel,  width = 8, height = 6)
+
+p_go_combined <- (p_go_load | p_go_sel) +
+  patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold", size = 12))
+
+ggsave("./results/GO_dotplot_combined.pdf", p_go_combined, width = 16, height = 7)
+
+rm(p_go_load, p_go_sel, p_go_combined, .go_dotplot)
+gc()
+
 # 8.5) Top genes by L_ROC (load) and by S_Wright (selection) -----------------------------------
 
 detailed_annotation_full <- read.delim(
