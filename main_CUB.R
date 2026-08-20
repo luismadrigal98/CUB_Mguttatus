@@ -127,6 +127,7 @@ colnames(aa_chemistry_df) <- c('AA', 'class')
 
 model_plants_PC <- read.table(file = "data/plant_preferred_codons.txt", 
                               header = T, sep = ',')
+
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## DATA — Coding sequences (CDS) and multi-tissue gene expression
 ##   Builds `trans` (DNAStringSet of primary-transcript CDS), `codon_usage`,
@@ -152,7 +153,7 @@ codon_usage <- codon_quant(trans, codons = names(genetic_code_dna_long),
 
 exp_complete <- read.table(file = "./data/compiled_expression_IM767.txt", 
                            header = T, sep = '\t') |>
-  dplyr::rename(Gene_name = GeneID) |>
+  dplyr::rename(Gene_name = Remapped_Gene) |>
   dplyr::distinct(Gene_name, .keep_all = TRUE)
 
 # Isolate the numeric data (Everything except Gene_name)
@@ -199,10 +200,6 @@ gc()
 ##     Figure 1A  RSCU bar plot per amino acid (`codon_usage_barplot.pdf`)
 ##     Figure 1B  Parity Rule 2 plot (`pr2_plot.pdf`)
 ##     Table S1   G-test heterogeneity per amino acid
-##     Cited values:  ENC range 31.84–59.00, mean 53.43
-##                     G-test deviation in 80.2% of genes (20213/25188)
-##                     CDC range 0.0401–0.5427, mean 0.1266, median 0.1143
-##                     18,722 / 22,556 genes CDC-significant at FDR<0.05
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## *****************************************************************************
