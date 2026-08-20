@@ -281,12 +281,12 @@ pct_sig <- 100 * n_sig / n_total
 
 cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (FDR < 0.05)\n", 
             n_sig, n_total, pct_sig))
+
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 2 — Codon usage bias scales with gene expression
 ##   Produces:
 ##     Figure 2  GAM prediction of CDC vs Max expression × Exp_breadth,
 ##               controlling for CDS length (`GAM_Interaction_Predictions_CDC.pdf`)
-##     Cited value:  GAM deviance explained = 54%
 ##   Also creates `Expression_Group` (Top 5% / Middle 90% / Bottom 5%) which is
 ##   used by Sections 9, 11, and 12.
 ##   Section 5.5 (polymorphism pre-load) is hoisted here because the Section 6
@@ -313,8 +313,11 @@ n_pre_pi_join <- nrow(integrated_data)
 integrated_data <- integrated_data |>
   dplyr::left_join(pi_data, by = "Gene_name") |>
   na.exclude()
-cat(sprintf("integrated_data: %d -> %d genes after left_join(pi_data) + na.exclude() (dropped %d)\n",
+
+cat(sprintf("Integrated_data: %d -> %d genes after left_join(pi_data) + na.exclude() (dropped %d)\n",
             n_pre_pi_join, nrow(integrated_data), n_pre_pi_join - nrow(integrated_data)))
+
+## *****************************************************************************
 ## 6) Modeling relationship between CDC and Expression profiles ----
 ## _____________________________________________________________________________
 
@@ -447,6 +450,7 @@ p_effects <- plot_predictions(m_interaction,
 
 ggsave("./results/GAM_Interaction_Predictions_CDC.pdf", 
        plot = p_effects, width = 10, height = 6)
+
 # Define expression groups: Top 5% vs Bottom 5% (extreme comparison) ----
 
 top_5_cutoff <- quantile(integrated_data$Max_Log10_Exp, probs = 0.95)
@@ -459,6 +463,13 @@ integrated_data$Expression_Group <- case_when(
 )
 
 # Confounding out-based analysis (detendred CDC) ----
+
+confounder_model_gam <- gam(CDC ~ s(CDS_length_nt),
+                            data = integrated_data,
+                            family = betar(link = "logit"))
+
+integrated_data$CDC_detrended <- residuals(confounder_model_gam, 
+                                           type = "response")
 
 # Assesing significance of expression over the detrended residuals
 
