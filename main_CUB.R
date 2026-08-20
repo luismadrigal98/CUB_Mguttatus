@@ -600,11 +600,11 @@ rm(m_null, m_additive, m_complex, m_interaction, model_list,
    n_sig, n_total, pct_sig,
    top_5_cutoff, bottom_5_cutoff)
 gc()
+
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 3 — Codon Adaptation Index (CAI) discriminates highly expressed genes
 ##   Produces:
 ##     Figure S3 supporting data — CAI by expression group
-##     Cited values:  CAI range 0.54–0.89, mean 0.70
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 7) Calculate Codon Adaptation Index (CAI) ----
@@ -653,7 +653,7 @@ print(cai_by_group)
 kw_test <- kruskal.test(CAI ~ Expression_Group, data = integrated_data)
 print(kw_test)
 
-top_cai    <- integrated_data |> dplyr::filter(Expression_Group == "Top 5%")    |> pull(CAI)
+top_cai <- integrated_data |> dplyr::filter(Expression_Group == "Top 5%") |> pull(CAI)
 middle_cai <- integrated_data |> dplyr::filter(Expression_Group == "Middle 90%") |> pull(CAI)
 bottom_cai <- integrated_data |> dplyr::filter(Expression_Group == "Bottom 5%") |> pull(CAI)
 
@@ -708,14 +708,13 @@ ggsave("./results/CAI_by_expression_group_Median_CI.pdf", p_cai_median,
 rm(p_cai_boxplot, p_cai_median, plot_data_cai,
    top_cai, middle_cai, bottom_cai, reference_genes)
 gc()
+
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 4 — Candidate optimal codons; selection acts only on the elite
 ##   Produces:
 ##     Figure 4   Codon share across the expression range, by family
-##                (`codon_share_expression_regimes.pdf`) — replaces the former
-##                ROC-SEMPPR trajectory panel, which drew Referee 1's objection
-##                that "most of the curve dynamics are beyond the extent of the
-##                data points".  Every point here is an observed pooled share.
+##                (`codon_share_expression_regimes.pdf`) 
+##                Every point here is an observed pooled share.
 ##     Figure 4b  Regime contrast per codon, with 95% CIs
 ##                (`preferred_codon_regime_contrast.pdf`)
 ##     Table 2    Candidate optimal codons by family
@@ -724,11 +723,6 @@ gc()
 ##                (`preferred_codon_detection_per_codon.csv`,
 ##                 `preferred_codon_elite_vs_bulk.csv`,
 ##                 `preferred_codon_concordance_vs_ROC.csv`)
-##     Cited values:  21/21 families resolved; 21/21 preferred codons GC-ending
-##                     (16 C-ending, 5 G-ending)
-##                     19/21 show a drift-to-selection regime reversal
-##                     18/19 agreement with the archived ROC-SEMPPR call
-##                     (the exception is Val: GTC here vs GTG under ROC)
 ##
 ##   SUPPLEMENTARY (AnaCoDa is archived upstream; retained as a cross-check):
 ##     Table S-y  Intron / intergenic stationary nucleotide frequencies
@@ -738,6 +732,7 @@ gc()
 ##   full_analysis.R); this script reads the saved posterior summaries.
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+## *****************************************************************************
 ## 8) Optimal-codon detection and selection coefficients ----
 ## _____________________________________________________________________________
 
@@ -782,12 +777,12 @@ preferred_detection <- detect_preferred_codons(
 preferred_codons <- preferred_detection$preferred |>
   dplyr::filter(Call == "preferred") |>
   dplyr::transmute(
-    AA    = Family,
-    aa    = Family,
+    AA = Family,
+    aa = Family,
     Codon = Preferred_Codon,
     # Ordering statistic with ROC's sign convention (lower = more preferred),
     # so merge_2_and_4_to_6_fold() collapses six-fold families unchanged.
-    eta   = -Slope_contrast
+    eta = -Slope_contrast
   ) |>
   as.data.frame()
 
@@ -821,7 +816,10 @@ message(sprintf("✓ Preferred codons (expression-regime): %d families resolved;
                       table(substr(preferred_codons_call$Preferred_Codons, 3, 3)),
                       sep = "=", collapse = " ")))
 
-# --- PRIMARY VALIDATION: tRNA gene supply ------------------------------------
+# ******************************************************************************
+# PRIMARY VALIDATION: tRNA gene supply ----
+# ______________________________________________________________________________ 
+
 # Independent of both the detector and ROC-SEMPPR: tRNA gene content uses no
 # expression data and no codon-usage data.  (ROC-SEMPPR is NOT independent —
 # the run its coefficients come from was given the empirical expression, so its
@@ -882,6 +880,8 @@ plot_codon_regimes(preferred_bins,
 plot_preferred_codon_slopes(preferred_detection$codon_table,
                             preferred_detection$preferred,
                             output_file = "./results/preferred_codon_regime_contrast.pdf")
+
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 5 — Wright two-allele MSD framework, drift barrier, GO enrichment
 ##   Produces:
 ##     Figure 5   A) S_Wright distribution with drift threshold (S=1)
@@ -894,9 +894,6 @@ plot_preferred_codon_slopes(preferred_detection$codon_table,
 ##     Table S3   Top genes by translational load / S_Wright
 ##                (`Top_genes_strong_selection_load.csv`,
 ##                 `Top_genes_strong_selection_S_Wright.csv`)
-##     Cited values:  18,273 / 22,355 genes below drift threshold (81.74%)
-##                     Mean S = 0.60, median S = 0.55, range −∞ to 2.80
-##                     4,082 genes with S > 1; 17,041 with 0 < S < 1; 1,232 with S < 0
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 # 8.3.4) Wright's MSD framework ----
