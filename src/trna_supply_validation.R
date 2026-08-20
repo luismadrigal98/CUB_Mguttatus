@@ -56,12 +56,44 @@
 ##   NNA     T34 (U:A),     s = 0     A34 (I:A),  s = 0.9999
 ##   NNG     C34 (C:G),     s = 0     T34 (U:G),  s = 0.68
 ##
-## Read the result by family size.  Two-fold families are the clean test: they
-## have a genuine Watson-Crick/wobble asymmetry.  Four-fold families are NOT a
-## clean test — their C-ending codons are decoded by inosine, and tAI's
-## s(I:C) = 0.28 penalty ranks them below the A34-cognate T-ending codon by
-## construction.  Disagreement there is expected and is a statement about the
-## tAI weighting, not evidence against the codon call.
+## ---------------------------------------------------------------------------
+## Read the output as SUPPORTED / NOT SUPPORTED, never as agree / disagree
+## ---------------------------------------------------------------------------
+## Whether a family can say anything at all is decided by its anticodon
+## inventory, not by its codon counts.  For the C-vs-T contrast:
+##
+##   G34 absent (A34 only)  ->  W(NNC)/W(NNT) = 1 - s(I:C) = 0.720 EXACTLY,
+##                              whatever the copy numbers.  The C-ending codon
+##                              can never win.  NOT evidence against the call.
+##   A34 absent (G34 only)  ->  ratio = 1/(1 - s(G:U)) = 1.695 exactly.  Here
+##                              the evidence is the inventory itself: the genome
+##                              encodes a dedicated Watson-Crick reader for the
+##                              C-ending codon, and did not take the inosine
+##                              route it uses elsewhere.  SUPPORTED (inventory).
+##   both present           ->  ratio varies with the A34:G34 copy ratio, so the
+##                              comparison is genuinely quantitative.
+##
+## In M. guttatus this splits 13 supported / 8 not supported / 0 contradicted.
+## Ala, Arg_4, Ile, Thr and Val have zero G34 genes and sit at exactly 0.720;
+## Leu_4, Pro and Ser_4 carry a single token G34 gene against 12-22 A34 genes
+## (0.745-0.766).  Those eight are the inosine-dominated set: tRNA gene content
+## does not support their C-ending call, and it is also the regime where the
+## generic s(I:C) weight is least trustworthy, so neither reading is safe.
+## Gly is the informative four-fold case — 35 G34 genes and no A34 — and it
+## supports GGC.  The two-fold NNR families (Gln, Glu, Lys, Arg_2, Leu_2) are
+## genuinely copy-number driven via C34 vs T34.
+##
+## Note this is where the paper must be careful: the "mostly C-ending" headline
+## rests largely on four-fold families, and those are exactly the eight with no
+## tRNA support.  Say so rather than reporting a bare 13/21.
+##
+## This is a known property of eukaryotic tRNA gene sets, not a quirk of this
+## genome: the tRNA(GNN) species of the four-fold families are largely extinct
+## in eukaryotes, and NNC codons there are read by I34.  Note also that generic
+## tAI s-values are fitted to S. cerevisiae, and the literature holds I:C to be
+## an EFFICIENT pairing, so s(I:C) = 0.28 probably understates it.  Species-
+## specific weights (stAIcalc / gtAI) are the standard remedy and would be the
+## right upgrade if the four-fold families need to be tested properly.
 ## ============================================================================
 
 trna_supply_by_codon <- function(trna_file,
@@ -143,6 +175,21 @@ trna_supply_by_codon <- function(trna_file,
   out[is.na(Supply),       Supply := 0]
   out[is.na(N_cognate_WC), N_cognate_WC := 0L]
   out[, Third_base := substr(Codon, 3, 3)]
+
+  # Anticodon inventory per family, carried along because it — not the codon
+  # counts — determines whether a family's C-vs-T contrast carries any
+  # information (see header).
+  tr[, Family := unname(genetic_code[Codon_WC])]
+  tr[, Base34 := substr(Anticodon, 1, 1)]
+  inv <- data.table::dcast(
+    tr[!is.na(Family) & Family != "STOP", .N, by = .(Family, Base34)],
+    Family ~ Base34, value.var = "N", fill = 0L
+  )
+  for (b in c("A", "C", "G", "T")) if (!b %in% names(inv)) inv[[b]] <- 0L
+  data.table::setnames(inv, c("A", "C", "G", "T"),
+                       c("n_A34", "n_C34", "n_G34", "n_T34"), skip_absent = TRUE)
+  data.table::setattr(out, "anticodon_inventory",
+                      inv[, .(Family, n_A34, n_C34, n_G34, n_T34)])
   out[]
 }
 
@@ -183,27 +230,75 @@ validate_preferred_by_trna <- function(preferred, trna_supply, genetic_code) {
             Preferred_supply = Supply, Preferred_WC = N_cognate_WC)],
     by = c("Family", "Preferred_Codon"), all.x = TRUE
   )
-  by_family[, Agrees := Preferred_Codon == Top_supply_codon]
+  by_family[, Tops_supply := Preferred_Codon == Top_supply_codon]
 
-  # Family type: two-fold pyrimidine-ending families are the clean test.
   fam_codons <- split(names(genetic_code), unname(genetic_code))
   by_family[, Family_size := vapply(Family, function(f) length(fam_codons[[f]]), 1L)]
-  by_family[, Family_type := data.table::fifelse(
-    Family_size == 2L & Preferred_Codon %like% "[CT]$", "two-fold NNY",
-    data.table::fifelse(Family_size == 2L, "two-fold NNR", "four-fold+"))]
 
-  clean <- by_family[Family_size == 2L]
+  # Anticodon inventory per family — this is what decides whether a family can
+  # carry evidence at all.
+  inv <- attr(trna_supply, "anticodon_inventory")
+  if (is.null(inv)) {
+    stop("trna_supply must carry an `anticodon_inventory` attribute; ",
+         "regenerate it with trna_supply_by_codon().")
+  }
+  by_family <- merge(by_family, inv, by = "Family", all.x = TRUE)
+  for (cc in c("n_A34", "n_G34", "n_T34", "n_C34")) {
+    by_family[is.na(get(cc)), (cc) := 0L]
+  }
+
+  # Classify the evidence.  The third base of the CALLED codon decides which
+  # contrast matters.
+  by_family[, Called_base := substr(Preferred_Codon, 3, 3)]
+  # Exactly pinned: with no G34 gene at all, W(NNC)/W(NNT) collapses to
+  # 1 - s(I:C) = 0.72 whatever the copy numbers, so no data enters.
+  by_family[, Ratio_pinned := Called_base == "C" & n_G34 == 0L]
+
+  by_family[, Evidence := data.table::fcase(
+    # C-ending call in an inosine-dominated family. Includes both the exactly
+    # pinned case (no G34) and families with a token single G34 gene against
+    # 12-22 A34 genes, where the outcome is likewise not in doubt. These are
+    # precisely the families where generic tAI s-values are least trustworthy:
+    # s(I:C) = 0.28 was fitted to S. cerevisiae, and I:C is held in the
+    # literature to be an efficient pairing. Not evidence against the call.
+    Called_base == "C" & n_A34 >= n_G34,
+      "not supported (inosine-dominated)",
+    # Dedicated Watson-Crick reader, no inosine route: the inventory itself is
+    # the evidence — the genome built a G34 reader instead of using I34.
+    Called_base == "C" & n_G34 > 0L & n_A34 == 0L,
+      "supported (inventory)",
+    # Both routes materially represented, or a G-ending call decided by C34 vs
+    # T34: genuinely quantitative.
+    default = data.table::fifelse(Tops_supply, "supported (copy number)",
+                                  "contradicted")
+  )]
+
+  by_family[, Evidence_basis := data.table::fcase(
+    Evidence == "not supported (inosine-dominated)" & Ratio_pinned,
+      sprintf("no G34 gene (A34=%d); W(NNC)/W(NNT) pinned at 1-s(I:C)=0.72 regardless of copy number", n_A34),
+    Evidence == "not supported (inosine-dominated)",
+      sprintf("inosine route dominates (A34=%d vs G34=%d); outcome not in doubt and s(I:C) is the least reliable tAI weight", n_A34, n_G34),
+    Evidence == "supported (inventory)",
+      sprintf("genome encodes a dedicated Watson-Crick G34 reader (%d copies) and no A34", n_G34),
+    default =
+      sprintf("copy-number driven (A34=%d G34=%d T34=%d C34=%d)", n_A34, n_G34, n_T34, n_C34)
+  )]
+
+  informative <- by_family[Evidence != "not supported (inosine-dominated)"]
 
   list(
-    by_family    = by_family[],
-    clean_subset = clean[],
+    by_family     = by_family[],
+    informative   = informative[],
     summary = list(
-      n_families          = nrow(by_family),
-      n_agree             = sum(by_family$Agrees, na.rm = TRUE),
-      n_twofold           = nrow(clean),
-      n_twofold_agree     = sum(clean$Agrees, na.rm = TRUE),
-      n_fourfold          = sum(by_family$Family_size > 2L),
-      n_fourfold_agree    = sum(by_family$Agrees[by_family$Family_size > 2L], na.rm = TRUE)
+      n_families        = nrow(by_family),
+      n_supported       = sum(grepl("^supported", by_family$Evidence)),
+      n_contradicted    = sum(by_family$Evidence == "contradicted"),
+      n_not_supported   = sum(by_family$Evidence == "not supported (inosine-dominated)"),
+      n_supported_copy  = sum(by_family$Evidence == "supported (copy number)"),
+      n_supported_inv   = sum(by_family$Evidence == "supported (inventory)"),
+      n_ratio_pinned    = sum(by_family$Ratio_pinned),
+      inosine_dominated_families =
+        by_family$Family[by_family$Evidence == "not supported (inosine-dominated)"]
     )
   )
 }

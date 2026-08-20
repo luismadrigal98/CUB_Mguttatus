@@ -820,12 +820,18 @@ message(sprintf("✓ Preferred codons (expression-regime): %d families resolved;
 #
 # Supply is the tAI weight (dos Reis et al. 2004), which applies the wobble
 # penalties.  Read it by family size:
-#   * two-fold families are the clean test — a genuine Watson-Crick/wobble
-#     asymmetry, and the call is corroborated in 12/12;
-#   * four-fold families are NOT a clean test — their C-ending codons are read
-#     by inosine, and the s(I:C) = 0.28 penalty ranks them below the A34-cognate
-#     T-ending codon by construction, so the 1/9 there is expected and is a
-#     statement about tAI's weighting rather than about the codon call.
+#   * 13 families are supported — 7 because the genome encodes a dedicated
+#     Watson-Crick G34 reader for the called C-ending codon (and no inosine
+#     route), 6 on actual C34-vs-T34 copy numbers;
+#   * 8 are NOT supported: inosine-dominated families where the C-ending codon
+#     is served only by I34. In 5 of them (Ala, Arg_4, Ile, Thr, Val) the
+#     W(NNC)/W(NNT) ratio is pinned at 1-s(I:C)=0.720 by arithmetic, whatever
+#     the copy numbers, so no data enters; the other 3 carry a single token G34
+#     gene against 12-22 A34. Nothing is contradicted, but nothing is confirmed
+#     either -- and this is exactly where the generic tAI s-values are least
+#     reliable (s(I:C) fitted to yeast; I:C is held to be an efficient pairing).
+#     The paper's "mostly C-ending" headline leans on four-fold families, so
+#     this limitation has to be stated rather than averaged away.
 
 trna_supply <- trna_supply_by_codon(
   trna_file    = "data/Mguttatusvar_IM767_887_v2.0_tRNA_filtered.txt",
@@ -840,12 +846,16 @@ data.table::fwrite(trna_supply,               "./results/trna_supply_by_codon.cs
 data.table::fwrite(trna_validation$by_family, "./results/trna_validation_by_family.csv")
 
 cat(sprintf(
-  paste0("[tRNA validation] two-fold families (clean test): %d/%d agree | ",
-         "four-fold+: %d/%d | overall %d/%d\n"),
-  trna_validation$summary$n_twofold_agree, trna_validation$summary$n_twofold,
-  trna_validation$summary$n_fourfold_agree, trna_validation$summary$n_fourfold,
-  trna_validation$summary$n_agree, trna_validation$summary$n_families
+  paste0("[tRNA validation] %d/%d families supported (%d by anticodon inventory, ",
+         "%d by copy number); %d not supported (inosine-dominated, of which %d have the ",
+         "C:T ratio exactly pinned by 1-s(I:C)); %d contradicted.\n"),
+  trna_validation$summary$n_supported, trna_validation$summary$n_families,
+  trna_validation$summary$n_supported_inv, trna_validation$summary$n_supported_copy,
+  trna_validation$summary$n_not_supported, trna_validation$summary$n_ratio_pinned,
+  trna_validation$summary$n_contradicted
 ))
+cat(sprintf("  Inosine-dominated (no tRNA support for the C-ending call): %s\n",
+            paste(trna_validation$summary$inosine_dominated_families, collapse = ", ")))
 
 plot_trna_supply_vs_preference(
   trna_supply[Family %in% preferred_detection$preferred$Family],
@@ -1572,8 +1582,13 @@ p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
   theme(legend.position = "top")
 
 
+# cairo_pdf is not always available on headless compute nodes, and this call
+# sits BEFORE the handoff write below — a missing device would otherwise kill
+# the run before supplementary_anacoda.R has anything to read. Fall back to the
+# default pdf device, which changes the backend only, not the figure.
+.dev_pdf <- if (capabilities("cairo")) cairo_pdf else pdf
 ggsave("./results/Drift_barrier_distribution.pdf",
-       p_sw_dist, width = 8, height = 5, device = cairo_pdf)
+       p_sw_dist, width = 8, height = 5, device = .dev_pdf)
 
 write.csv(wright_emp,
           "./results/Wright_curve_empirical.csv",        row.names = FALSE)
