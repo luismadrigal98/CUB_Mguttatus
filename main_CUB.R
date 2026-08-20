@@ -8,9 +8,10 @@
 ##' tables, and quantitative claims in the codon-usage-bias manuscript
 ##' resubmitted to New Phytologist (successor to NPH-MS-2026-57041).
 ##'
-##' ---------------------------------------------------------------------------
+##' %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ##' SCOPE CHANGE, 2026-08-14
-##' ---------------------------------------------------------------------------
+##' %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+##' 
 ##' Built from `main.R` (preserved at `archive/main_full_analysis_2026-08-14.R`)
 ##' after the editor approved refocusing the paper on codon usage bias alone.
 ##' Two changes of substance:
@@ -47,10 +48,10 @@
 ##'
 ##' ____________________________________________________________________________
 
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## SETUP — Working directory, libraries, helper functions, reference tables
 ##   Loads all source files in ./src and the comparative-plant codon table.
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## *****************************************************************************
 ## 1) Set work directory ----
@@ -126,12 +127,12 @@ colnames(aa_chemistry_df) <- c('AA', 'class')
 
 model_plants_PC <- read.table(file = "data/plant_preferred_codons.txt", 
                               header = T, sep = ',')
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## DATA — Coding sequences (CDS) and multi-tissue gene expression
 ##   Builds `trans` (DNAStringSet of primary-transcript CDS), `codon_usage`,
 ##   and the multi-tissue expression matrix `exp_complete` (Max_Log10_Exp,
 ##   Exp_breadth).  All downstream sections depend on these objects.
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## *****************************************************************************
 # 3) Load the data ----
@@ -192,7 +193,7 @@ write.csv(exp_complete, file = "./results/Expression_Profiles_Summary.csv",
 rm(numeric_data, CPM_thr)
 gc()
 
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 1 — CUB metrics indicate strong codon usage bias (related to expression)
 ##   Produces:
 ##     Figure 1A  RSCU bar plot per amino acid (`codon_usage_barplot.pdf`)
@@ -202,7 +203,7 @@ gc()
 ##                     G-test deviation in 80.2% of genes (20213/25188)
 ##                     CDC range 0.0401–0.5427, mean 0.1266, median 0.1143
 ##                     18,722 / 22,556 genes CDC-significant at FDR<0.05
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## *****************************************************************************
 ## 4) Comprehensive CUB Analysis ----
@@ -283,7 +284,7 @@ pct_sig <- 100 * n_sig / n_total
 
 cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (FDR < 0.05)\n", 
             n_sig, n_total, pct_sig))
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 2 — Codon usage bias scales with gene expression
 ##   Produces:
 ##     Figure 2  GAM prediction of CDC vs Max expression × Exp_breadth,
@@ -293,7 +294,7 @@ cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (FDR < 0.05)\n",
 ##   used by Sections 9, 11, and 12.
 ##   Section 5.5 (polymorphism pre-load) is hoisted here because the Section 6
 ##   GAM and the Wright MSD block (Section 4 below) both filter on Pi_mean_4fold.
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 5.5) Polymorphism data preload (Pi_mean_4fold needed by Section 6+) ----
 ## _____________________________________________________________________________
@@ -591,12 +592,12 @@ rm(m_null, m_additive, m_complex, m_interaction, model_list,
    n_sig, n_total, pct_sig,
    top_5_cutoff, bottom_5_cutoff)
 gc()
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 3 — Codon Adaptation Index (CAI) discriminates highly expressed genes
 ##   Produces:
 ##     Figure S3 supporting data — CAI by expression group
 ##     Cited values:  CAI range 0.54–0.89, mean 0.70
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 7) Calculate Codon Adaptation Index (CAI) ----
 ## _____________________________________________________________________________
@@ -699,7 +700,7 @@ ggsave("./results/CAI_by_expression_group_Median_CI.pdf", p_cai_median,
 rm(p_cai_boxplot, p_cai_median, plot_data_cai,
    top_cai, middle_cai, bottom_cai, reference_genes)
 gc()
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 4 — Candidate optimal codons; selection acts only on the elite
 ##   Produces:
 ##     Figure 4   Codon share across the expression range, by family
@@ -727,7 +728,7 @@ gc()
 ##     S_ROC / L_ROC translational-load axis (Section 8.3)
 ##   The AnaCoDa MCMC fit is run externally (see comments at lines 919–933 of
 ##   full_analysis.R); this script reads the saved posterior summaries.
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 8) Optimal-codon detection and selection coefficients ----
 ## _____________________________________________________________________________
@@ -888,7 +889,7 @@ plot_preferred_codon_slopes(preferred_detection$codon_table,
 ##     Cited values:  18,273 / 22,355 genes below drift threshold (81.74%)
 ##                     Mean S = 0.60, median S = 0.55, range −∞ to 2.80
 ##                     4,082 genes with S > 1; 17,041 with 0 < S < 1; 1,232 with S < 0
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 # 8.3.4) Wright's MSD framework ----
 #
@@ -1811,13 +1812,13 @@ write.csv(top_selection,
           quote = TRUE, row.names = FALSE)
 cat(sprintf("[Top genes] S_Wright_raw >= %.4f: %d genes (Q-inflection-derived selection group)\n",
             S_BARRIER, nrow(top_selection)))
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 6 — M. guttatus preferred codons vs other plants
 ##   Produces:
 ##     Figure 3  Cross-species preferred codon comparison
 ##               (`plant_codon_preference_comparison_colored.pdf`,
 ##                `plant_preferred_codons_comparison.csv`)
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 9) Comparing preferred codon of Mimulus guttatus to other plants ----
 
@@ -2002,13 +2003,14 @@ p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon
 
 ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
        width = 12, height = 16)
-## ============================================================================
+
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 7 — tRNA / codon-anticodon correspondence
 ##   Produces:
 ##     Figure S5 supporting data (aa-tRNA correspondence)
 ##     Cited value:  Spearman r = 0.761 (p = 3.83 × 10⁻⁴) between
 ##                   amino acid frequencies and tRNA gene copy number
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 11) tRNA abundance correlation analysis ----
 ## _____________________________________________________________________________
@@ -2040,7 +2042,7 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
   genetic_code = genetic_code_dna_long,
   output_dir = "./results/aa_trna_sanity_check"
 )
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 8 — Selection on codon usage elevates synonymous diversity
 ##   The McVean & Charlesworth expectation: where selection on codon usage is
 ##   effective it opposes mutation pressure at 4-fold sites, holding variants at
@@ -2058,7 +2060,7 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
 ##   MOVED OUT: the former Figure 7C (intron vs exon π by distance from gene
 ##   start) and the first-300 bp decomposition are within-gene positional
 ##   analyses and now live in paper2_linked_selection.R.
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 12) Polymorphism data integration ----
 ## _____________________________________________________________________________
@@ -2525,14 +2527,15 @@ p_pref_contour <- ggplot(pred_grid_pref,
 ggsave("./results/Preferred_freq_contour_exp_x_length_narrow.pdf",
        p_pref_contour, width = 9, height = 7)
 cat("Saved: ./results/Preferred_freq_contour_exp_x_length_narrow.pdf\n")
-## ============================================================================
+
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 9 — Diversity hump: GC-segregating sites carry excess heterozygosity
 ##   Produces:
 ##     Figure 7D  Excess heterozygosity at GC-segregating 4-fold sites
 ##                vs matched intronic controls (`Hump_Hypothesis_Confirmation.pdf`)
 ##     Cited values:  Paired t-test t₁₃ = 39.76, P < 2.9 × 10⁻¹⁵
 ##                     Mean Δπ ≈ 0.0107 (≈1% extra heterozygosity at GC sites)
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## *****************************************************************************
 ## 14) Diversity across different genomic compartment ----
@@ -2980,10 +2983,11 @@ p_global_contour <- ggplot(contour_global_long, aes(x = exp_norm, y = log_len)) 
 ggsave("./results/global_gene_level_pref_freq_contour.pdf", 
        p_global_contour, width = 12, height = 6)
 cat("  Saved: ./results/global_gene_level_pref_freq_contour.pdf\n")
-## ============================================================================
+
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## END OF PAPER-REPLICATION PIPELINE
 ##
 ## To reproduce additional analyses (model selection, diagnostic plots,
 ## alternative parameterizations, etc.) run `full_analysis.R`, which is a
 ## verbatim copy of the historical pipeline.
-## ============================================================================
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
