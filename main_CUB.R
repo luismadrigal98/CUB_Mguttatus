@@ -1603,16 +1603,29 @@ write.csv(
   "./results/Wright_per_gene_S_Wright.csv", row.names = FALSE
 )
 
-# Genes clearing the drift barrier. This is the AnaCoDa-free selection group
-# used by Section 12's isolation analyses (it replaces the former
-# `L_ROC > thr_sel` top-50-by-load set, which moved to supplementary_anacoda.R).
-# The two are close in size, but this one is defined by efficacy of selection
-# rather than by the load being paid.
+# SIZE MATCHING MATTERS HERE. The quantity this replaces, `thr_sel`, was the
+# L_ROC of the 50th-highest gene -- an OUTLIER group of exactly 50 genes,
+# appended as a final bin alongside expression-ranked bins of ~1000. The
+# drift-barrier group (S_Wright >= 1) is a different object: roughly 4,000
+# genes, the set the paper's GO claim rests on. Substituting one for the other
+# would change Section 12's final bin ~80-fold.
+#
+# So Section 12 gets the size-matched AnaCoDa-free equivalent -- the top 50
+# genes by S_Wright -- and the drift-barrier group is kept separately for GO.
+n_outlier_genes <- 50L
 selection_gene_set <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_signed)) |>
+  dplyr::arrange(dplyr::desc(S_Wright_signed)) |>
+  dplyr::slice_head(n = n_outlier_genes) |>
+  dplyr::pull(Gene_name)
+
+# Full drift-barrier group (S_Wright >= S_BARRIER); ~4,000 genes. Used by GO.
+drift_barrier_gene_set <- msd_data |>
   dplyr::filter(!is.na(S_Wright_signed), S_Wright_signed >= S_BARRIER) |>
   dplyr::pull(Gene_name)
-cat(sprintf("[Selection group] %d genes with S_Wright_signed >= %.4f\n",
-            length(selection_gene_set), S_BARRIER))
+
+cat(sprintf("[Selection groups] outlier set = top %d by S_Wright | drift-barrier set (S_Wright >= %.2f) = %d genes\n",
+            n_outlier_genes, S_BARRIER, length(drift_barrier_gene_set)))
 
 # --- Handoff for supplementary_anacoda.R -------------------------------------
 # The AnaCoDa cross-metric validation (S_ROC / L_ROC densities against this
@@ -2006,6 +2019,7 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
   genetic_code = genetic_code_dna_long,
   output_dir = "./results/aa_trna_sanity_check"
 )
+
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 8 — Selection on codon usage elevates synonymous diversity
 ##   The McVean & Charlesworth expectation: where selection on codon usage is
@@ -2033,7 +2047,6 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
 
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
-
 
 # 12.1) Expression-ranked 4-fold π analysis (Kelly replication) ----
 # Bin genes into groups of ~1000 ranked by Mean_Log10_Exp, calculate
@@ -2120,6 +2133,105 @@ ggsave("./results/pi_4fold_by_expression_rank.pdf",
        p_pi_by_expression, width = 10, height = 6)
 
 cat("✓ Saved: ./results/pi_4fold_by_expression_rank.pdf\n")
+
+# 12.1b) Non-synonymous vs synonymous π across the expression range ----
+#
+# This is the comparison behind Figure 7A, and it is the paper's central
+# population-genetic result: non-synonymous π falls monotonically with
+# expression (purifying selection strengthens), while 4-fold π tracks it down
+# over most of the range and then turns UP among the most highly expressed
+# genes. That upturn is the McVean & Charlesworth (1999) expectation — where
+# codon-usage selection opposes mutation at 4-fold sites it holds variants at
+# intermediate frequency and raises diversity rather than depleting it.
+#
+# PROVENANCE: ported from full_analysis.R Section 12.4 on 2026-08-14. It had
+# never been in main.R, so the "paper-replication" pipeline did not in fact
+# reproduce Figure 7A. Two changes on the way in:
+#   * the first300 / after300 decomposition is dropped (within-gene position →
+#     paper2_linked_selection.R);
+#   * the isolated selection group is `selection_gene_set` (top 50 by S_Wright)
+#     rather than the AnaCoDa-derived `L_ROC > thr_sel`.
+
+cat(sprintf("\n=== Section 12.1b: non-synonymous vs synonymous pi | integrated_data N = %d ===\n",
+            nrow(integrated_data)))
+
+bgs_data <- integrated_data |>
+  dplyr::filter(Sites_0fold >= 10, Pi_mean_0fold >= 0, !is.na(Mean_Log10_Exp))
+cat(sprintf("  filter (Sites_0fold >= 10, Pi_mean_0fold >= 0, expression present): %d -> %d genes\n",
+            nrow(integrated_data), nrow(bgs_data)))
+
+cor_0fold <- cor.test(bgs_data$Mean_Log10_Exp, bgs_data$Pi_mean_0fold,
+                      method = "spearman", exact = FALSE)
+cor_4fold <- cor.test(bgs_data$Mean_Log10_Exp, bgs_data$Pi_mean_4fold,
+                      method = "spearman", exact = FALSE)
+cat(sprintf("  Spearman rho (pi_0fold ~ expression): %+.4f (p = %.2e)\n",
+            cor_0fold$estimate, cor_0fold$p.value))
+cat(sprintf("  Spearman rho (pi_4fold ~ expression): %+.4f (p = %.2e)\n",
+            cor_4fold$estimate, cor_4fold$p.value))
+
+# Expression-ranked bins of ~1000 genes, selection group held out
+bgs_binned <- bgs_data |>
+  dplyr::filter(!(Gene_name %in% selection_gene_set)) |>
+  dplyr::arrange(Mean_Log10_Exp) |>
+  dplyr::mutate(Rank = dplyr::row_number(),
+                Exp_Bin = ceiling(Rank / bin_size)) |>
+  dplyr::group_by(Exp_Bin) |>
+  dplyr::summarize(
+    n_genes         = dplyr::n(),
+    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+    pi_4fold        = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    pi_0fold        = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(Pi_ratio_0_4 = pi_0fold / pi_4fold)
+
+# The selection group as a single isolated point
+sel_point <- bgs_data |>
+  dplyr::filter(Gene_name %in% selection_gene_set) |>
+  dplyr::summarize(
+    Exp_Bin         = max(bgs_binned$Exp_Bin) + 1L,
+    n_genes         = dplyr::n(),
+    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
+    pi_4fold        = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    pi_0fold        = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE)
+  ) |>
+  dplyr::mutate(Pi_ratio_0_4 = pi_0fold / pi_4fold)
+
+cat(sprintf("  selection group (top %d by S_Wright): n = %d, mean expression = %.2f, pi_4fold = %.5f, pi_0fold = %.5f\n",
+            n_outlier_genes, sel_point$n_genes, sel_point$mean_expression,
+            sel_point$pi_4fold, sel_point$pi_0fold))
+
+bgs_all <- dplyr::bind_rows(bgs_binned, sel_point)
+write.csv(bgs_all, "./results/pi_0fold_vs_4fold_by_expression.csv", row.names = FALSE)
+
+# Figure 7A: both site classes on one axis, selection group marked
+bgs_long <- bgs_all |>
+  tidyr::pivot_longer(cols = c(pi_4fold, pi_0fold),
+                      names_to = "Site_class", values_to = "pi") |>
+  dplyr::mutate(Site_class = dplyr::recode(Site_class,
+                  pi_4fold = "4-fold degenerate (synonymous)",
+                  pi_0fold = "0-fold degenerate (non-synonymous)"),
+                Is_selection = Exp_Bin == max(Exp_Bin))
+
+p_pi_syn_nonsyn <- ggplot(bgs_long, aes(x = mean_expression, y = pi,
+                                        colour = Site_class)) +
+  geom_line(data = ~ dplyr::filter(.x, !Is_selection), linewidth = 0.7) +
+  geom_point(aes(shape = Is_selection), size = 2.4) +
+  scale_colour_manual(values = c("4-fold degenerate (synonymous)"     = "#377EB8",
+                                 "0-fold degenerate (non-synonymous)" = "#E41A1C"),
+                      name = NULL) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 17),
+                     labels = c(`FALSE` = "Expression bin",
+                                `TRUE`  = "Selection group"), name = NULL) +
+  labs(x = expression("Mean log"[10] * " expression"),
+       y = expression("Nucleotide diversity (" * pi * ")")) +
+  theme_custom()
+
+ggsave("./results/pi_0fold_vs_4fold_by_expression.pdf",
+       p_pi_syn_nonsyn, width = 9, height = 6)
+cat("✓ Saved: ./results/pi_0fold_vs_4fold_by_expression.pdf\n")
+
+rm(bgs_long, p_pi_syn_nonsyn)
 
 # Breakdown by segregating base pair type at 4-fold sites ----
 if (has_mutation_types) {
@@ -2660,7 +2772,6 @@ rm(pi_compartment, hump_per_chrom, hump_summary, p_hump,
 gc()
 ## 16) GAM models for codon-based analysis ----
 ## _____________________________________________________________________________
-
 
 # 16.1: Load per-codon data and filter to 4-fold degenerate sites ----
 
