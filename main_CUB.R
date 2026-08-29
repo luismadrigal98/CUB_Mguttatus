@@ -1441,7 +1441,6 @@ if (!is.null(pi_data_operational)) {
                      by = "Gene_name")
 }
 
-
 # Binned S_Wright table ----
 # 30 site-weighted ntile bins used for the pi-consistency validation and the
 # diversity-hump figure (bin_sw). Use two-state calibration if available.
@@ -1529,7 +1528,6 @@ cat(sprintf(
   if (is.finite(chi2_pi_sel_p))    sprintf("%.3g", chi2_pi_sel_p)    else "NA"
 ))
 
-
 # 8.3.5) Drift-barrier overview ----
 #
 # S_Wright_signed histogram, filled by selection / nearly-neutral / drift group.
@@ -1586,7 +1584,6 @@ p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
   ) +
   theme_custom() +
   theme(legend.position = "top")
-
 
 # cairo_pdf is not always available on headless compute nodes, and this call
 # sits BEFORE the handoff write below — a missing device would otherwise kill
@@ -1881,7 +1878,8 @@ for (aa in sort(unique(plant_codons_extended$Amino_Acid))) {
   # Determine chemistry group
   aa_group <- "Other"
   for (grp in names(aa_chemistry)) {
-    if (aa %in% aa_chemistry[[grp]]) {
+    grp_aas <- unique(sub("_.*", "", aa_chemistry[[grp]]))
+    if (aa %in% grp_aas) {
       aa_group <- gsub("_", " ", grp)  # Convert underscores to spaces here
       break
     }
@@ -1910,48 +1908,17 @@ for (aa in sort(unique(plant_codons_extended$Amino_Acid))) {
     if (length(codons_list[[sp]]) > 0) {
       codon_text <- paste(codons_list[[sp]], collapse = "/")
       
-      # Determine color for M. guttatus column
-      if (sp == "Mimulus_guttatus") {
-        # Check which species M. guttatus shares with
-        mg_codons <- codons_list[["Mimulus_guttatus"]]
-        at_codons <- codons_list[["Arabidopsis_thaliana"]]
-        pt_codons <- codons_list[["Populus_trichocarpa"]]
-        pp_codons <- codons_list[["Physcomitrella_patens"]]
-        
-        shares_with <- c()
-        if (length(intersect(mg_codons, at_codons)) > 0) shares_with <- c(shares_with, "Arabidopsis")
-        if (length(intersect(mg_codons, pt_codons)) > 0) shares_with <- c(shares_with, "Populus")
-        if (length(intersect(mg_codons, pp_codons)) > 0) shares_with <- c(shares_with, "Physcomitrella")
-        
-        # Assign color based on sharing pattern
-        if (length(shares_with) == 0) {
-          codon_color <- "Unique"
-        } else if (length(shares_with) == 3) {
-          codon_color <- "All_three"
-        } else if (length(shares_with) == 2) {
-          codon_color <- "Two_species"
-        } else {
-          # Shares with only one species
-          if ("Arabidopsis" %in% shares_with) {
-            codon_color <- "Only_Arabidopsis"
-          } else if ("Populus" %in% shares_with) {
-            codon_color <- "Only_Populus"
-          } else {
-            codon_color <- "Only_Physcomitrella"
-          }
-        }
-      } else {
-        # For other species, use their own color
-        codon_color <- sp_label
-      }
+      # Extract 3rd-position base (wobble nucleotide)
+      third_bases <- unique(sapply(codons_list[[sp]], function(cd) substr(cd, nchar(cd), nchar(cd))))
+      third_base_text <- paste(third_bases, collapse = "/")
       
       plot_data <- rbind(plot_data,
                          data.frame(
                            Amino_Acid = aa,
-                           Chemistry = aa_group,  # Already converted above
+                           Chemistry = aa_group,
                            Species = sp_label,
                            Codon = codon_text,
-                           Color_Category = codon_color,
+                           Third_Base = third_base_text,
                            stringsAsFactors = FALSE
                          ))
     }
@@ -1963,39 +1930,30 @@ plot_data$Species <- factor(plot_data$Species, levels = species_labels)
 plot_data$Chemistry <- factor(plot_data$Chemistry, 
                               levels = c("Nonpolar Aliphatic", "Aromatic", 
                                          "Polar Uncharged", "Positively Charged", 
-                                         "Negatively Charged", "Other"))
+                                         "Negatively Charged"))
+plot_data$Third_Base <- factor(plot_data$Third_Base, levels = c("A", "C", "G", "U"))
 
-# Define colors
-color_palette <- c(
-  "A. thaliana" = "#E41A1C",           # Red for Arabidopsis
-  "P. trichocarpa" = "#377EB8",        # Blue for Populus
-  "P. patens" = "#4DAF4A",             # Green for Physcomitrella
-  "Only_Arabidopsis" = "#E41A1C",      # Red - shares only with Arabidopsis
-  "Only_Populus" = "#377EB8",          # Blue - shares only with Populus
-  "Only_Physcomitrella" = "#4DAF4A",   # Green - shares only with Physcomitrella
-  "Two_species" = "#FF7F00",           # Orange - shares with two species
-  "All_three" = "#984EA3",             # Purple - shares with all three
-  "Unique" = "#999999"                 # Gray - unique to M. guttatus
+# Define colors for 3rd position nucleotide
+nuc_palette <- c(
+  "A" = "#4DAF4A",  # Green
+  "C" = "#377EB8",  # Blue
+  "G" = "#FF7F00",  # Orange
+  "U" = "#E41A1C"   # Red
 )
 
 # Create the plot
 p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon)) +
-  geom_tile(aes(fill = Color_Category), color = "white", size = 1, alpha = 0.3) +
-  geom_text(size = 3, fontface = "bold") +
-  scale_fill_manual(values = color_palette,
-                    labels = c("A. thaliana" = "A. thaliana",
-                               "P. trichocarpa" = "P. trichocarpa",
-                               "P. patens" = "P. patens",
-                               "Only_Arabidopsis" = "M.g. shares with Arabidopsis only",
-                               "Only_Populus" = "M.g. shares with Populus only",
-                               "Only_Physcomitrella" = "M.g. shares with Physcomitrella only",
-                               "Two_species" = "M.g. shares with two species",
-                               "All_three" = "M.g. shares with all three",
-                               "Unique" = "M.g. unique preference"),
-                    name = "") +
+  geom_tile(aes(fill = Third_Base), color = "white", linewidth = 0.8, alpha = 0.45) +
+  geom_text(size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = nuc_palette,
+                    labels = c("A" = "A-ending",
+                               "C" = "C-ending",
+                               "G" = "G-ending",
+                               "U" = "U-ending"),
+                    name = "3rd Position Nucleotide") +
   facet_grid(Chemistry ~ ., scales = "free_y", space = "free_y") +
   labs(title = "Preferred Codon Usage Across Plant Species",
-       subtitle = "M. guttatus (rightmost column) colored by sharing pattern with other species",
+       subtitle = "Codons colored by 3rd-position nucleotide (wobble base)",
        x = "", y = "") +
   theme_custom() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
@@ -2004,10 +1962,11 @@ p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon
         panel.spacing = unit(0.5, "lines"),
         legend.position = "bottom",
         legend.text = element_text(size = 9),
+        legend.title = element_text(size = 10, face = "bold"),
         panel.grid = element_blank())
 
 ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison, 
-       width = 12, height = 16)
+       width = 10, height = 12)
 
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 7 — tRNA / codon-anticodon correspondence
