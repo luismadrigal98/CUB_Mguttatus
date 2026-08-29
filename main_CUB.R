@@ -2160,6 +2160,19 @@ cat("✓ Saved: ./results/pi_4fold_by_expression_rank.pdf\n")
 # Binning follows the published figure: fixed 0.2-wide categories of log10
 # expression, NOT equal-count rank bins. Fixed-width bins keep the x-axis on the
 # expression scale, which is what makes the upturn legible at the top end.
+#
+# Expression variable is Mean_Log10_Exp. Project convention: use the mean when
+# expression breadth is NOT in the model, the max only alongside breadth.
+#
+# AGGREGATION: pi is GENE-AVERAGED (mean of per-gene pi), not site-weighted
+# (sum of Pi_sum over sum of Sites). This is a real choice, not a detail.
+# Site-weighting answers "what is the average diversity per site in this bin",
+# which is dominated by long genes; gene-averaging answers "what does the
+# average gene in this bin look like". Highly expressed genes are short, so
+# site-weighting systematically down-weights precisely the elite genes that
+# carry the selection signal -- and it flattens the upturn at the top of the
+# expression range (pi_4fold at category 2.0: 0.0241 site-weighted vs 0.0280
+# gene-averaged; at 2.4: 0.0312 vs 0.0359). Both are written to the output CSV.
 
 cat(sprintf("\n=== Section 12.1b: synonymous vs non-synonymous diversity | integrated_data N = %d ===\n",
             nrow(integrated_data)))
@@ -2186,16 +2199,17 @@ pi_by_expcat <- bgs_data |>
     n_genes  = dplyr::n(),
     sites_4  = sum(Sites_4fold, na.rm = TRUE),
     sites_0  = sum(Sites_0fold, na.rm = TRUE),
-    pi_4fold = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-    pi_0fold = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
+    # Gene-averaged: each gene counts once, regardless of length.
+    pi_4fold = mean(Pi_mean_4fold, na.rm = TRUE),
+    pi_0fold = mean(Pi_mean_0fold, na.rm = TRUE),
+    se_4fold = sd(Pi_mean_4fold, na.rm = TRUE) / sqrt(dplyr::n()),
+    se_0fold = sd(Pi_mean_0fold, na.rm = TRUE) / sqrt(dplyr::n()),
+    # Site-weighted alternative, retained for comparison (see note above).
+    pi_4fold_siteweighted = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    pi_0fold_siteweighted = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
     .groups  = "drop"
   ) |>
-  # site-count standard error, same estimator used for the S_Wright bins
-  dplyr::mutate(
-    se_4fold = sqrt(pi_4fold * (1 - pi_4fold / 2) / pmax(sites_4, 1)),
-    se_0fold = sqrt(pi_0fold * (1 - pi_0fold / 2) / pmax(sites_0, 1)),
-    Pi_ratio_0_4 = pi_0fold / pi_4fold
-  ) |>
+  dplyr::mutate(Pi_ratio_0_4 = pi_0fold / pi_4fold) |>
   # >= 100 genes per category. At 30 a 33-gene bin at log10 expression 2.6
   # survives and inverts the non-synonymous decline on pure noise; 100 drops it
   # and reproduces the published bin set (0.0 to 2.4).
@@ -2237,8 +2251,9 @@ p_fig7a <- ggplot(fig7a_dat, aes(x = factor(format(Exp_cat, nsmall = 1)),
   ) +
   labs(x = expression("Expression level category (log"[10] * ")")) +
   theme_custom() +
-  theme(legend.position = c(0.26, 0.95), legend.direction = "horizontal",
-        legend.background = element_blank(), legend.key = element_blank())
+  theme(legend.position = "top", legend.direction = "horizontal",
+        legend.background = element_blank(), legend.key = element_blank(),
+        legend.margin = margin(b = -6))
 
 ggsave("./results/pi_nonsyn_vs_4fold_by_expression.pdf",
        p_fig7a, width = 9, height = 5.5)
