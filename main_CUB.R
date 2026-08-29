@@ -197,9 +197,9 @@ gc()
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 1 — CUB metrics indicate strong codon usage bias (related to expression)
 ##   Produces:
-##     Figure 1A  RSCU bar plot per amino acid (`codon_usage_barplot.pdf`)
-##     Figure 1B  Parity Rule 2 plot (`pr2_plot.pdf`)
-##     Table S1   G-test heterogeneity per amino acid
+##     RSCU bar plot per amino acid (`codon_usage_barplot.pdf`)
+##     Parity Rule 2 plot (`pr2_plot.pdf`)
+##     G-test heterogeneity per amino acid
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## *****************************************************************************
@@ -285,7 +285,7 @@ cat(sprintf("Found %d / %d (%.1f%%) genes with significant CDC (FDR < 0.05)\n",
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 2 — Codon usage bias scales with gene expression
 ##   Produces:
-##     Figure 2  GAM prediction of CDC vs Max expression × Exp_breadth,
+##     GAM prediction of CDC vs Max expression × Exp_breadth,
 ##               controlling for CDS length (`GAM_Interaction_Predictions_CDC.pdf`)
 ##   Also creates `Expression_Group` (Top 5% / Middle 90% / Bottom 5%) which is
 ##   used by Sections 9, 11, and 12.
@@ -604,7 +604,7 @@ gc()
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 3 — Codon Adaptation Index (CAI) discriminates highly expressed genes
 ##   Produces:
-##     Figure S3 supporting data — CAI by expression group
+##     supporting data — CAI by expression group
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## 7) Calculate Codon Adaptation Index (CAI) ----
@@ -712,20 +712,20 @@ gc()
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 4 — Candidate optimal codons; selection acts only on the elite
 ##   Produces:
-##     Figure 4   Codon share across the expression range, by family
+##     Codon share across the expression range, by family
 ##                (`codon_share_expression_regimes.pdf`) 
 ##                Every point here is an observed pooled share.
-##     Figure 4b  Regime contrast per codon, with 95% CIs
+##     Regime contrast per codon, with 95% CIs
 ##                (`preferred_codon_regime_contrast.pdf`)
-##     Table 2    Candidate optimal codons by family
+##     Candidate optimal codons by family
 ##                (`preferred_codon_detection_by_family.csv`)
-##     Table S-x  Per-codon detail, elite-vs-bulk contrast, ROC concordance
+##     Per-codon detail, elite-vs-bulk contrast, ROC concordance
 ##                (`preferred_codon_detection_per_codon.csv`,
 ##                 `preferred_codon_elite_vs_bulk.csv`,
 ##                 `preferred_codon_concordance_vs_ROC.csv`)
 ##
 ##   SUPPLEMENTARY (AnaCoDa is archived upstream; retained as a cross-check):
-##     Table S-y  Intron / intergenic stationary nucleotide frequencies
+##     Intron / intergenic stationary nucleotide frequencies
 ##                (`Mguttatus_intron_derived_dM.csv`, `Mguttatus_intergenic_derived_dM.csv`)
 ##     S_ROC / L_ROC translational-load axis (Section 8.3)
 ##   The AnaCoDa MCMC fit is run externally (see comments at lines 919–933 of
@@ -884,14 +884,14 @@ plot_preferred_codon_slopes(preferred_detection$codon_table,
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 5 — Wright two-allele MSD framework, drift barrier, GO enrichment
 ##   Produces:
-##     Figure 5   A) S_Wright distribution with drift threshold (S=1)
+##     A) S_Wright distribution with drift threshold (S=1)
 ##                B) L_ROC density by drift / nearly neutral / selection group
 ##                C) S_eta density by group
 ##                (`Drift_barrier_overview.pdf`)
-##     Table S2   GO enrichment for genes with S>1
+##     GO enrichment for genes with S>1
 ##                (`Go_enrichment_selection_S_Wright.csv`,
 ##                 `Go_enrichment_load_ROC_eff.csv`)
-##     Table S3   Top genes by translational load / S_Wright
+##     Top genes by translational load / S_Wright
 ##                (`Top_genes_strong_selection_load.csv`,
 ##                 `Top_genes_strong_selection_S_Wright.csv`)
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1559,7 +1559,7 @@ n_drift_barrier <- sum(plot_barrier$SW_group == "Drift")
 barrier_colors <- c("Selection" = "#E41A1C", "Nearly neutral" = "gray", 
                     "Drift" = "#377EB8")
 
-# Panel A: S_Wright histogram coloured by group
+# S_Wright histogram coloured by selection/drift group
 p_sw_dist <- ggplot(plot_barrier, aes(x = S_Wright_signed, fill = SW_group)) +
   # Removed position="dodge" and color="white" to create a continuous histogram
   geom_histogram(
@@ -1830,7 +1830,7 @@ cat(sprintf("[Top genes] S_Wright_raw >= %.4f: %d genes (Q-inflection-derived se
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 6 — M. guttatus preferred codons vs other plants
 ##   Produces:
-##     Figure 3  Cross-species preferred codon comparison
+##     Cross-species preferred codon comparison
 ##               (`plant_codon_preference_comparison_colored.pdf`,
 ##                `plant_preferred_codons_comparison.csv`)
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1984,7 +1984,7 @@ ggsave("./results/plant_codon_preference_comparison_colored.pdf", p_comparison,
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 7 — tRNA / codon-anticodon correspondence
 ##   Produces:
-##     Figure S5 supporting data (aa-tRNA correspondence)
+##     supporting data (aa-tRNA correspondence)
 ##     Cited value:  Spearman r = 0.761 (p = 3.83 × 10⁻⁴) between
 ##                   amino acid frequencies and tRNA gene copy number
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -2027,15 +2027,15 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
 ##   intermediate frequency and RAISING synonymous diversity rather than
 ##   depressing it.  This result never depended on position within genes.
 ##   Produces:
-##     Figure 7A  Synonymous & non-synonymous π vs expression rank
+##     Synonymous & non-synonymous π vs expression rank
 ##                (`pi_4fold_by_expression_rank.pdf`)
-##     Figure 7B  Preferred codon frequency vs expression group
+##     Preferred codon frequency vs expression group
 ##                (`Frequency_preferred_by_expression_group_Median_CI.pdf`)
-##     Figure 6B  Preferred-codon-frequency landscape vs expression × gene length
+##     Preferred-codon-frequency landscape vs expression × gene length
 ##                (`Preferred_freq_contour_exp_x_length_broad.pdf`,
 ##                 `Preferred_freq_contour_exp_x_length_narrow.pdf`)
 ##
-##   MOVED OUT: the former Figure 7C (intron vs exon π by distance from gene
+##   MOVED OUT: intron vs exon π by distance from gene
 ##   start) and the first-300 bp decomposition are within-gene positional
 ##   analyses and now live in paper2_linked_selection.R.
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -2134,25 +2134,34 @@ ggsave("./results/pi_4fold_by_expression_rank.pdf",
 
 cat("✓ Saved: ./results/pi_4fold_by_expression_rank.pdf\n")
 
-# 12.1b) Non-synonymous vs synonymous π across the expression range ----
+# 12.1b) Diversity at synonymous and non-synonymous sites ----
 #
-# This is the comparison behind Figure 7A, and it is the paper's central
-# population-genetic result: non-synonymous π falls monotonically with
-# expression (purifying selection strengthens), while 4-fold π tracks it down
-# over most of the range and then turns UP among the most highly expressed
-# genes. That upturn is the McVean & Charlesworth (1999) expectation — where
-# codon-usage selection opposes mutation at 4-fold sites it holds variants at
-# intermediate frequency and raises diversity rather than depleting it.
+# Produces two related views:
+#   (a) non-synonymous and synonymous diversity across the expression range;
+#   (b) synonymous diversity against the Wright selection coefficient.
 #
-# PROVENANCE: ported from full_analysis.R Section 12.4 on 2026-08-14. It had
-# never been in main.R, so the "paper-replication" pipeline did not in fact
-# reproduce Figure 7A. Two changes on the way in:
-#   * the first300 / after300 decomposition is dropped (within-gene position →
-#     paper2_linked_selection.R);
-#   * the isolated selection group is `selection_gene_set` (top 50 by S_Wright)
-#     rather than the AnaCoDa-derived `L_ROC > thr_sel`.
+# Together with the preferred-codon frequency panel (§12.2) these are the paper's central population-genetic result. Non-synonymous π falls
+# monotonically with expression as purifying selection strengthens; 4-fold π
+# tracks it down over most of the range and then turns UP among the most highly
+# expressed genes — the McVean & Charlesworth (1999) expectation, where
+# codon-usage selection opposing mutation at 4-fold sites holds variants at
+# intermediate frequency and raises diversity rather than depleting it. View (b)
+# shows the same effect directly against S_Wright, with the drift barrier marked.
+#
+# PROVENANCE: (a) ported from full_analysis.R Section 12.4, which had never been
+# in main.R, so the paper-replication pipeline did not in fact reproduce it.
+# (b) is new here: bin_sw carried the data but was never plotted. The companion
+# intron/exon-by-distance panel is within-gene positional and now lives in
+# paper2_linked_selection.R.
+#
+# Deliberately not named after figure numbers: panel lettering and figure order
+# will change during the restructure, and filenames that encode them go stale.
+#
+# Binning follows the published figure: fixed 0.2-wide categories of log10
+# expression, NOT equal-count rank bins. Fixed-width bins keep the x-axis on the
+# expression scale, which is what makes the upturn legible at the top end.
 
-cat(sprintf("\n=== Section 12.1b: non-synonymous vs synonymous pi | integrated_data N = %d ===\n",
+cat(sprintf("\n=== Section 12.1b: synonymous vs non-synonymous diversity | integrated_data N = %d ===\n",
             nrow(integrated_data)))
 
 bgs_data <- integrated_data |>
@@ -2169,167 +2178,90 @@ cat(sprintf("  Spearman rho (pi_0fold ~ expression): %+.4f (p = %.2e)\n",
 cat(sprintf("  Spearman rho (pi_4fold ~ expression): %+.4f (p = %.2e)\n",
             cor_4fold$estimate, cor_4fold$p.value))
 
-# Expression-ranked bins of ~1000 genes, selection group held out
-bgs_binned <- bgs_data |>
-  dplyr::filter(!(Gene_name %in% selection_gene_set)) |>
-  dplyr::arrange(Mean_Log10_Exp) |>
-  dplyr::mutate(Rank = dplyr::row_number(),
-                Exp_Bin = ceiling(Rank / bin_size)) |>
-  dplyr::group_by(Exp_Bin) |>
+exp_bin_width <- 0.2
+pi_by_expcat <- bgs_data |>
+  dplyr::mutate(Exp_cat = round(Mean_Log10_Exp / exp_bin_width) * exp_bin_width) |>
+  dplyr::group_by(Exp_cat) |>
   dplyr::summarize(
-    n_genes         = dplyr::n(),
-    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
-    pi_4fold        = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-    pi_0fold        = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
-    .groups = "drop"
+    n_genes  = dplyr::n(),
+    sites_4  = sum(Sites_4fold, na.rm = TRUE),
+    sites_0  = sum(Sites_0fold, na.rm = TRUE),
+    pi_4fold = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
+    pi_0fold = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE),
+    .groups  = "drop"
   ) |>
-  dplyr::mutate(Pi_ratio_0_4 = pi_0fold / pi_4fold)
-
-# The selection group as a single isolated point
-sel_point <- bgs_data |>
-  dplyr::filter(Gene_name %in% selection_gene_set) |>
-  dplyr::summarize(
-    Exp_Bin         = max(bgs_binned$Exp_Bin) + 1L,
-    n_genes         = dplyr::n(),
-    mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
-    pi_4fold        = sum(Pi_sum_4fold, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-    pi_0fold        = sum(Pi_sum_0fold, na.rm = TRUE) / sum(Sites_0fold, na.rm = TRUE)
+  # site-count standard error, same estimator used for the S_Wright bins
+  dplyr::mutate(
+    se_4fold = sqrt(pi_4fold * (1 - pi_4fold / 2) / pmax(sites_4, 1)),
+    se_0fold = sqrt(pi_0fold * (1 - pi_0fold / 2) / pmax(sites_0, 1)),
+    Pi_ratio_0_4 = pi_0fold / pi_4fold
   ) |>
-  dplyr::mutate(Pi_ratio_0_4 = pi_0fold / pi_4fold)
+  # >= 100 genes per category. At 30 a 33-gene bin at log10 expression 2.6
+  # survives and inverts the non-synonymous decline on pure noise; 100 drops it
+  # and reproduces the published bin set (0.0 to 2.4).
+  dplyr::filter(n_genes >= 100)
 
-cat(sprintf("  selection group (top %d by S_Wright): n = %d, mean expression = %.2f, pi_4fold = %.5f, pi_0fold = %.5f\n",
-            n_outlier_genes, sel_point$n_genes, sel_point$mean_expression,
-            sel_point$pi_4fold, sel_point$pi_0fold))
+write.csv(pi_by_expcat, "./results/pi_by_expression_category.csv", row.names = FALSE)
+cat(sprintf("  %d expression categories retained (>= 100 genes each; range %.1f to %.1f)\n",
+            nrow(pi_by_expcat), min(pi_by_expcat$Exp_cat), max(pi_by_expcat$Exp_cat)))
 
-bgs_all <- dplyr::bind_rows(bgs_binned, sel_point)
-write.csv(bgs_all, "./results/pi_0fold_vs_4fold_by_expression.csv", row.names = FALSE)
+# --- (a) dual axis, because the two site classes differ by ~an order of
+# magnitude (4-fold ~0.030-0.045, non-synonymous ~0.002-0.010). On a shared axis
+# the non-synonymous trend collapses onto the floor and the comparison is lost.
+r4 <- range(c(pi_by_expcat$pi_4fold - pi_by_expcat$se_4fold,
+              pi_by_expcat$pi_4fold + pi_by_expcat$se_4fold), na.rm = TRUE)
+r0 <- range(c(pi_by_expcat$pi_0fold - pi_by_expcat$se_0fold,
+              pi_by_expcat$pi_0fold + pi_by_expcat$se_0fold), na.rm = TRUE)
+to_primary   <- function(y) (y - r0[1]) / diff(r0) * diff(r4) + r4[1]
+from_primary <- function(y) (y - r4[1]) / diff(r4) * diff(r0) + r0[1]
 
-# Figure 7A: both site classes on one axis, selection group marked
-bgs_long <- bgs_all |>
-  tidyr::pivot_longer(cols = c(pi_4fold, pi_0fold),
-                      names_to = "Site_class", values_to = "pi") |>
-  dplyr::mutate(Site_class = dplyr::recode(Site_class,
-                  pi_4fold = "4-fold degenerate (synonymous)",
-                  pi_0fold = "0-fold degenerate (non-synonymous)"),
-                Is_selection = Exp_Bin == max(Exp_Bin))
+fig7a_dat <- dplyr::bind_rows(
+  pi_by_expcat |> dplyr::transmute(Exp_cat, Metric = "4-fold",
+                                   y = pi_4fold, lo = pi_4fold - se_4fold, hi = pi_4fold + se_4fold),
+  pi_by_expcat |> dplyr::transmute(Exp_cat, Metric = "Non-synonymous",
+                                   y = to_primary(pi_0fold),
+                                   lo = to_primary(pi_0fold - se_0fold),
+                                   hi = to_primary(pi_0fold + se_0fold))
+)
 
-p_pi_syn_nonsyn <- ggplot(bgs_long, aes(x = mean_expression, y = pi,
-                                        colour = Site_class)) +
-  geom_line(data = ~ dplyr::filter(.x, !Is_selection), linewidth = 0.7) +
-  geom_point(aes(shape = Is_selection), size = 2.4) +
-  scale_colour_manual(values = c("4-fold degenerate (synonymous)"     = "#377EB8",
-                                 "0-fold degenerate (non-synonymous)" = "#E41A1C"),
-                      name = NULL) +
-  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 17),
-                     labels = c(`FALSE` = "Expression bin",
-                                `TRUE`  = "Selection group"), name = NULL) +
-  labs(x = expression("Mean log"[10] * " expression"),
-       y = expression("Nucleotide diversity (" * pi * ")")) +
-  theme_custom()
+p_fig7a <- ggplot(fig7a_dat, aes(x = factor(format(Exp_cat, nsmall = 1)),
+                                 y = y, colour = Metric)) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.25, linewidth = 0.5) +
+  geom_point(size = 2.2) +
+  scale_colour_manual(values = c("4-fold" = "#3B7DD8", "Non-synonymous" = "#E8291C"),
+                      name = "Metric") +
+  scale_y_continuous(
+    name     = expression("4-fold Diversity (" * pi * ")"),
+    sec.axis = sec_axis(~ from_primary(.),
+                        name = expression("Non-synonymous Diversity (" * pi * ")"))
+  ) +
+  labs(x = expression("Expression level category (log"[10] * ")")) +
+  theme_custom() +
+  theme(legend.position = c(0.26, 0.95), legend.direction = "horizontal",
+        legend.background = element_blank(), legend.key = element_blank())
 
-ggsave("./results/pi_0fold_vs_4fold_by_expression.pdf",
-       p_pi_syn_nonsyn, width = 9, height = 6)
-cat("✓ Saved: ./results/pi_0fold_vs_4fold_by_expression.pdf\n")
+ggsave("./results/pi_nonsyn_vs_4fold_by_expression.pdf",
+       p_fig7a, width = 9, height = 5.5)
+cat("✓ Saved: ./results/pi_nonsyn_vs_4fold_by_expression.pdf\n")
 
-rm(bgs_long, p_pi_syn_nonsyn)
+# --- (b) 4-fold diversity against the Wright selection coefficient -----------
+# bin_sw is built in Section 8.3.4 but was never plotted; the drift barrier is
+# marked so the rise of pi with S is readable against it.
+p_fig7d <- ggplot(bin_sw, aes(x = mean_S_Wright, y = pi_bin)) +
+  geom_errorbar(aes(ymin = pi_bin - pi_se, ymax = pi_bin + pi_se),
+                width = 0.02, colour = "#7FA8DE", linewidth = 0.5) +
+  geom_point(aes(size = sites_total), colour = "#3B7DD8", alpha = 0.9) +
+  geom_vline(xintercept = S_BARRIER, linetype = "dashed", colour = "#3B7DD8") +
+  scale_size_continuous(name = "4-fold sites / bin", labels = scales::comma) +
+  labs(x = expression("Mean(" * S[Wright] * ")"),
+       y = expression(pi * " (4-fold)")) +
+  theme_custom() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
 
-# Breakdown by segregating base pair type at 4-fold sites ----
-if (has_mutation_types) {
-  
-  cat("\n=== 4-fold π by Mutation Type and Expression Rank ===\n")
-  
-  # Calculate per-mutation-type pi component within each expression bin
-  # Component = sum(Pi_sum_type) / sum(Sites_4fold) → additive decomposition
-  pi_by_mutation <- integrated_data |>
-    dplyr::filter(!(Gene_name %in% selection_gene_set)) |>
-    dplyr::arrange(Mean_Log10_Exp) |>
-    dplyr::mutate(
-      Rank = dplyr::row_number(),
-      Exp_Bin = ceiling(Rank / bin_size)
-    ) |>
-    dplyr::group_by(Exp_Bin) |>
-    dplyr::summarize(
-      n_genes = n(),
-      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
-      total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
-      pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_AT = sum(Pi_sum_4fold_AT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_CG = sum(Pi_sum_4fold_CG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_CT = sum(Pi_sum_4fold_CT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  pi_sel_group <- integrated_data |>
-    dplyr::filter(Gene_name %in% selection_gene_set) |>
-    dplyr::summarize(
-      Exp_Bin = sel_bin_id,
-      n_genes = n(),
-      mean_expression = mean(Mean_Log10_Exp, na.rm = TRUE),
-      total_sites_4fold = sum(Sites_4fold, na.rm = TRUE),
-      pi_AC = sum(Pi_sum_4fold_AC, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_AG = sum(Pi_sum_4fold_AG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_AT = sum(Pi_sum_4fold_AT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_CG = sum(Pi_sum_4fold_CG, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_CT = sum(Pi_sum_4fold_CT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      pi_GT = sum(Pi_sum_4fold_GT, na.rm = TRUE) / sum(Sites_4fold, na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  pi_by_mutation <- pi_by_mutation |>
-    rbind(pi_sel_group)
-  
-  # Verify additive decomposition
-  pi_check <- pi_by_expression |>
-    dplyr::left_join(
-      pi_by_mutation |> 
-        dplyr::mutate(sum_components = pi_AC + pi_AG + pi_AT + pi_CG + pi_CT + pi_GT) |>
-        dplyr::select(Exp_Bin, sum_components), 
-      by = "Exp_Bin"
-    )
-  cat(sprintf("Additive check (max |total - sum_components|): %.2e\n",
-              max(abs(pi_check$weighted_pi_4fold - pi_check$sum_components), na.rm = TRUE)))
-  
-  # Pivot to long format for plotting
-  pi_mutation_long <- pi_by_mutation |>
-    tidyr::pivot_longer(
-      cols = starts_with("pi_"),
-      names_to = "Mutation_Type",
-      values_to = "Pi_component",
-      names_prefix = "pi_"
-    )
-  
-  # Plot 1: All mutation types overlaid
-  p_pi_by_mutation <- ggplot(pi_mutation_long, 
-                             aes(x = Exp_Bin, y = Pi_component, 
-                                 color = Mutation_Type)) +
-    geom_point(size = 2) +
-    geom_line(linewidth = 0.8) +
-    scale_color_brewer(palette = "Set2", name = "Segregating\nBases") +
-    labs(
-      title = expression(paste("4-fold ", pi, " by Segregating Base Pair and Expression")),
-      subtitle = "Additive components of 4-fold diversity by mutation type",
-      x = "Expression level category",
-      y = expression(paste(pi, " component (4-fold)"))
-    ) +
-    scale_x_continuous(breaks = seq_len(max(pi_by_mutation$Exp_Bin))) +
-    theme_custom() +
-    theme(legend.position = "right")
-  
-  ggsave("./results/pi_4fold_by_mutation_type_and_expression.pdf", 
-         p_pi_by_mutation, width = 12, height = 6)
-  
-  cat("✓ Saved: ./results/pi_4fold_by_mutation_type_and_expression.pdf\n")
-  
-} else {
-  cat("\nNote: Mutation-type columns not found in pi data.\n")
-  cat("Re-run calculate_pi.py (extended version) to generate per-mutation-type output.\n")
-  cat("Required columns: Pi_sum_4fold_AC, Pi_sum_4fold_AG, ..., Pi_sum_4fold_GT\n")
-}
+ggsave("./results/pi_4fold_vs_S_Wright.pdf", p_fig7d, width = 8, height = 6)
+cat("✓ Saved: ./results/pi_4fold_vs_S_Wright.pdf\n")
 
-# Memory cleanup
-rm(p_pi_by_expression, bin_size, mutation_types)
+rm(fig7a_dat, p_fig7a, p_fig7d, r4, r0)
 
 # 12.2) Tracking frequency of preferred allele as a function of expression ----
 
@@ -2607,7 +2539,7 @@ cat("Saved: ./results/Preferred_freq_contour_exp_x_length_narrow.pdf\n")
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## RESULTS 9 — Diversity hump: GC-segregating sites carry excess heterozygosity
 ##   Produces:
-##     Figure 7D  Excess heterozygosity at GC-segregating 4-fold sites
+##     Excess heterozygosity at GC-segregating 4-fold sites
 ##                vs matched intronic controls (`Hump_Hypothesis_Confirmation.pdf`)
 ##     Cited values:  Paired t-test t₁₃ = 39.76, P < 2.9 × 10⁻¹⁵
 ##                     Mean Δπ ≈ 0.0107 (≈1% extra heterozygosity at GC sites)
