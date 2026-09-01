@@ -807,8 +807,6 @@ preferred_codons_call <- preferred_codons |>
                 Family = aa) |>
   dplyr::mutate(Source = "Expression_regime")
 
-# Back-compatible alias for helpers that still refer to the old name.
-preferred_codons_roc <- preferred_codons_call
 
 message(sprintf("✓ Preferred codons (expression-regime): %d families resolved; 3rd base %s",
                 nrow(preferred_codons_call),
@@ -1704,9 +1702,8 @@ custom_bag <- integrated_data |> dplyr::pull(Gene_name)
 
 
 # (b) Selection group: S_Wright >= S_BARRIER ------------------------------
-subset_selection <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_raw), S_Wright_raw >= S_BARRIER) |>
-  dplyr::pull(Gene_name)
+# Defined once, above, as drift_barrier_gene_set.
+subset_selection <- drift_barrier_gene_set
 
 GO_results_selection <- gost(query = subset_selection,
                              organism = "gp__q7VP_EAck_dZk",
@@ -1720,9 +1717,6 @@ write.csv(x = GO_results_selection$result |> dplyr::select(-parents),
 cat(sprintf("[GO] Selection group (S_Wright >= %.4f): n = %d genes\n",
             S_BARRIER, length(subset_selection)))
 
-# Backwards-compatible aliases now point at the S_Wright selection group
-# (they previously pointed at the L_ROC load group, which moved out).
-subset_strongly_shaped_by_s <- subset_selection
 GO_results <- GO_results_selection
 write.csv(x = GO_results$result |> dplyr::select(-parents),
           file = "./results/Go_enrichment.csv",
