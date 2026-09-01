@@ -2270,6 +2270,40 @@ p_fig7d <- ggplot(bin_sw, aes(x = mean_S_Wright, y = pi_bin)) +
 ggsave("./results/pi_4fold_vs_S_Wright.pdf", p_fig7d, width = 8, height = 6)
 cat("✓ Saved: ./results/pi_4fold_vs_S_Wright.pdf\n")
 
+# 12.1c) Partitioning segregating 4-fold sites by codon preference ----
+#
+# Referee 1's line-535 test. Codon-usage selection can only act on a segregating
+# site if its alleles differ in preference; where both segregating alleles are
+# unpreferred, selection under a single-preferred-base model is indifferent
+# between them. That class is therefore an internal negative control: if the
+# diversity elevation at high expression is caused by selection opposing
+# mutation, it must be confined to the preferred/non-preferred class.
+#
+# Note the quantity that matters is pi CONTRIBUTED PER 4-FOLD SITE (segregating
+# and monomorphic alike), not heterozygosity conditional on segregating. The
+# conditional measure is flat-to-declining in both classes; the elevation lives
+# in the DENSITY of segregating sites.
+
+polymorphism_sites <- classify_fourfold_polymorphism(
+  codon_freq_file  = "data/all_chromosomes.codon_frequencies.txt",
+  preferred_codons = preferred_detection$preferred,
+  genetic_code     = genetic_code_dna_long
+)
+
+polymorphism_partition <- summarise_polymorphism_partition(
+  polymorphism_sites, integrated_data, expression_var = "Mean_Log10_Exp"
+)
+data.table::fwrite(polymorphism_partition,
+                   "./results/polymorphism_partition_by_preference.csv")
+
+cat(sprintf("[Partition] %d segregating 4-fold sites | pref/non-pref %d, non-pref/non-pref %d\n",
+            nrow(polymorphism_sites),
+            sum(polymorphism_sites$Class == "pref/non-pref"),
+            sum(polymorphism_sites$Class == "non-pref/non-pref")))
+
+rm(polymorphism_sites); gc()
+
+
 rm(fig7a_dat, p_fig7a, p_fig7d, r4, r0)
 
 # 12.2) Tracking frequency of preferred allele as a function of expression ----
