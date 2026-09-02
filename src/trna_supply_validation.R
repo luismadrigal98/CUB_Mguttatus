@@ -330,8 +330,6 @@ plot_trna_supply_vs_preference <- function(trna_supply, preferred,
       labels = c("TRUE" = "Called optimal", "FALSE" = "Other synonym"),
       name = NULL) +
     ggplot2::labs(
-      title = "tRNA gene supply per codon (tAI-weighted) vs the called optimal codon",
-      subtitle = "tAI weight: gene copies summed with dos Reis (2004) wobble penalties. Two-fold families are the clean test; four-fold C-ending codons are inosine-decoded and penalised by construction.",
       x = NULL, y = "tRNA gene supply") +
     theme_custom() +
     ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 0, hjust = 0.5))

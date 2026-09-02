@@ -442,7 +442,7 @@ compare_preferred_codon_sets <- function(preferred_new, roc_codons, genetic_code
 
 
 plot_codon_regimes <- function(bin_table, families = NULL, output_file = NULL,
-                               title = "Codon share across the expression range") {
+                               title = NULL) {
   #' Two-regime figure: codon share vs expression, on the scale of the data
   #'
   #' This is the honest replacement for the ROC-SEMPPR trajectory panel the
@@ -478,7 +478,7 @@ plot_codon_regimes <- function(bin_table, families = NULL, output_file = NULL,
 
 plot_preferred_codon_slopes <- function(codon_table, preferred,
                                         output_file = NULL,
-                                        title = "Codon-share derivative at high expression, by synonymous family") {
+                                        title = NULL) {
   #' Forest plot of per-codon tail derivatives, faceted by family
   #'
   #' The winning codon of each family is highlighted.  Bulk-regime derivatives
@@ -497,7 +497,10 @@ plot_preferred_codon_slopes <- function(codon_table, preferred,
                         data.table::fifelse(Significant, "Falls at high expression",
                                             "Not significant")))]
 
-  p <- ggplot2::ggplot(d, ggplot2::aes(x = stats::reorder(Codon, Slope_tail),
+  # Ordered by the regime contrast -- the quantity the call is made on -- so the
+  # preferred codon is always topmost in its panel. Ordering by Slope_tail put
+  # Arg_4 CGT above the preferred CGC and made the figure look self-contradictory.
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = stats::reorder(Codon, Slope_contrast),
                                        y = Slope_tail, colour = Status)) +
     ggplot2::geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
     ggplot2::geom_pointrange(ggplot2::aes(ymin = CI_low, ymax = CI_high), size = 0.35) +
@@ -513,9 +516,6 @@ plot_preferred_codon_slopes <- function(codon_table, preferred,
     )) +
     ggplot2::labs(
       title = title,
-      subtitle = paste("Filled = derivative at the 99th expression percentile (selection regime);",
-                       "hollow = at the median (drift regime).\nThe call is made on the GAP between them,",
-                       "so the preferred codon is not always the highest filled point."),
       x = NULL,
       y = "d(logit codon share) / d(log10 expression)",
       colour = NULL) +
