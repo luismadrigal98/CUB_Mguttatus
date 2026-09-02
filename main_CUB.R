@@ -1821,7 +1821,240 @@ write.csv(top_selection,
           quote = TRUE, row.names = FALSE)
 cat(sprintf("[Top genes] S_Wright_raw >= %.4f: %d genes (Q-inflection-derived selection group)\n",
             S_BARRIER, nrow(top_selection)))
+
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+## 10) Multivariate exploration ----
+## RESULTS 5b — Multivariate ordination of codon usage
+##   Correspondence analysis on codon counts and PCA on RSCU, the standard
+##   multivariate line of evidence in the codon-usage literature (Perriere &
+##   Thioulouse 2002). Genes are projected into a low-dimensional codon-usage
+##   space and tested for separation by expression group.
+##
+##   Produces:
+##     CA biplot, preferred vs non-preferred codons (`CA_preference_biplot.pdf`)
+##     PCA biplot on RSCU              (`PCA_preference_biplot.pdf`)
+##     Selection-group biplots         (`*_preference_biplot_S_Wright.pdf`)
+##     MANOVA and FDR-corrected Wilcoxon tests on the leading axes
+##
+##   PROVENANCE: ported from full_analysis.R Section 10 on 2026-08-31. It was
+##   never in main.R, yet the Methods have always described it — so the
+##   manuscript specified an analysis its own replication pipeline did not run.
+##   Section 10.3 of the original split genes by L_ROC (an AnaCoDa quantity);
+##   that grouping is re-derived here from S_Wright so the section carries no
+##   ROC dependency.
+## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+# 10.1) CA Analysis ----
+
+codon_usage_m <- as.matrix(codon_usage[, -1])
+rownames(codon_usage_m) <- codon_usage[[1]]
+colnames(codon_usage_m) <- names(codon_usage)[-1]
+
+codon_usage_CA <- CA(X = codon_usage_m, graph = FALSE)
+
+# Extract CA coordinates and merge with expression data
+codon_usage_CA_coord <- as.data.frame(codon_usage_CA$row$coord) |>
+  dplyr::mutate(Gene_name = sub("\\.1$", "", rownames(codon_usage_CA$row$coord)))
+
+names(codon_usage_CA_coord)[names(codon_usage_CA_coord) %in% c("Dim 1", "Dim 2", "Dim 3")] <- 
+  c("Dim.1", "Dim.2", "Dim.3")
+
+codon_usage_CA_coord <- integrated_data |>
+  dplyr::left_join(codon_usage_CA_coord, by = "Gene_name") |>
+  dplyr::mutate(Expression_Group = as.character(Expression_Group))
+
+# Filter to extreme expression groups for MANOVA
+codon_usage_CA_coord_extremes <- codon_usage_CA_coord |>
+  dplyr::filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
+
+# Prepare gene data for biplot
+gene_data_ca <- codon_usage_CA_coord |>
+  dplyr::select(Gene_name, expression_group = Expression_Group)
+
+# Create single enhanced biplot: preferred vs non-preferred codons
+cat("\nCA Analysis: Preferred vs Non-preferred Codons ---\n")
+p_ca <- create_preference_biplot(
+  ordination_result = codon_usage_CA,
+  gene_data = gene_data_ca,
+  preferred_codons = preferred_codons_call,
+  dims = c(1, 3),
+  arrow_scale = 1.0,
+  title = NULL,
+  subtitle = NULL,
+  output_file = "./results/CA_preference_biplot.pdf"
+)
+
+# Analyze loading direction
+ca_loading_test <- analyze_codon_loading_direction(
+  ordination_result = codon_usage_CA,
+  preferred_codons = preferred_codons_call,
+  dim = 1
+)
+
+# MANOVA test for CA dimension separation
+cat("\n=== MANOVA Test: CA Dimensions by Expression Group ===\n")
+ca_manova <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ Expression_Group, 
+                    data = codon_usage_CA_coord_extremes)
+print(summary(ca_manova))
+
+# Univariate Wilcoxon tests with FDR correction
+cat("\n=== Univariate Tests for CA Dimensions by Expression (FDR corrected) ===\n")
+ca_wilcox_results <- data.frame(
+  Dimension = character(),
+  W = numeric(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (dim_name in c("Dim.1", "Dim.2", "Dim.3")) {
+  if (dim_name %in% names(codon_usage_CA_coord_extremes)) {
+    wtest <- wilcox.test(as.formula(paste(dim_name, "~ Expression_Group")), 
+                         data = codon_usage_CA_coord_extremes)
+    ca_wilcox_results <- rbind(ca_wilcox_results, 
+                                data.frame(Dimension = dim_name,
+                                          W = wtest$statistic,
+                                          p_value = wtest$p.value))
+  }
+}
+
+# Apply FDR correction
+ca_wilcox_results$p_adj <- p.adjust(ca_wilcox_results$p_value, method = "fdr")
+ca_wilcox_results$Significance <- ifelse(ca_wilcox_results$p_adj < 0.05, "***", "")
+
+for (i in seq_len(nrow(ca_wilcox_results))) {
+  cat(sprintf("%s: W = %.2f, p = %.4f, p_adj = %.4f %s\n", 
+              ca_wilcox_results$Dimension[i], 
+              ca_wilcox_results$W[i], 
+              ca_wilcox_results$p_value[i],
+              ca_wilcox_results$p_adj[i],
+              ca_wilcox_results$Significance[i]))
+}
+
+# 10.2) PCA Analysis ----
+
+rscu_m <- as.matrix(cub_results$rscu_results[, -1])
+rownames(rscu_m) <- cub_results$rscu_results[[1]]
+colnames(rscu_m) <- names(cub_results$rscu_results)[-1]
+
+rscu_PCA <- PCA(rscu_m, graph = FALSE)
+
+# Extract PCA coordinates and merge with expression data
+rscu_PCA_coord <- as.data.frame(rscu_PCA$ind$coord) |>
+  dplyr::mutate(Gene_name = sub("\\.1$", "", rownames(rscu_PCA$ind$coord)))
+
+rscu_PCA_coord <- integrated_data |>
+  dplyr::left_join(rscu_PCA_coord, by = "Gene_name") |>
+  dplyr::mutate(Expression_Group = as.character(Expression_Group))
+
+# Filter to extreme expression groups for MANOVA
+rscu_PCA_coord_extremes <- rscu_PCA_coord |>
+  dplyr::filter(Expression_Group %in% c("Top 5%", "Bottom 5%"))
+
+# Prepare gene data for biplot
+gene_data_pca <- rscu_PCA_coord |>
+  dplyr::select(Gene_name, expression_group = Expression_Group)
+
+# Create single enhanced biplot: preferred vs non-preferred codons
+cat("\nPCA Analysis: Preferred vs Non-preferred Codons ---\n")
+p_pca <- create_preference_biplot(
+  ordination_result = rscu_PCA,
+  gene_data = gene_data_pca,
+  preferred_codons = preferred_codons_call,
+  dims = c(1, 2),
+  arrow_scale = 1.5,
+  title = NULL,
+  subtitle = NULL,
+  output_file = "./results/PCA_preference_biplot.pdf"
+)
+
+# Analyze loading direction
+pca_loading_test <- analyze_codon_loading_direction(
+  ordination_result = rscu_PCA,
+  preferred_codons = preferred_codons_call,
+  dim = 1
+)
+
+# MANOVA test for PCA dimension separation
+cat("\n=== MANOVA Test: PCA Dimensions by Expression Group ===\n")
+pca_manova <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ Expression_Group, 
+                     data = rscu_PCA_coord_extremes)
+print(summary(pca_manova))
+
+# Univariate Wilcoxon tests with FDR correction
+cat("\n=== Univariate Tests for PCA Dimensions by Expression (FDR corrected) ===\n")
+pca_wilcox_results <- data.frame(
+  Dimension = character(),
+  W = numeric(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (dim_name in c("Dim.1", "Dim.2", "Dim.3")) {
+  wtest <- wilcox.test(as.formula(paste(dim_name, "~ Expression_Group")), 
+                       data = rscu_PCA_coord_extremes)
+  pca_wilcox_results <- rbind(pca_wilcox_results, 
+                               data.frame(Dimension = dim_name,
+                                         W = wtest$statistic,
+                                         p_value = wtest$p.value))
+}
+
+# Apply FDR correction
+pca_wilcox_results$p_adj <- p.adjust(pca_wilcox_results$p_value, method = "fdr")
+pca_wilcox_results$Significance <- ifelse(pca_wilcox_results$p_adj < 0.05, "***", "")
+
+for (i in seq_len(nrow(pca_wilcox_results))) {
+  cat(sprintf("%s: W = %.2f, p = %.4f, p_adj = %.4f %s\n", 
+              pca_wilcox_results$Dimension[i], 
+              pca_wilcox_results$W[i], 
+              pca_wilcox_results$p_value[i],
+              pca_wilcox_results$p_adj[i],
+              pca_wilcox_results$Significance[i]))
+}
+
+# 10.3b) Ordination by selection group (S_Wright, AnaCoDa-free) ----
+# The original split genes into high/low translational load using L_ROC. The
+# equivalent contrast without ROC is the drift-barrier classification: genes
+# clearing S_Wright >= S_BARRIER against those furthest below it.
+
+selection_groups_sw <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_signed)) |>
+  dplyr::mutate(
+    S_Group = dplyr::case_when(
+      S_Wright_signed >= S_BARRIER ~ "High selection (S_Wright >= 1)",
+      S_Wright_signed <= stats::quantile(S_Wright_signed, 0.05, na.rm = TRUE) ~
+        "Low selection (bottom 5%)",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  dplyr::filter(!is.na(S_Group)) |>
+  dplyr::select(Gene_name, S_Group)
+
+cat("\n=== Ordination by S_Wright selection group ===\n")
+print(table(selection_groups_sw$S_Group))
+
+codon_usage_CA_coord_S <- codon_usage_CA_coord |>
+  dplyr::inner_join(selection_groups_sw, by = "Gene_name")
+
+p_ca_S <- create_preference_biplot(
+  ordination_result = codon_usage_CA,
+  gene_data         = codon_usage_CA_coord_S |>
+                        dplyr::select(Gene_name, expression_group = S_Group),
+  preferred_codons  = preferred_codons_call,
+  dims              = c(1, 2),
+  arrow_scale       = 1.0,
+  title             = NULL,
+  subtitle          = NULL,
+  output_file       = "./results/CA_preference_biplot_S_Wright.pdf"
+)
+
+ca_manova_S <- manova(cbind(Dim.1, Dim.2, Dim.3) ~ S_Group,
+                      data = codon_usage_CA_coord_S)
+cat("\n=== MANOVA: CA dimensions by S_Wright selection group ===\n")
+print(summary(ca_manova_S))
+
+rm(selection_groups_sw, codon_usage_CA_coord_S, p_ca_S)
+gc()
+
 ## RESULTS 6 — M. guttatus preferred codons vs other plants
 ##   Produces:
 ##     Cross-species preferred codon comparison

@@ -10,7 +10,10 @@ create_preference_biplot <- function(
     arrow_scale = 1.0,
     title = "Codon Usage Biplot",
     subtitle = NULL,
-    output_file = NULL
+    output_file = NULL,
+    unclassified_label = "Middle 90%",
+    group_colors = NULL,
+    show_unclassified_ellipse = FALSE
 ) {
   require(ggplot2)
   require(dplyr)
@@ -36,7 +39,7 @@ create_preference_biplot <- function(
   gene_scores <- gene_scores %>%
     dplyr::left_join(gene_data, by = "Gene_name") %>%
     dplyr::mutate(expression_group = ifelse(is.na(expression_group), 
-                                            "Middle 90%", 
+                                            unclassified_label, 
                                             as.character(expression_group)))
   
   # 3. Codon Classification
@@ -60,15 +63,42 @@ create_preference_biplot <- function(
       DimY_scaled = DimY * effective_scale
     )
   
-  # 5. Define Unified Color Palette
-  # This map handles Points, Ellipses, and Arrows in one scale
-  unified_colors <- c(
-    "Top 5%" = "#E41A1C", 
-    "Bottom 5%" = "#377EB8", 
-    "Middle 90%" = "gray85",
-    "Preferred" = "#E41A1C",
-    "Non-preferred" = "#377EB8"
-  )
+  # 5. Colour palette, built from the groups actually present.
+  #
+  # This used to be a fixed map keyed on the expression-group labels
+  # ("Top 5%" / "Bottom 5%" / "Middle 90%"). Any other grouping -- for instance
+  # a selection grouping derived from S_Wright -- fell through to NA, so its
+  # ellipses rendered grey and indistinguishable and the legend showed only the
+  # unclassified catch-all. The palette is now derived from the data, so any
+  # grouping works.
+  present <- setdiff(unique(gene_scores$expression_group), unclassified_label)
+  present <- sort(present)
+  if (!is.null(group_colors)) {
+    missing_cols <- setdiff(present, names(group_colors))
+    if (length(missing_cols)) {
+      stop("group_colors is missing an entry for: ",
+           paste(missing_cols, collapse = ", "))
+    }
+    grp_cols <- group_colors[present]
+  } else {
+    # Deliberately avoids the red/blue used for codon preference below: a red
+    # ellipse and red arrows in the same panel read as the same encoding when
+    # they mean different things (gene groups vs codon preference).
+    default_pal <- c("#1B7837", "#762A83", "#E08214", "#01665E", "#8C510A")
+    if (length(present) > length(default_pal)) {
+      stop("more groups (", length(present), ") than default colours; ",
+           "pass group_colors explicitly.")
+    }
+    grp_cols <- stats::setNames(default_pal[seq_along(present)], present)
+  }
+  unified_colors <- c(grp_cols,
+                      stats::setNames("gray85", unclassified_label),
+                      "Preferred" = "#B2182B", "Non-preferred" = "#2166AC")
+
+  # The unclassified bulk is a backdrop, not a group: drawing its ellipse adds a
+  # large grey oval that competes with the contrast being shown.
+  ellipse_data <- if (show_unclassified_ellipse) gene_scores else
+    gene_scores[gene_scores$expression_group != unclassified_label, , drop = FALSE]
   
   # 6. Build the Plot
   p <- ggplot() +
@@ -87,10 +117,10 @@ create_preference_biplot <- function(
     
     # Confidence Ellipses
     stat_ellipse(
-      data = gene_scores, 
+      data = ellipse_data, 
       aes(x = DimX, y = DimY, color = expression_group),
       level = 0.95, 
-      linewidth = 0.8
+      linewidth = 0.9
     ) +
     
     # Codon Arrows
@@ -111,7 +141,10 @@ create_preference_biplot <- function(
     ) +
     
     # Unified Color Scale
-    scale_color_manual(name = "Group / Preference", values = unified_colors) +
+    scale_color_manual(name = NULL, values = unified_colors,
+                       breaks = c(present, "Preferred", "Non-preferred"),
+                       guide = guide_legend(
+                         override.aes = list(alpha = 1, linewidth = 1.1))) +
     
     # Formatting
     theme_custom() +
