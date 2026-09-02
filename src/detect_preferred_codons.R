@@ -26,9 +26,13 @@
 ##
 ## A single linear expression slope averages the two and returns the *bulk*
 ## answer (T-ending codons), which is a statement about mutation bias, not
-## about optimality.  So the preferred codon is defined here as the codon whose
-## share is rising fastest **at the top of the observed expression range**,
-## estimated as the derivative of a smooth fit at a high expression quantile.
+## about optimality.  So the preferred codon is defined here by the REGIME
+## CONTRAST: the derivative of a smooth fit at a high expression quantile MINUS
+## the derivative at the median.  Ranking on the tail derivative alone is not
+## enough -- a codon can be rising at high expression simply because it is also
+## rising through the drift-dominated bulk (Arg_4 CGT and Gly GGT both do).
+## What identifies an optimal codon is that its trajectory bends upward
+## specifically where selection becomes effective.
 ##
 ## This is also why the ROC-SEMPPR trajectory figure drew the referee's
 ## objection that "most of the curve dynamics are beyond the extent of the data
@@ -64,8 +68,9 @@ detect_preferred_codons <- function(codon_counts,
   #' For every codon, fits a quasi-binomial GAM of that codon's share within its
   #' synonymous family against a smooth of expression, controlling for
   #' background composition and CDS length.  The preferred codon of a family is
-  #' the one with the largest, FDR-significant positive derivative evaluated at
-  #' `tail_quantile` of the expression distribution.
+  #' the one with the largest, FDR-significant REGIME CONTRAST: the derivative
+  #' at `tail_quantile` minus the derivative at `bulk_quantile`.  Note this is
+  #' not the same as the largest tail derivative, and the two can disagree.
   #'
   #' @param codon_counts data.table/data.frame with `Gene_name` plus one integer
   #'   column per sense codon (`data/codon_counts_from_fasta.rds`).
@@ -487,7 +492,7 @@ plot_preferred_codon_slopes <- function(codon_table, preferred,
   d <- merge(d, win, by = c("Family", "Codon"), all.x = TRUE)
   d[is.na(Is_preferred), Is_preferred := FALSE]
   d[, Status := data.table::fifelse(
-    Is_preferred, "Preferred (steepest rise at high expression)",
+    Is_preferred, "Preferred (largest drift-to-selection shift)",
     data.table::fifelse(Significant & Slope_tail > 0, "Rises at high expression",
                         data.table::fifelse(Significant, "Falls at high expression",
                                             "Not significant")))]
@@ -501,14 +506,16 @@ plot_preferred_codon_slopes <- function(codon_table, preferred,
     ggplot2::coord_flip() +
     ggplot2::facet_wrap(~ Family, scales = "free_y", ncol = 5) +
     ggplot2::scale_colour_manual(values = c(
-      "Preferred (steepest rise at high expression)" = "#1B7837",
+      "Preferred (largest drift-to-selection shift)" = "#1B7837",
       "Rises at high expression"                     = "#7FBC41",
       "Falls at high expression"                     = "#D6604D",
       "Not significant"                              = "grey65"
     )) +
     ggplot2::labs(
       title = title,
-      subtitle = "Filled = derivative at the 99th expression percentile (selection regime); hollow = at the median (drift regime)",
+      subtitle = paste("Filled = derivative at the 99th expression percentile (selection regime);",
+                       "hollow = at the median (drift regime).\nThe call is made on the GAP between them,",
+                       "so the preferred codon is not always the highest filled point."),
       x = NULL,
       y = "d(logit codon share) / d(log10 expression)",
       colour = NULL) +
