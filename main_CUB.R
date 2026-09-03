@@ -2517,6 +2517,47 @@ p_fig7d <- ggplot(bin_sw, aes(x = mean_S_Wright, y = pi_bin)) +
 ggsave("./results/pi_4fold_vs_S_Wright.pdf", p_fig7d, width = 8, height = 6)
 cat("✓ Saved: ./results/pi_4fold_vs_S_Wright.pdf\n")
 
+# 12.1d) Preferred-base frequency across the expression range ----
+#
+# Q_pref_base is the per-gene fraction of 4-fold sites carrying the preferred
+# base. Plotted against expression it is the clearest single view of the two
+# regimes: Q rises to a maximum in the lower-middle of the expression range,
+# falls steadily through the drift-dominated bulk as AT-biased mutation pushes
+# the preferred base down, and then reverses sharply among the most highly
+# expressed genes where selection becomes effective. This is the same structure
+# the optimal-codon estimator keys on, shown here in the raw data.
+
+q_pref_by_exp <- msd_data |>
+  dplyr::filter(!is.na(Q_pref_base), !is.na(Mean_Log10_Exp), N_4fold_sites >= 20) |>
+  dplyr::mutate(Exp_cat = round(Mean_Log10_Exp / exp_bin_width) * exp_bin_width) |>
+  dplyr::group_by(Exp_cat) |>
+  dplyr::summarize(
+    n_genes = dplyr::n(),
+    Q_mean  = mean(Q_pref_base),
+    Q_se    = stats::sd(Q_pref_base) / sqrt(dplyr::n()),
+    .groups = "drop"
+  ) |>
+  dplyr::filter(n_genes >= 100) |>
+  dplyr::mutate(CI_lo = Q_mean - 1.96 * Q_se, CI_hi = Q_mean + 1.96 * Q_se)
+
+write.csv(q_pref_by_exp, "./results/Q_preferred_by_expression_category.csv", row.names = FALSE)
+
+p_qpref <- ggplot(q_pref_by_exp,
+                  aes(x = factor(format(Exp_cat, nsmall = 1)), y = Q_mean)) +
+  geom_errorbar(aes(ymin = CI_lo, ymax = CI_hi), width = 0.25,
+                colour = "#2C6BAA", linewidth = 0.6) +
+  geom_point(size = 2.4, colour = "#2C6BAA") +
+  labs(x = expression("Expression level category (log"[10] * ")"),
+       y = "Q preferred") +
+  theme_custom()
+
+ggsave("./results/Q_preferred_by_expression.pdf", p_qpref, width = 6.5, height = 5)
+cat(sprintf("✓ Saved: ./results/Q_preferred_by_expression.pdf (%d categories, Q from %.3f to %.3f)\n",
+            nrow(q_pref_by_exp), min(q_pref_by_exp$Q_mean), max(q_pref_by_exp$Q_mean)))
+
+rm(p_qpref)
+
+
 # 12.1c) Partitioning segregating 4-fold sites by codon preference ----
 #
 # Referee 1's line-535 test. Codon-usage selection can only act on a segregating
