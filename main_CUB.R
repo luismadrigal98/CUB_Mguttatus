@@ -887,11 +887,13 @@ plot_preferred_codon_slopes(preferred_detection$codon_table,
 ##                C) S_eta density by group
 ##                (`Drift_barrier_overview.pdf`)
 ##     GO enrichment for genes with S>1
-##                (`Go_enrichment_selection_S_Wright.csv`,
-##                 `Go_enrichment_load_ROC_eff.csv`)
-##     Top genes by translational load / S_Wright
-##                (`Top_genes_strong_selection_load.csv`,
-##                 `Top_genes_strong_selection_S_Wright.csv`)
+##                (`Go_enrichment_selection_S_Wright.csv`)
+##     Top genes by S_Wright, supplementary table
+##                (`Top_genes_strong_selection_S_Wright.csv`, top 50)
+##     Full drift-barrier group as a data file
+##                (`Selection_group_full_S_Wright.csv`)
+##   The load-based GO and top-gene table are AnaCoDa-derived and live in
+##   supplementary_anacoda.R.
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 # 8.3.4) Wright's MSD framework ----
@@ -1810,17 +1812,29 @@ detailed_annotation_full <- read.delim(
 # supplementary_anacoda.R along with L_ROC itself.
 
 # Selection group: S_Wright >= S_BARRIER
-top_selection <- msd_data |>
-  dplyr::filter(!is.na(S_Wright_raw), S_Wright_raw >= S_BARRIER) |>
-  dplyr::arrange(desc(S_Wright_raw)) |>
-  dplyr::select(Gene_name, S_Wright_raw, Mean_Log10_Exp) |>
+# Two outputs, because they answer different questions and the previous single
+# file conflated them: the supplementary TABLE is a readable top-50 (matching the
+# size of the L_ROC table it replaces), while the full drift-barrier group is
+# written separately as a data file. Writing all ~3,500 genes as "top genes" made
+# a table nobody can read.
+selection_gene_table <- msd_data |>
+  dplyr::filter(!is.na(S_Wright_signed), S_Wright_signed >= S_BARRIER) |>
+  dplyr::arrange(dplyr::desc(S_Wright_signed)) |>
+  dplyr::select(Gene_name, S_Wright = S_Wright_signed, Mean_Log10_Exp) |>
   dplyr::left_join(detailed_annotation_full,
                    by = c("Gene_name" = "locusName"))
+
+top_selection <- head(selection_gene_table, n_outlier_genes)
+
 write.csv(top_selection,
           "./results/Top_genes_strong_selection_S_Wright.csv",
           quote = TRUE, row.names = FALSE)
-cat(sprintf("[Top genes] S_Wright_raw >= %.4f: %d genes (Q-inflection-derived selection group)\n",
-            S_BARRIER, nrow(top_selection)))
+write.csv(selection_gene_table,
+          "./results/Selection_group_full_S_Wright.csv",
+          quote = TRUE, row.names = FALSE)
+
+cat(sprintf("[Top genes] supplementary table = top %d by S_Wright; full drift-barrier group (S_Wright >= %.2f) = %d genes written separately\n",
+            n_outlier_genes, S_BARRIER, nrow(selection_gene_table)))
 
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## 10) Multivariate exploration ----
