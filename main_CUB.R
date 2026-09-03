@@ -2589,7 +2589,43 @@ cat(sprintf("[Partition] %d segregating 4-fold sites | pref/non-pref %d, non-pre
             sum(polymorphism_sites$Class == "pref/non-pref"),
             sum(polymorphism_sites$Class == "non-pref/non-pref")))
 
-rm(polymorphism_sites); gc()
+# Density form: pi contributed per 4-fold site, common denominator. This is the
+# version that carries the signal and the one plotted (Supplementary Figure 8).
+polymorphism_density <- summarise_polymorphism_partition_density(
+  polymorphism_sites, integrated_data, expression_var = "Mean_Log10_Exp"
+)
+data.table::fwrite(polymorphism_density,
+                   "./results/polymorphism_partition_density.csv")
+
+p_partition <- plot_polymorphism_partition(polymorphism_density)
+ggsave("./results/polymorphism_partition_density.pdf", p_partition,
+       width = 6.5, height = 5)
+
+# Trough-to-peak elevation in each class, and a test on the top category.
+{
+  pd <- data.table::as.data.table(polymorphism_density)
+  top_cat <- max(pd$Exp_cat)
+  for (cl in c("pref/non-pref", "non-pref/non-pref")) {
+    a  <- pd[Class == cl]
+    tr <- a[Exp_cat >= 1.4 & Exp_cat <= 2.2]
+    lo <- min(tr$pi_per_site); hi <- a[Exp_cat == top_cat]$pi_per_site
+    cat(sprintf("[Partition] %-18s trough %.5f (cat %.1f) -> cat %.1f %.5f = %+.1f%%\n",
+                cl, lo, tr$Exp_cat[which.min(tr$pi_per_site)], top_cat, hi,
+                100 * (hi - lo) / lo))
+  }
+  tp <- pd[Exp_cat == top_cat]
+  m  <- matrix(c(tp[Class == "pref/non-pref"]$n_seg,
+                 tp[Class == "pref/non-pref"]$tot_sites - tp[Class == "pref/non-pref"]$n_seg,
+                 tp[Class == "non-pref/non-pref"]$n_seg,
+                 tp[Class == "non-pref/non-pref"]$tot_sites - tp[Class == "non-pref/non-pref"]$n_seg),
+               nrow = 2)
+  ct <- suppressWarnings(chisq.test(m))
+  cat(sprintf("[Partition] top category %.1f: chi2 = %.1f, df = %d, p = %.3g\n",
+              top_cat, ct$statistic, ct$parameter, ct$p.value))
+  rm(pd, m, ct)
+}
+
+rm(polymorphism_sites, p_partition); gc()
 
 
 rm(fig7a_dat, p_fig7a, p_fig7d, r4, r0)

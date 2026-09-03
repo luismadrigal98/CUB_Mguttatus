@@ -44,7 +44,11 @@ classify_fourfold_polymorphism <- function(codon_freq_file,
                          showProgress = FALSE)
   # Family from the codon itself (handles the split six-fold families).
   d[, Family := unname(genetic_code[Ref_Codon])]
-  d <- d[Family %in% fourfold & grepl(";", Codon_Variants)]
+  d <- d[Family %in% fourfold]
+  # Denominator for the density measure: EVERY 4-fold site of the gene,
+  # monomorphic included. Must be taken before the segregating filter below.
+  gene_totals <- d[, .(tot_sites = .N), by = Gene]
+  d <- d[grepl(";", Codon_Variants)]
 
   # Parse "COD:count;COD:count", dropping the NNN missing-data entry.
   parts <- strsplit(d$Codon_Variants, ";", fixed = TRUE)
@@ -76,7 +80,65 @@ classify_fourfold_polymorphism <- function(codon_freq_file,
   out[, Class := data.table::fifelse(has_pref == 1,
                                      "pref/non-pref", "non-pref/non-pref")]
   out[, has_pref := NULL]
+
+  # Attached rather than returned separately so the two can never drift apart.
+  data.table::setattr(out, "gene_totals", gene_totals)
   out[]
+}
+
+
+summarise_polymorphism_partition_density <- function(site_table, gene_meta,
+                                                     expression_var = "Mean_Log10_Exp",
+                                                     bin_width = 0.2,
+                                                     min_genes = 30L) {
+  #' pi CONTRIBUTED PER 4-FOLD SITE in each preference class
+  #'
+  #' The quantity that carries the signal. Heterozygosity conditional on a site
+  #' already being polymorphic is flat-to-declining in both classes and would
+  #' read as a null; the elevation at high expression lives in the DENSITY of
+  #' segregating sites. Both classes are divided by the same denominator (all
+  #' 4-fold sites of the genes in the bin), so the two are directly comparable.
+
+  suppressPackageStartupMessages(require(data.table))
+  totals <- attr(site_table, "gene_totals")
+  if (is.null(totals)) stop("site_table carries no 'gene_totals' attribute")
+
+  meta <- data.table::as.data.table(gene_meta)[, c("Gene_name", expression_var), with = FALSE]
+  data.table::setnames(meta, expression_var, "Expr")
+  tot <- data.table::copy(data.table::as.data.table(totals))
+  tot[, Gene_name := paste0("MgIM767.", Gene)]
+  tot <- merge(tot, meta, by = "Gene_name")[!is.na(Expr)]
+  tot[, Exp_cat := round(round(Expr / bin_width) * bin_width, 1)]
+  denom <- tot[, .(tot_sites = sum(tot_sites), n_genes = .N), by = Exp_cat]
+
+  st <- merge(data.table::as.data.table(site_table),
+              tot[, .(Gene, Exp_cat)], by = "Gene")
+  num <- st[, .(n_seg = .N, pi_sum = sum(pi_site)), by = .(Exp_cat, Class)]
+
+  agg <- merge(num, denom, by = "Exp_cat")[n_genes >= min_genes]
+  agg[, pi_per_site := pi_sum / tot_sites]
+  data.table::setorder(agg, Class, Exp_cat)
+  agg[]
+}
+
+
+plot_polymorphism_partition <- function(density_table, title = NULL) {
+  #' Diversity per 4-fold site in each preference class across the expression range
+  suppressPackageStartupMessages({require(ggplot2); require(data.table)})
+  d <- data.table::copy(data.table::as.data.table(density_table))
+  d[, Class := factor(Class,
+        levels = c("pref/non-pref", "non-pref/non-pref"),
+        labels = c("preferred / unpreferred", "unpreferred / unpreferred"))]
+  ggplot(d, aes(x = Exp_cat, y = pi_per_site, colour = Class, shape = Class)) +
+    geom_line(linewidth = 0.6) +
+    geom_point(size = 2.2) +
+    scale_colour_manual(values = c("preferred / unpreferred"   = "#B2182B",
+                                   "unpreferred / unpreferred" = "#2166AC")) +
+    labs(x = expression("Expression level category (log"[10] * ")"),
+         y = expression(pi ~ "per 4-fold site"),
+         colour = NULL, shape = NULL, title = title) +
+    theme_custom() +
+    theme(legend.position = "top")
 }
 
 
