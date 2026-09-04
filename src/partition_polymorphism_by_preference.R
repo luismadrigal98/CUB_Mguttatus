@@ -183,17 +183,78 @@ bootstrap_partition_density_bands <- function(gene_table,
 }
 
 
-plot_partition_contrast <- function(contrast_table, title = NULL) {
+
+pool_partition_contrast <- function(gene_table, regions,
+                                    n_boot = 50000L, conf = 0.95, seed = 1L) {
+  #' Class contrast pooled over named regions of the expression range
+  #'
+  #' Pooling IS the multiplicity correction. Testing all fourteen expression
+  #' categories separately answers a question nobody asked and spends the power
+  #' on bins of 83-184 genes; the analysis is specified on the two regimes the
+  #' paper is about, so the regions are the unit of inference. Per-category
+  #' p-values are reported alongside (Benjamini-Hochberg) purely to show what a
+  #' bin-by-bin reading would and would not support.
+  #'
+  #' @param regions named list of c(min_category, max_category); Inf allowed.
+  #' @return data.table region, lo_cat, hi_cat, n_genes, estimate, ci_low,
+  #'   ci_high, p_two_sided
+
+  suppressPackageStartupMessages(require(data.table))
+  g <- data.table::as.data.table(gene_table)
+  a <- (1 - conf) / 2
+  set.seed(seed)
+
+  out <- lapply(names(regions), function(nm) {
+    r <- regions[[nm]]
+    d <- g[Exp_cat >= r[1] & Exp_cat <= r[2]]
+    if (!nrow(d)) return(NULL)
+    pp <- d$pi_sum_pref; pc <- d$pi_sum_ctrl; n <- nrow(d)
+    bs <- vapply(seq_len(n_boot), function(i) {
+      k <- sample.int(n, n, replace = TRUE)
+      sum(pp[k]) / sum(pc[k]) - 1
+    }, numeric(1))
+    data.table::data.table(
+      region = nm, lo_cat = r[1], hi_cat = r[2], n_genes = n,
+      estimate = sum(pp) / sum(pc) - 1,
+      ci_low = stats::quantile(bs, a), ci_high = stats::quantile(bs, 1 - a),
+      p_two_sided = min(1, 2 * min(mean(bs <= 0), mean(bs >= 0))))
+  })
+  data.table::rbindlist(out)[]
+}
+
+
+plot_partition_contrast <- function(contrast_table, pooled = NULL, title = NULL) {
   #' Class contrast per expression category, with paired bootstrap band
   #'
   #' The quantity the analysis actually tests. Zero is the line at which the two
   #' classes carry equal diversity per site; the reversal is the crossing.
+  #'
+  #' `pooled`, as returned by `pool_partition_contrast()`, overlays the regions
+  #' that are actually tested: a horizontal segment at the pooled estimate with
+  #' its interval as a box. Single categories in the tail hold 83-184 genes and
+  #' are individually underpowered, so drawing the pooled regions keeps the eye
+  #' on the inference rather than on the noisiest points.
 
   suppressPackageStartupMessages({require(ggplot2); require(data.table)})
   d <- data.table::as.data.table(contrast_table)
-  ggplot(d, aes(x = Exp_cat, y = 100 * contrast)) +
+  p <- ggplot(d, aes(x = Exp_cat, y = 100 * contrast)) +
     geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4,
-               colour = "grey40") +
+               colour = "grey40")
+
+  if (!is.null(pooled) && nrow(pooled)) {
+    pl <- data.table::copy(data.table::as.data.table(pooled))
+    rng <- range(d$Exp_cat)
+    pl[, `:=`(x1 = pmax(lo_cat, rng[1]), x2 = pmin(hi_cat, rng[2]))]
+    p <- p +
+      geom_rect(data = pl, inherit.aes = FALSE,
+                aes(xmin = x1, xmax = x2, ymin = 100 * ci_low, ymax = 100 * ci_high),
+                fill = "grey35", alpha = 0.16) +
+      geom_segment(data = pl, inherit.aes = FALSE,
+                   aes(x = x1, xend = x2, y = 100 * estimate, yend = 100 * estimate),
+                   colour = "grey20", linewidth = 0.7)
+  }
+
+  p +
     geom_ribbon(aes(ymin = 100 * ci_low, ymax = 100 * ci_high),
                 fill = "#B2182B", alpha = 0.18) +
     geom_line(linewidth = 0.6, colour = "#B2182B") +

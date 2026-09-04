@@ -2577,6 +2577,7 @@ rm(p_qpref)
 # category at or below the last one where the control class is still ahead.
 PARTITION_BULK_MAX  <- 1.2
 PARTITION_ELITE_MIN <- 2.4
+PARTITION_CROSSOVER <- 2.2
 
 polymorphism_sites <- classify_fourfold_polymorphism(
   codon_freq_file  = "data/all_chromosomes.codon_frequencies.txt",
@@ -2624,12 +2625,27 @@ data.table::fwrite(partition_contrast,
 # categories, but the classes are measured on the same genes and share a
 # denominator, so the paired contrast is much better resolved than that overlap
 # suggests.
+# Pooled regions. These, not the individual categories, are the unit of
+# inference: the tail bins hold 83-184 genes each and are underpowered on their
+# own, and pooling into the two regimes the paper is about is what corrects for
+# testing fourteen categories.
+partition_pooled <- pool_partition_contrast(partition_genes, list(
+  "drift-dominated bulk" = c(-Inf, PARTITION_BULK_MAX),
+  "post-crossover"       = c(PARTITION_CROSSOVER, Inf)
+), n_boot = 50000L)
+data.table::fwrite(partition_pooled,
+                   "./results/polymorphism_partition_pooled_regions.csv")
+with(partition_pooled, for (i in seq_along(region))
+  cat(sprintf("[Partition] pooled %-22s %+6.2f%%  95%% CI [%+.2f%%, %+.2f%%]  p = %.4f  (%d genes)\n",
+              region[i], 100 * estimate[i], 100 * ci_low[i], 100 * ci_high[i],
+              p_two_sided[i], n_genes[i])))
+
 partition_breaks <- seq(0, max(partition_bands$Exp_cat), 0.4)
 p_partition <- (
   plot_polymorphism_partition(partition_bands) +
     scale_x_continuous(breaks = partition_breaks)
 ) / (
-  plot_partition_contrast(partition_contrast) +
+  plot_partition_contrast(partition_contrast, pooled = partition_pooled) +
     scale_x_continuous(breaks = partition_breaks)
 ) + patchwork::plot_annotation(tag_levels = "A")
 
