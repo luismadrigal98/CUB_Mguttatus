@@ -266,6 +266,57 @@ plot_partition_contrast <- function(contrast_table, pooled = NULL, title = NULL)
 }
 
 
+
+diagnose_partition_overlap <- function(gene_table, n_boot = 4000L,
+                                       conf = 0.95, min_genes = 30L, seed = 1L) {
+  #' Why the two bands in panel A overlap while the contrast in panel B does not
+  #'
+  #' Supplementary Figure 8's caption asserts that the class estimates are
+  #' strongly correlated and that the paired difference therefore carries about
+  #' half the sampling variance the marginal bands imply. This computes those
+  #' numbers so the claim is reproducible rather than asserted:
+  #'
+  #'   Var(A - B) = Var(A) + Var(B) - 2 Cov(A, B)
+  #'
+  #' `width_ratio` is sd(paired difference) / sd(difference under independence).
+  #' `bands_overlap` says whether the two marginal intervals touch, and
+  #' `contrast_excludes_zero` whether the paired contrast does not - the rows
+  #' where these disagree are the point.
+  #'
+  #' @return data.table Exp_cat, n_genes, r, bands_overlap, width_ratio,
+  #'   contrast, ci_low, ci_high, contrast_excludes_zero
+
+  suppressPackageStartupMessages(require(data.table))
+  g <- data.table::as.data.table(gene_table)
+  a <- (1 - conf) / 2
+  set.seed(seed)
+
+  res <- data.table::rbindlist(lapply(split(g, by = "Exp_cat"), function(d) {
+    n <- nrow(d)
+    if (n < min_genes) return(NULL)
+    tot <- d$tot_sites; pp <- d$pi_sum_pref; pc <- d$pi_sum_ctrl
+    bs <- vapply(seq_len(n_boot), function(i) {
+      k <- sample.int(n, n, replace = TRUE); s <- sum(tot[k])
+      c(sum(pp[k]) / s, sum(pc[k]) / s)
+    }, numeric(2))
+    ct <- bs[1, ] / bs[2, ] - 1
+    qa <- stats::quantile(bs[1, ], c(a, 1 - a))
+    qb <- stats::quantile(bs[2, ], c(a, 1 - a))
+    lo <- stats::quantile(ct, a); hi <- stats::quantile(ct, 1 - a)
+    data.table::data.table(
+      Exp_cat = d$Exp_cat[1], n_genes = n,
+      r = stats::cor(bs[1, ], bs[2, ]),
+      bands_overlap = !(qa[2] < qb[1] || qb[2] < qa[1]),
+      width_ratio = stats::sd(bs[1, ] - bs[2, ]) /
+                    sqrt(stats::var(bs[1, ]) + stats::var(bs[2, ])),
+      contrast = sum(pp) / sum(pc) - 1, ci_low = lo, ci_high = hi,
+      contrast_excludes_zero = lo > 0 | hi < 0)
+  }))
+  data.table::setorder(res, Exp_cat)
+  res[]
+}
+
+
 plot_polymorphism_partition <- function(density_table, title = NULL) {
   #' Diversity per 4-fold site in each preference class across the expression range
   #'

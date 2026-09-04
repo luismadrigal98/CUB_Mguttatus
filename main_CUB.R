@@ -2640,6 +2640,19 @@ with(partition_pooled, for (i in seq_along(region))
               region[i], 100 * estimate[i], 100 * ci_low[i], 100 * ci_high[i],
               p_two_sided[i], n_genes[i])))
 
+# Reproduces the two numbers Supplementary Figure 8's caption relies on: the
+# correlation between the class estimates, and the fact that the paired contrast
+# excludes zero in categories where the marginal bands overlap.
+partition_overlap <- diagnose_partition_overlap(partition_genes, n_boot = 4000L)
+data.table::fwrite(partition_overlap,
+                   "./results/polymorphism_partition_overlap_diagnostic.csv")
+cat(sprintf("[Partition] class-estimate correlation r = %.2f to %.2f; paired interval is %.0f%% the width of the independent one\n",
+            min(partition_overlap$r), max(partition_overlap$r),
+            100 * mean(partition_overlap$width_ratio)))
+cat(sprintf("[Partition] categories where the bands overlap but the contrast excludes zero: %s\n",
+            paste(partition_overlap[bands_overlap & contrast_excludes_zero]$Exp_cat,
+                  collapse = ", ")))
+
 partition_breaks <- seq(0, max(partition_bands$Exp_cat), 0.4)
 p_partition <- (
   plot_polymorphism_partition(partition_bands) +
