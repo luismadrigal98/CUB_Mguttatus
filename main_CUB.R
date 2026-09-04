@@ -1366,7 +1366,7 @@ if (is.finite(Q_neutral_two) && is.finite(pi_neutral_two) && pi_neutral_two > 0)
 #   S_Wright_signed; genes below neutral Q are flagged is_drift = TRUE.
 
 # Theoretical neutral-pi reference ----
-# S_BARRIER: fixed at the 2N_e*s = 1 threshold (selection dominates drift) ----
+# S_BARRIER: fixed at the 4N_e*s = 1 threshold (selection dominates drift) ----
 # The GAM-inflection derived value (~0.54) classified genes where drift is still
 # the dominant force as being under selection. S = 1 is the canonical boundary
 # where selection overcomes drift. The inflection-based derivation is archived.
@@ -1656,7 +1656,7 @@ rm(plot_barrier, n_sel_barrier, n_drift_barrier,
    barrier_colors, p_sw_dist)
 write.csv(
   data.frame(
-    criterion                    = "fixed_2Ns_gt_1",
+    criterion                    = "fixed_4Ns_gt_1",
     S_BARRIER                    = S_BARRIER,
     S_BARRIER_advisor            = S_BARRIER_advisor,
     U_empirical                  = U_emp,
@@ -2572,6 +2572,12 @@ rm(p_qpref)
 # conditional measure is flat-to-declining in both classes; the elevation lives
 # in the DENSITY of segregating sites.
 
+# Region boundaries for the bulk/elite contrast. The crossover sits at 2.2, so
+# the elite region starts at the first category above it; the bulk is every
+# category at or below the last one where the control class is still ahead.
+PARTITION_BULK_MAX  <- 1.2
+PARTITION_ELITE_MIN <- 2.4
+
 polymorphism_sites <- classify_fourfold_polymorphism(
   codon_freq_file  = "data/all_chromosomes.codon_frequencies.txt",
   preferred_codons = preferred_detection$preferred,
@@ -2597,11 +2603,40 @@ polymorphism_density <- summarise_polymorphism_partition_density(
 data.table::fwrite(polymorphism_density,
                    "./results/polymorphism_partition_density.csv")
 
-p_partition <- plot_polymorphism_partition(polymorphism_density)
-ggsave("./results/polymorphism_partition_density.pdf", p_partition,
-       width = 6.5, height = 5)
+partition_genes <- gene_level_partition_table(
+  polymorphism_sites, integrated_data, expression_var = "Mean_Log10_Exp"
+)
+data.table::fwrite(partition_genes,
+                   "./results/polymorphism_partition_by_gene.csv")
 
-# Trough-to-peak elevation in each class, and a test on the top category.
+# Confidence bands, and the paired class contrast that panel B plots. Genes are
+# the resampling unit here too; a binomial interval on site counts would ignore
+# linkage and come out far too narrow.
+partition_bands    <- bootstrap_partition_density_bands(partition_genes, n_boot = 4000L)
+partition_contrast <- attr(partition_bands, "contrast")
+data.table::fwrite(partition_bands,
+                   "./results/polymorphism_partition_density_bands.csv")
+data.table::fwrite(partition_contrast,
+                   "./results/polymorphism_partition_contrast_bands.csv")
+
+# Panel A shows the two classes, panel B the difference between them. B is the
+# quantity actually tested: the marginal bands in A overlap in the top
+# categories, but the classes are measured on the same genes and share a
+# denominator, so the paired contrast is much better resolved than that overlap
+# suggests.
+partition_breaks <- seq(0, max(partition_bands$Exp_cat), 0.4)
+p_partition <- (
+  plot_polymorphism_partition(partition_bands) +
+    scale_x_continuous(breaks = partition_breaks)
+) / (
+  plot_partition_contrast(partition_contrast) +
+    scale_x_continuous(breaks = partition_breaks)
+) + patchwork::plot_annotation(tag_levels = "A")
+
+ggsave("./results/polymorphism_partition_density.pdf", p_partition,
+       width = 6.5, height = 8)
+
+# Trough-to-peak elevation in each class.
 {
   pd <- data.table::as.data.table(polymorphism_density)
   top_cat <- max(pd$Exp_cat)
@@ -2613,19 +2648,71 @@ ggsave("./results/polymorphism_partition_density.pdf", p_partition,
                 cl, lo, tr$Exp_cat[which.min(tr$pi_per_site)], top_cat, hi,
                 100 * (hi - lo) / lo))
   }
-  tp <- pd[Exp_cat == top_cat]
-  m  <- matrix(c(tp[Class == "pref/non-pref"]$n_seg,
-                 tp[Class == "pref/non-pref"]$tot_sites - tp[Class == "pref/non-pref"]$n_seg,
-                 tp[Class == "non-pref/non-pref"]$n_seg,
-                 tp[Class == "non-pref/non-pref"]$tot_sites - tp[Class == "non-pref/non-pref"]$n_seg),
-               nrow = 2)
-  ct <- suppressWarnings(chisq.test(m))
-  cat(sprintf("[Partition] top category %.1f: chi2 = %.1f, df = %d, p = %.3g\n",
-              top_cat, ct$statistic, ct$parameter, ct$p.value))
-  rm(pd, m, ct)
+  rm(pd)
 }
 
-rm(polymorphism_sites, p_partition); gc()
+# Inference on the reversal, resampling GENES.
+#
+# The claim is an interaction — the two classes CHANGE ORDER across the drift
+# barrier — so the statistic tested is contrast(elite) - contrast(bulk), not the
+# elite excess on its own. Genes are the resampling unit because segregating
+# sites within a gene are linked; a site-level test treats ~10^5 correlated
+# observations as independent and is badly anticonservative.
+
+# Two elite windows. The capped one matches the plotted categories, so its
+# interval describes exactly what the reader sees in the figure; the uncapped
+# one adds the sparsely populated bins above and is the more powerful test.
+partition_top_plotted <- max(polymorphism_density$Exp_cat)
+partition_boot <- list(
+  plotted = bootstrap_partition_contrast(
+    partition_genes, bulk_max = PARTITION_BULK_MAX,
+    elite_min = PARTITION_ELITE_MIN, elite_max = partition_top_plotted,
+    n_boot = 50000L),
+  full = bootstrap_partition_contrast(
+    partition_genes, bulk_max = PARTITION_BULK_MAX,
+    elite_min = PARTITION_ELITE_MIN, n_boot = 50000L)
+)
+partition_boot_out <- data.table::rbindlist(
+  lapply(names(partition_boot),
+         function(k) data.table::data.table(window = k, partition_boot[[k]]$ci)))
+data.table::fwrite(partition_boot_out,
+                   "./results/polymorphism_partition_bootstrap.csv")
+
+for (k in names(partition_boot)) {
+  b <- partition_boot[[k]]
+  cat(sprintf("[Partition] %s window: bulk <= %.1f (n = %d genes), elite >= %.1f%s (n = %d genes)\n",
+              k, PARTITION_BULK_MAX, b$regions$n_bulk, PARTITION_ELITE_MIN,
+              if (is.finite(b$regions$elite_max))
+                sprintf(" and <= %.1f", b$regions$elite_max) else "",
+              b$regions$n_elite))
+  with(b$ci, for (i in seq_along(statistic))
+    cat(sprintf("[Partition]   %-9s %+6.2f%%  95%% CI [%+.2f%%, %+.2f%%]  p %s\n",
+                statistic[i], 100 * estimate[i], 100 * ci_low[i], 100 * ci_high[i],
+                if (p_two_sided[i] < 4 / b$regions$n_boot)
+                  sprintf("< %.0e", 4 / b$regions$n_boot)
+                else sprintf("= %.4f", p_two_sided[i]))))
+}
+rm(b, k)
+
+# Site-level chi-square retained for comparison only. It ignores linkage within
+# genes, so its p-value is an upper bound on the evidence, not a usable test —
+# the bootstrap above is what the manuscript reports.
+{
+  pd <- data.table::as.data.table(polymorphism_density)
+  tp <- pd[Exp_cat >= PARTITION_ELITE_MIN & Exp_cat <= partition_top_plotted,
+           .(n_seg = sum(n_seg), tot = sum(tot_sites)), by = Class]
+  m  <- matrix(c(tp[Class == "pref/non-pref"]$n_seg,
+                 tp[Class == "pref/non-pref"]$tot - tp[Class == "pref/non-pref"]$n_seg,
+                 tp[Class == "non-pref/non-pref"]$n_seg,
+                 tp[Class == "non-pref/non-pref"]$tot - tp[Class == "non-pref/non-pref"]$n_seg),
+               nrow = 2)
+  ct <- suppressWarnings(chisq.test(m))
+  cat(sprintf("[Partition] (site-level, linkage ignored) chi2 = %.1f, df = %d, p = %.3g\n",
+              ct$statistic, ct$parameter, ct$p.value))
+  rm(pd, tp, m, ct)
+}
+
+rm(polymorphism_sites, p_partition, partition_bands, partition_breaks); gc()
 
 
 rm(fig7a_dat, p_fig7a, p_fig7d, r4, r0)
