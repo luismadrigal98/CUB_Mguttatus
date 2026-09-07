@@ -2558,6 +2558,53 @@ cat(sprintf("✓ Saved: ./results/Q_preferred_by_expression.pdf (%d categories, 
 rm(p_qpref)
 
 
+# 12.1b-bis) Recombination as a control on the gBGC alternative ----
+#
+# gBGC acts through recombination, so for it to produce the expression-dependent
+# codon signal reported here, the opportunity for gBGC would have to covary with
+# expression. Against the per-gene crossover map of Lovell et al. (2025) it does
+# not: the rate is flat above the lowest expression category, and across the
+# bulk-versus-elite contrast the whole argument rests on it differs by ~2.6%
+# (p = 0.22). The companion CDC panel uses the length- and breadth-controlled
+# partial effect, because raw CDC DECLINES with expression - it is dominated by
+# CDS length - and a raw panel would contradict the CDC figure in the main text.
+
+recomb_map <- data.table::fread(
+  "./data/Lovell_et_al_2025_IM767_recombination_map_Appendix_S6.csv")
+
+recomb_by_exp <- summarise_recombination_by_expression(
+  recomb_map, integrated_data, expression_var = "Mean_Log10_Exp")
+cdc_by_exp <- cdc_partial_by_expression(
+  integrated_data, expression_var = "Mean_Log10_Exp")
+data.table::fwrite(recomb_by_exp, "./results/recombination_by_expression.csv")
+data.table::fwrite(cdc_by_exp,    "./results/cdc_partial_by_expression.csv")
+
+p_recomb <- plot_recombination_control(recomb_by_exp, cdc_by_exp)
+ggsave("./results/recombination_vs_cdc_by_expression.pdf", p_recomb,
+       width = 6.5, height = 8)
+
+# Effect sizes, not p-values: with >22,000 genes a negligible correlation is
+# still "significant", so report the magnitude and the regional contrast.
+{
+  rr <- merge(recomb_map[, .(Gene_name = geneID, recombRate)],
+              data.table::as.data.table(integrated_data)[, .(Gene_name, Mean_Log10_Exp)],
+              by = "Gene_name")[is.finite(recombRate) & is.finite(Mean_Log10_Exp)]
+  sp <- suppressWarnings(stats::cor.test(rr$Mean_Log10_Exp, rr$recombRate,
+                                         method = "spearman"))
+  tt <- stats::t.test(rr[Mean_Log10_Exp >= PARTITION_CROSSOVER]$recombRate,
+                      rr[Mean_Log10_Exp <= PARTITION_BULK_MAX]$recombRate)
+  cat(sprintf("[Recomb] rho = %+.4f (p = %.3g) but only %.1f%% of deviance; rate spans %.2f-%.2f cM/Mb\n",
+              sp$estimate, sp$p.value,
+              100 * summary(mgcv::gam(recombRate ~ s(Mean_Log10_Exp), data = rr))$dev.expl,
+              min(recomb_by_exp$rate_mean), max(recomb_by_exp$rate_mean)))
+  cat(sprintf("[Recomb] post-crossover vs bulk: %+.3f cM/Mb (95%% CI %+.3f to %+.3f), p = %.3f = %+.1f%%\n",
+              diff(rev(tt$estimate)), tt$conf.int[1], tt$conf.int[2], tt$p.value,
+              100 * diff(rev(tt$estimate)) / mean(rr[Mean_Log10_Exp <= PARTITION_BULK_MAX]$recombRate)))
+  rm(rr, sp, tt)
+}
+rm(recomb_map, p_recomb); gc()
+
+
 # 12.1c) Partitioning segregating 4-fold sites by codon preference ----
 #
 # Referee 1's line-535 test. Codon-usage selection can only act on a segregating
