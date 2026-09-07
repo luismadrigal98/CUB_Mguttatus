@@ -2574,13 +2574,11 @@ recomb_map <- data.table::fread(
 
 recomb_by_exp <- summarise_recombination_by_expression(
   recomb_map, integrated_data, expression_var = "Mean_Log10_Exp")
-cdc_by_exp <- cdc_partial_by_expression(
-  integrated_data, expression_var = "Mean_Log10_Exp")
 data.table::fwrite(recomb_by_exp, "./results/recombination_by_expression.csv")
-data.table::fwrite(cdc_by_exp,    "./results/cdc_partial_by_expression.csv")
 
-p_recomb <- plot_recombination_control(recomb_by_exp, cdc_by_exp)
-ggsave("./results/recombination_vs_cdc_by_expression.pdf", p_recomb,
+p_recomb <- plot_recombination_by_expression(attr(recomb_by_exp, "per_gene"),
+                                             recomb_by_exp)
+ggsave("./results/recombination_by_expression.pdf", p_recomb,
        width = 6.5, height = 8)
 
 # Effect sizes, not p-values: with >22,000 genes a negligible correlation is
@@ -2593,10 +2591,13 @@ ggsave("./results/recombination_vs_cdc_by_expression.pdf", p_recomb,
                                          method = "spearman"))
   tt <- stats::t.test(rr[Mean_Log10_Exp >= PARTITION_CROSSOVER]$recombRate,
                       rr[Mean_Log10_Exp <= PARTITION_BULK_MAX]$recombRate)
-  cat(sprintf("[Recomb] rho = %+.4f (p = %.3g) but only %.1f%% of deviance; rate spans %.2f-%.2f cM/Mb\n",
+  cat(sprintf("[Recomb] rho = %+.4f (p = %.3g) but only %.2f%% of deviance; category means span %.2f-%.2f cM/Mb\n",
               sp$estimate, sp$p.value,
               100 * summary(mgcv::gam(recombRate ~ s(Mean_Log10_Exp), data = rr))$dev.expl,
               min(recomb_by_exp$rate_mean), max(recomb_by_exp$rate_mean)))
+  cat(sprintf("[Recomb] expression category accounts for %.1f%% of the variance in crossover rate\n",
+              100 * stats::var(rr[, mean(recombRate), by = round(round(Mean_Log10_Exp/0.2)*0.2, 1)]$V1) /
+                    stats::var(rr$recombRate)))
   cat(sprintf("[Recomb] post-crossover vs bulk: %+.3f cM/Mb (95%% CI %+.3f to %+.3f), p = %.3f = %+.1f%%\n",
               diff(rev(tt$estimate)), tt$conf.int[1], tt$conf.int[2], tt$p.value,
               100 * diff(rev(tt$estimate)) / mean(rr[Mean_Log10_Exp <= PARTITION_BULK_MAX]$recombRate)))
