@@ -118,3 +118,84 @@ plot_recombination_control <- function(rec_table, cdc_table) {
 
   (pA / pB) + patchwork::plot_annotation(tag_levels = "A")
 }
+
+
+stratify_signal_by_recombination <- function(rec_table, gene_meta,
+                                             signal_var = "Q_pref_base",
+                                             expression_var = "Mean_Log10_Exp",
+                                             n_strata = 3L, bin_width = 0.2,
+                                             min_genes = 50L) {
+  #' The codon signal across expression, within recombination strata
+  #'
+  #' The direct form of the gBGC control. Asking whether recombination tracks
+  #' expression is an indirect argument: it needs the reader to chain two steps,
+  #' and it leaves open that recombination acts on codon usage by some route
+  #' that does not run through expression (it does — the rank correlation
+  #' between recombination and GC3s is +0.10).
+  #'
+  #' The question that matters is whether recombination CHANGES THE SHAPE of the
+  #' expression response. If GC-biased gene conversion were producing the
+  #' pattern, the curve would have to be steeper where recombination is high.
+  #' Splitting genes into recombination strata and overplotting their curves
+  #' tests that in one panel, and a null is legible: the curves separate in
+  #' level and superimpose in shape.
+  #'
+  #' @return data.table Exp_cat, Stratum, n_genes, fit, ci_low, ci_high,
+  #'   centred (fit minus that stratum's mean, for the shape comparison)
+
+  suppressPackageStartupMessages(require(data.table))
+  r <- data.table::as.data.table(rec_table)[, .(Gene_name = geneID, recombRate)]
+  m <- data.table::as.data.table(gene_meta)[, c("Gene_name", signal_var, expression_var),
+                                            with = FALSE]
+  data.table::setnames(m, c(signal_var, expression_var), c("Signal", "Expr"))
+  d <- merge(r, m, by = "Gene_name")
+  d <- d[is.finite(recombRate) & is.finite(Signal) & is.finite(Expr)]
+
+  qs <- stats::quantile(d$recombRate, seq(0, 1, length.out = n_strata + 1L))
+  labs <- if (n_strata == 3L) c("low", "mid", "high") else paste0("Q", seq_len(n_strata))
+  d[, Stratum := cut(recombRate, qs, labels = labs, include.lowest = TRUE)]
+  d[, Exp_cat := round(round(Expr / bin_width) * bin_width, 1)]
+
+  out <- d[, .(n_genes = .N, fit = mean(Signal),
+               se = stats::sd(Signal) / sqrt(.N)), by = .(Exp_cat, Stratum)]
+  out <- out[n_genes >= min_genes]
+  out[, `:=`(ci_low = fit - 1.96 * se, ci_high = fit + 1.96 * se)]
+  out[, centred := fit - mean(fit), by = Stratum]
+  data.table::setorder(out, Stratum, Exp_cat)
+  out[]
+}
+
+
+plot_signal_by_recombination <- function(strat_table, signal_label = NULL) {
+  #' Two panels: the curves as they are, and the same curves on a common level
+  #'
+  #' Panel A carries the honest concession — the strata are offset, which is the
+  #' footprint of biased gene conversion. Panel B removes each stratum's mean, so
+  #' what remains is shape alone; the curves collapse onto one another, which is
+  #' the argument.
+
+  suppressPackageStartupMessages({require(ggplot2); require(patchwork); require(data.table)})
+  d <- data.table::copy(data.table::as.data.table(strat_table))
+  if (is.null(signal_label)) signal_label <- "Preferred-base frequency at 4-fold sites"
+  pal <- c(low = "#2166AC", mid = "#999999", high = "#B2182B")
+  brk <- seq(0, max(d$Exp_cat), 0.4)
+
+  base <- function(p) p +
+    scale_colour_manual(values = pal, name = "Crossover rate") +
+    scale_fill_manual(values = pal, name = "Crossover rate") +
+    scale_x_continuous(breaks = brk) +
+    labs(x = expression("Expression level category (log"[10] * ")")) +
+    theme_custom()
+
+  pA <- base(ggplot(d, aes(Exp_cat, fit, colour = Stratum, fill = Stratum)) +
+    geom_ribbon(aes(ymin = ci_low, ymax = ci_high), alpha = 0.15, colour = NA) +
+    geom_line(linewidth = 0.6) + geom_point(size = 1.9)) +
+    labs(y = signal_label) + theme(legend.position = "top")
+
+  pB <- base(ggplot(d, aes(Exp_cat, centred, colour = Stratum, fill = Stratum)) +
+    geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4, colour = "grey40") +
+    geom_line(linewidth = 0.6) + geom_point(size = 1.9)) +
+    labs(y = "Deviation from each stratum's mean") + theme(legend.position = "none")
+
+  (pA / pB) + patchwork::plot_annotation(tag_levels = "A")
+}
