@@ -1,34 +1,59 @@
 #!/usr/bin/env python3
 """
-Calculate two-allele π statistics at intronic sites for C and G nucleotide systems.
+Two-allele statistics and a per-gene site frequency spectrum at intronic sites,
+for the C system (C vs non-C) and the G system (G vs non-G).
 
-For each gene, computes the preferred-allele frequency (q_pref) and per-site
-heterozygosity (pi_2allele) treating C vs non-C (C system) and G vs non-G
-(G system) as separate two-allele models.  Used to estimate intronic (U, V)
-parameters for Wright's mutation-selection-drift model.
+The introns of each gene are the no-selection reference for its 4-fold sites:
+same chromatin, same transcription, same linked selection. Three analyses in
+main_CUB.R read this script's output:
+  * the exon/intron diversity ratio against Wright's prediction (Referee 1);
+  * the preference-polarised intronic SFS by expression region, the null for
+    the 4-fold asymmetry test (Referee 2);
+  * the Branch A pi validation.
 
-C system is relevant for 7/8 four-fold amino-acid families (Ala, Gly, Pro,
-Thr, Leu_4, Ser_4, Arg_4 all prefer C-ending codons).  G system applies to
-Val (GTG preferred).  Genome-wide intronic composition therefore calibrates
-neutral V/U for each system independently.
+INPUT MUST BE THE ALL-SITES VCF
+-------------------------------
+Every intronic site has to be present, monomorphic ones included, because the
+per-site denominators and the composition both come from them. The
+`*_ready*.vcf` files have had their invariant sites removed by vcf_cleaner.py
+(277 M of 315 M lines). Run on one of those, this script used to report a C
+frequency of ~0.32 (the composition of variable sites, not of introns) over
+~19% of intronic positions. It now refuses: if fewer than half the intronic
+sites it reads are invariant it exits with status 2 and writes nothing.
+Use Lines187.to.IM767v2.1.vcf.gz.
 
-Input:
-    <vcf_file>   VCF with variant AND invariant sites (per chromosome)
-    <gff3_file>  Genome annotation (GFF3 format)
-    <output>     Output CSV path
+Intron definition
+-----------------
+Primary transcript only (`longest=1`), with every exonic feature it has (CDS,
+UTRs, exon) merged before taking the gaps, so UTR introns count and a gap is
+never part of another isoform's exon. Each intron is trimmed by --trim-bp at
+both ends to drop splice signals and kept only if the trimmed width is at
+least --min-width. The same definition is implemented in R by
+intronic_reference_composition() (src/intronic_controls.R), so the population
+data and the reference-sequence composition describe the same bases.
 
-Options:
-    --trim-bp    Bases trimmed at each splice junction (default: 30)
-    --min-width  Minimum trimmed intron width in bp (default: 86)
-    --chrom      Restrict processing to this chromosome name
+Site filter
+-----------
+Biallelic SNPs and invariant sites only (indels and multi-allelic records are
+skipped). A line is counted when it is a strict homozygote with read support
+(0/0 with ref depth > 5x alt depth, or 1/1 the other way round); the site is
+kept if at least --min-called lines qualify. Heterozygous calls are residual
+heterozygosity in inbred lines and are ignored.
 
-Output CSV columns:
-    Gene         gene ID stripped of 'MgIM767.' prefix / '.v2.1' suffix
-    n_sites      total intronic sites used
-    q_pref_C     mean C-allele frequency across all sites (C system)
-    pi_2allele_C per-site C-system heterozygosity (pi_C_sum / n_sites)
-    q_pref_G     mean G-allele frequency across all sites (G system)
-    pi_2allele_G per-site G-system heterozygosity (pi_G_sum / n_sites)
+Outputs
+-------
+<output> (CSV), one row per gene:
+    Gene          ID without the 'MgIM767.' prefix and '.v2.1' suffix
+    n_sites       intronic sites passing the filter
+    q_pref_C      mean C frequency over all n_sites (composition)
+    pi_2allele_C  C-vs-non-C heterozygosity per site, 2k(n-k)/(n(n-1)) summed / n_sites
+    q_pref_G, pi_2allele_G   the same for G
+    n_seg_C, n_fixed_C       segregating sites, and sites fixed for C, in the C system
+    n_seg_G, n_fixed_G       the same for G
+--sfs-out (CSV), segregating sites only:
+    Gene, System (C or G), n, k (count of the focal base), count
+    Monomorphic sites are the per-gene columns above: fixed for the focal base
+    = n_fixed_X, absent = n_sites - n_seg_X - n_fixed_X.
 
 Author: Luis Javier Madrigal-Roca & John K. Kelly
 """
@@ -40,30 +65,40 @@ import re
 import multiprocessing
 from collections import defaultdict
 
+INVARIANT_ALTS = {'.', '<NON_REF>', '<*>', '*'}
+BASES = {'A', 'C', 'G', 'T'}
+COMPLEMENT = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+EXONIC_FEATURES = {'exon', 'CDS', 'five_prime_UTR', 'three_prime_UTR'}
+MIN_HOM_RATIO = 5
+
+# Per-gene accumulator layout (a plain list keeps pickling cheap)
+N_SITES, C_FREQ, C_PI, G_FREQ, G_PI, C_SEG, C_FIX, G_SEG, G_FIX = range(9)
+N_FIELDS = 9
+
+TALLY_KEYS = ('intronic_lines', 'used', 'used_invariant', 'skip_nonsnp',
+              'skip_format', 'skip_lowcov')
+
+
+def short_gene_id(gene_id):
+    s = re.sub(r'^MgIM767\.', '', gene_id)
+    return re.sub(r'\.v\d+\.\d+$', '', s)
+
 
 # ---------------------------------------------------------------------------
-# GFF3 parsing
+# GFF3 -> trimmed intron intervals
 # ---------------------------------------------------------------------------
 
-def parse_gff3_introns(gff3_file, trim_bp=30, min_width=86, buffer_bytes=16 * 1024 * 1024):
+def parse_gff3_introns(gff3_file, trim_bp=30, min_width=86, primary_only=True,
+                       buffer_bytes=16 * 1024 * 1024):
     """
-    Parse GFF3 and derive trimmed intronic intervals per chromosome.
+    Returns (intervals, gene_strand, summary).
 
-    Introns are the gaps between consecutive exon-like intervals of the same mRNA
-    (supports both 'exon' and 'CDS' features).
-    Each intron is trimmed by trim_bp on both ends to exclude splice
-    signals.  Introns whose original length < 2*trim_bp + min_width are
-    discarded (matches get_intron_sequences() defaults in local_M_estimation.R).
-
-    Returns:
-        dict of chrom -> (starts, ends, genes) where starts/ends are
-        sorted integer lists and genes is the parallel gene-ID list.
-        Gene IDs are stripped of 'MgIM767.' prefix and '.v2.1' suffix.
+    intervals: chrom -> (starts, ends, max_end, genes), sorted by start, where
+    max_end[i] = max(ends[:i+1]) makes the containment lookup exact and fast
+    even when introns of different genes overlap.
     """
-    mrna_to_gene   = {}
-    mrna_to_exons  = defaultdict(list)
-    gene_to_chrom  = {}
-    gene_to_strand = {}
+    tx_gene, tx_chrom, tx_strand, tx_primary = {}, {}, {}, {}
+    tx_parts = defaultdict(list)
 
     with open(gff3_file, buffering=buffer_bytes) as fh:
         for line in fh:
@@ -72,449 +107,394 @@ def parse_gff3_introns(gff3_file, trim_bp=30, min_width=86, buffer_bytes=16 * 10
             cols = line.rstrip('\n').split('\t')
             if len(cols) < 9:
                 continue
-            chrom, _, feat, start_s, end_s, _, _, _, attrs_s = cols
-            start = int(start_s)
-            end   = int(end_s)
-
+            chrom, feat, strand = cols[0], cols[2], cols[6]
+            if feat not in EXONIC_FEATURES and feat not in ('mRNA', 'transcript'):
+                continue
             attr = {}
-            for item in attrs_s.split(';'):
-                item = item.strip()
+            for item in cols[8].split(';'):
                 if '=' in item:
                     k, v = item.split('=', 1)
                     attr[k.strip()] = v.strip()
-
+            start, end = int(cols[3]), int(cols[4])
             if feat in ('mRNA', 'transcript'):
-                mrna_id = attr.get('ID', '')
-                parent  = attr.get('Parent', '')
-                if mrna_id:
-                    mrna_to_gene[mrna_id] = parent
-                    gene_to_chrom[parent] = chrom
-                    short = re.sub(r'^MgIM767\.', '', parent)
-                    short = re.sub(r'\.v\d+\.\d+$', '', short)
-                    gene_to_strand[short] = cols[6]
+                tid = attr.get('ID', '')
+                if tid:
+                    tx_gene[tid] = attr.get('Parent', '')
+                    tx_chrom[tid] = chrom
+                    tx_strand[tid] = strand
+                    tx_primary[tid] = attr.get('longest', '') == '1'
+            else:
+                for tid in attr.get('Parent', '').split(','):
+                    tid = tid.strip()
+                    if tid:
+                        tx_parts[tid].append((start, end))
 
-            elif feat in ('exon', 'CDS'):
-                parent_raw = attr.get('Parent', '')
-                for mrna_id in parent_raw.split(','):
-                    mrna_id = mrna_id.strip()
-                    if mrna_id:
-                        mrna_to_exons[mrna_id].append((start, end))
+    use_primary = primary_only and any(tx_primary.values())
+    required = 2 * trim_bp + min_width
+    raw = defaultdict(list)
+    gene_strand = {}
+    n_tx = 0
 
-    # Build intron intervals
-    raw = defaultdict(list)   # chrom -> list of (t_start, t_end, gene_id)
-    required_orig = 2 * trim_bp + min_width  # minimum original intron length
-
-    for mrna_id, exons in mrna_to_exons.items():
-        gene_id = mrna_to_gene.get(mrna_id, '')
-        if not gene_id:
+    for tid, parts in tx_parts.items():
+        if tid not in tx_gene or (use_primary and not tx_primary.get(tid, False)):
             continue
-        chrom = gene_to_chrom.get(gene_id, '')
-        if not chrom:
-            continue
-
-        short = re.sub(r'^MgIM767\.', '', gene_id)
-        short = re.sub(r'\.v\d+\.\d+$', '', short)
-
-        exons_sorted = sorted(exons)
-        for i in range(len(exons_sorted) - 1):
-            e1_end   = exons_sorted[i][1]
-            e2_start = exons_sorted[i + 1][0]
-            # Intron occupies [e1_end+1, e2_start-1] (GFF3 1-based inclusive)
-            orig_start = e1_end + 1
-            orig_end   = e2_start - 1
-            orig_width = orig_end - orig_start + 1
-            if orig_width < required_orig:
+        n_tx += 1
+        gid = short_gene_id(tx_gene[tid])
+        gene_strand[gid] = tx_strand[tid]
+        # CDS and UTR pieces of one exon abut; merge them into exons first.
+        merged = []
+        for s, e in sorted(parts):
+            if merged and s <= merged[-1][1] + 1:
+                if e > merged[-1][1]:
+                    merged[-1][1] = e
+            else:
+                merged.append([s, e])
+        for (_, e1), (s2, _) in zip(merged, merged[1:]):
+            o_start, o_end = e1 + 1, s2 - 1          # GFF3 1-based inclusive
+            if o_end - o_start + 1 < required:
                 continue
-            t_start = orig_start + trim_bp
-            t_end   = orig_end   - trim_bp
-            raw[chrom].append((t_start, t_end, short))
+            raw[tx_chrom[tid]].append((o_start + trim_bp, o_end - trim_bp, gid))
 
-    # Sort and split into parallel arrays for fast bisect lookup
-    result = {}
+    intervals, n_introns, union_bp = {}, 0, 0
     for chrom, ivs in raw.items():
         ivs.sort()
         starts = [iv[0] for iv in ivs]
-        ends   = [iv[1] for iv in ivs]
-        genes  = [iv[2] for iv in ivs]
-        result[chrom] = (starts, ends, genes)
+        ends = [iv[1] for iv in ivs]
+        genes = [iv[2] for iv in ivs]
+        max_end, m = [], -1
+        for e in ends:
+            m = e if e > m else m
+            max_end.append(m)
+        intervals[chrom] = (starts, ends, max_end, genes)
+        n_introns += len(ivs)
+        cur_s, cur_e = None, None                    # union length, for coverage
+        for s, e, _ in ivs:
+            if cur_e is None or s > cur_e:
+                if cur_e is not None:
+                    union_bp += cur_e - cur_s + 1
+                cur_s, cur_e = s, e
+            elif e > cur_e:
+                cur_e = e
+        if cur_e is not None:
+            union_bp += cur_e - cur_s + 1
 
-    return result, gene_to_strand
-
-
-def complement_base(base):
-    return {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}.get(base, base)
+    summary = {'transcripts': n_tx, 'primary_only': use_primary,
+               'introns': n_introns, 'genes': len(set(g for v in intervals.values() for g in v[3])),
+               'union_bp': union_bp}
+    return intervals, gene_strand, summary
 
 
 def find_gene(chrom_data, pos):
-    """
-    Return the gene_id of the first interval containing pos, or None.
-
-    Performs O(log n) bisect followed by a short backward scan to handle
-    intervals that end at or after pos.  Multiple overlapping intervals
-    (different transcripts of the same gene, or overlapping loci) resolve
-    to the first match found.
-    """
-    if chrom_data is None:
-        return None
-    starts, ends, genes = chrom_data
-
-    # Find rightmost interval whose start <= pos
+    """Gene of the first trimmed intron containing pos, or None."""
+    starts, ends, max_end, genes = chrom_data
     idx = bisect.bisect_right(starts, pos) - 1
-
-    # Scan backward; typical introns are short so this loop is very tight
-    while idx >= 0:
+    while idx >= 0 and max_end[idx] >= pos:
         if ends[idx] >= pos:
             return genes[idx]
-        # Once the start is more than 1 Mb behind pos, no intron can reach pos
-        if pos - starts[idx] > 1_000_000:
-            break
         idx -= 1
-
     return None
 
 
 # ---------------------------------------------------------------------------
-# VCF parsing (mirrors calculate_pi.py exactly)
+# Per-line processing
 # ---------------------------------------------------------------------------
 
-def parse_vcf_line(line):
-    cols = line.rstrip('\n').split('\t')
-    if len(cols) < 10:
+def strict_homozygote_counts(fmt, samples):
+    """(ref_hom, alt_hom), or None when GT or AD is absent from FORMAT."""
+    fields = fmt.split(':')
+    try:
+        gi, ai = fields.index('GT'), fields.index('AD')
+    except ValueError:
         return None
-    chrom = cols[0]
-    pos   = int(cols[1])
-    ref   = cols[3].upper()
-    alt   = cols[4].upper()
-    genotypes = []
-    for j in range(9, len(cols)):
-        parts = cols[j].split(':')
-        if len(parts) < 3:
-            genotypes.append(('./.', 0, 0))
+    need = max(gi, ai)
+    ref_hom = alt_hom = 0
+    for s in samples:
+        p = s.split(':')
+        if len(p) <= need:
             continue
-        gt = parts[0]
+        ad = p[ai]
+        if ad in ('.', ''):
+            continue
         try:
-            ad = parts[2]
             if ',' in ad:
-                rc, ac = int(ad.split(',')[0]), int(ad.split(',')[1])
+                d = ad.split(',')
+                rc = int(d[0]) if d[0] != '.' else 0
+                ac = int(d[1]) if d[1] != '.' else 0
             else:
                 rc, ac = int(ad), 0
-        except (ValueError, IndexError):
-            rc = ac = 0
-        if rc == 0 and ac == 0:
-            genotypes.append(('./.', 0, 0))
+        except ValueError:
             continue
-        genotypes.append((gt, rc, ac))
-    return chrom, pos, ref, alt, genotypes
-
-
-def calc_hom_counts(genotypes, min_ratio=5):
-    """
-    Count strict homozygotes (mirrors calculate_pi.py criterion).
-
-    Returns (ref_hom, alt_hom).
-    """
-    ref_hom = alt_hom = 0
-    for gt, rc, ac in genotypes:
-        if gt == '0/0' and rc > min_ratio * ac:
+        if rc == 0 and ac == 0:
+            continue
+        gt = p[gi]
+        if gt in ('0/0', '0|0') and rc > MIN_HOM_RATIO * ac:
             ref_hom += 1
-        elif gt == '1/1' and ac > min_ratio * rc:
+        elif gt in ('1/1', '1|1') and ac > MIN_HOM_RATIO * rc:
             alt_hom += 1
     return ref_hom, alt_hom
 
 
-# ---------------------------------------------------------------------------
-# Per-gene accumulator
-# ---------------------------------------------------------------------------
-
-class GeneStats:
-    __slots__ = ('n_sites', 'C_freq_sum', 'C_pi_sum', 'G_freq_sum', 'G_pi_sum')
-
-    def __init__(self):
-        self.n_sites    = 0
-        self.C_freq_sum = 0.0
-        self.C_pi_sum   = 0.0
-        self.G_freq_sum = 0.0
-        self.G_pi_sum   = 0.0
+def add_system(rec, sfs, gene_id, system, k, n, i_freq, i_pi, i_seg, i_fix):
+    rec[i_freq] += k / n
+    if 0 < k < n:
+        rec[i_pi] += 2.0 * k * (n - k) / (n * (n - 1.0))
+        rec[i_seg] += 1
+        sfs[(gene_id, system, n, k)] += 1
+    elif k == n:
+        rec[i_fix] += 1
 
 
-# Worker globals for multiprocessing mode
-WORKER_INTERVALS = None
-WORKER_GENE_TO_STRAND = None
-WORKER_TARGET_CHROM = None
+def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
+                 target_chrom=None):
+    if line.startswith('#'):
+        return
+    f = line.split('\t', 5)
+    if len(f) < 6:
+        return
+    chrom = f[0]
+    if target_chrom and chrom != target_chrom:
+        return
+    cd = intervals.get(chrom)
+    if cd is None:
+        return
+    try:
+        pos = int(f[1])
+    except ValueError:
+        return
+    gene_id = find_gene(cd, pos)
+    if gene_id is None:
+        return
+    tally['intronic_lines'] += 1
 
-
-def worker_init(intervals, gene_to_strand, target_chrom):
-    global WORKER_INTERVALS, WORKER_GENE_TO_STRAND, WORKER_TARGET_CHROM
-    WORKER_INTERVALS = intervals
-    WORKER_GENE_TO_STRAND = gene_to_strand
-    WORKER_TARGET_CHROM = target_chrom
-
-
-def add_site_to_stats(stats, gene_id, ref, alt, genotypes):
-    if gene_id not in stats:
-        stats[gene_id] = [0, 0.0, 0.0, 0.0, 0.0]
-    rec = stats[gene_id]
-    rec[0] += 1
-
-    # ---- invariant site ----------------------------------------
-    if alt == '.':
-        if ref == 'C':
-            rec[1] += 1.0
-        elif ref == 'G':
-            rec[3] += 1.0
-        # A/T sites contribute 0.0 to both sums (implicit)
+    ref, alt = f[3].upper(), f[4].upper()
+    invariant = alt in INVARIANT_ALTS
+    if ref not in BASES or (not invariant and alt not in BASES):
+        tally['skip_nonsnp'] += 1                    # indel, multi-allelic, N
         return
 
-    # ---- variant site ------------------------------------------
-    ref_hom, alt_hom = calc_hom_counts(genotypes)
-    nx = ref_hom + alt_hom
-    is_poly = nx >= 2 and min(ref_hom, alt_hom) > 0
+    rest = f[5].rstrip('\n').split('\t')             # QUAL FILTER INFO FORMAT samples...
+    if len(rest) < 5:
+        tally['skip_format'] += 1
+        return
+    counts = strict_homozygote_counts(rest[3], rest[4:])
+    if counts is None:
+        tally['skip_format'] += 1
+        return
+    ref_hom, alt_hom = counts
+    if invariant:
+        alt_hom = 0
+    n = ref_hom + alt_hom
+    if n < min_called:
+        tally['skip_lowcov'] += 1
+        return
 
-    if is_poly:
-        # shared pi formula: 2*nx*p*(1-p)/(nx-1)
-        p_ref = ref_hom / nx
-        pi_val = 2.0 * nx * p_ref * (1.0 - p_ref) / (nx - 1.0)
-    else:
-        pi_val = 0.0
+    if gene_strand.get(gene_id, '+') == '-':         # transcript orientation
+        ref = COMPLEMENT[ref]
+        if not invariant:
+            alt = COMPLEMENT[alt]
 
-    # C system: C is preferred (vs non-C)
-    if ref == 'C':
-        if is_poly:
-            q_C = p_ref            # C allele frequency = ref_hom/nx
-            rec[2] += pi_val
-        else:
-            q_C = 1.0 if ref_hom > 0 else 0.0
-        rec[1] += q_C
-    elif alt == 'C':
-        if is_poly:
-            q_C = 1.0 - p_ref      # C allele frequency = alt_hom/nx
-            rec[2] += pi_val
-        else:
-            q_C = 1.0              # fixed for alt C allele
-        rec[1] += q_C
+    rec = stats.get(gene_id)
+    if rec is None:
+        rec = stats[gene_id] = [0] * N_FIELDS
+    rec[N_SITES] += 1
+    tally['used'] += 1
+    if invariant:
+        tally['used_invariant'] += 1
 
-    # G system: G is preferred (vs non-G)
-    if ref == 'G':
-        if is_poly:
-            q_G = p_ref
-            rec[4] += pi_val
-        else:
-            q_G = 1.0 if ref_hom > 0 else 0.0
-        rec[3] += q_G
-    elif alt == 'G':
-        if is_poly:
-            q_G = 1.0 - p_ref
-            rec[4] += pi_val
-        else:
-            q_G = 1.0              # fixed for alt G allele
-        rec[3] += q_G
+    def focal_count(base):
+        if ref == base:
+            return ref_hom
+        if not invariant and alt == base:
+            return alt_hom
+        return 0
+
+    add_system(rec, sfs, gene_id, 'C', focal_count('C'), n, C_FREQ, C_PI, C_SEG, C_FIX)
+    add_system(rec, sfs, gene_id, 'G', focal_count('G'), n, G_FREQ, G_PI, G_SEG, G_FIX)
 
 
-def merge_partial_stats(stats, partial_stats):
-    for gene_id, rec in partial_stats.items():
-        if gene_id not in stats:
-            gs = GeneStats()
-            stats[gene_id] = gs
-        else:
-            gs = stats[gene_id]
-        gs.n_sites    += rec[0]
-        gs.C_freq_sum += rec[1]
-        gs.C_pi_sum   += rec[2]
-        gs.G_freq_sum += rec[3]
-        gs.G_pi_sum   += rec[4]
+# ---------------------------------------------------------------------------
+# Parallel driver
+# ---------------------------------------------------------------------------
+
+WORKER = {}
+
+
+def worker_init(intervals, gene_strand, min_called, target_chrom):
+    WORKER.update(intervals=intervals, gene_strand=gene_strand,
+                  min_called=min_called, target_chrom=target_chrom)
 
 
 def process_batch(lines):
-    local_stats = {}
+    stats, sfs = {}, defaultdict(int)
+    tally = dict.fromkeys(TALLY_KEYS, 0)
     for line in lines:
-        if line.startswith('#'):
-            continue
-
-        parsed = parse_vcf_line(line)
-        if parsed is None:
-            continue
-        chrom, pos, ref, alt, genotypes = parsed
-
-        if WORKER_TARGET_CHROM and chrom != WORKER_TARGET_CHROM:
-            continue
-
-        chrom_data = WORKER_INTERVALS.get(chrom)
-        if chrom_data is None:
-            continue
-
-        gene_id = find_gene(chrom_data, pos)
-        if gene_id is None:
-            continue
-
-        if WORKER_GENE_TO_STRAND.get(gene_id, '+') == '-':
-            ref = complement_base(ref)
-            if alt != '.':
-                alt = ','.join(complement_base(a) for a in alt.split(','))
-
-        add_site_to_stats(local_stats, gene_id, ref, alt, genotypes)
-
-    return local_stats
+        process_line(line, WORKER['intervals'], WORKER['gene_strand'],
+                     WORKER['min_called'], stats, sfs, tally, WORKER['target_chrom'])
+    return stats, dict(sfs), tally
 
 
-# ---------------------------------------------------------------------------
-# Main processing
-# ---------------------------------------------------------------------------
+def merge_into(acc, part):
+    stats, sfs, tally = acc
+    p_stats, p_sfs, p_tally = part
+    for g, rec in p_stats.items():
+        a = stats.get(g)
+        if a is None:
+            stats[g] = rec
+        else:
+            for i in range(N_FIELDS):
+                a[i] += rec[i]
+    for key, c in p_sfs.items():
+        sfs[key] += c
+    for k, v in p_tally.items():
+        tally[k] += v
 
-def process_vcf(vcf_file, intervals, gene_to_strand, target_chrom=None,
+
+def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
                 buffer_bytes=16 * 1024 * 1024, workers=1, batch_size=20000):
-    """
-    Stream VCF, accumulate two-allele stats at intronic sites.
-
-    For each site that falls in a trimmed intron:
-      - Invariant (alt == '.'): C/G frequency = 1.0 if REF == 'C'/'G', else 0.0
-      - Variant: compute ref_hom / alt_hom; if both > 0 it is polymorphic.
-        The C allele is REF when REF=='C', else ALT when ALT=='C', else absent.
-        Likewise for G.  A C/G polymorphic site contributes to BOTH systems.
-
-    Returns dict of gene_id -> GeneStats.
-    """
-    stats = {}
+    acc = ({}, defaultdict(int), dict.fromkeys(TALLY_KEYS, 0))
     line_count = 0
 
     if workers <= 1:
-        with open(vcf_file, buffering=buffer_bytes) as fh:
-            for line in fh:
-                if line.startswith('#'):
-                    continue
-                line_count += 1
-                if line_count % 1_000_000 == 0:
-                    print(f"  {line_count:,} sites processed...", file=sys.stderr)
-
-                parsed = parse_vcf_line(line)
-                if parsed is None:
-                    continue
-                chrom, pos, ref, alt, genotypes = parsed
-
-                if target_chrom and chrom != target_chrom:
-                    continue
-
-                chrom_data = intervals.get(chrom)
-                if chrom_data is None:
-                    continue
-
-                gene_id = find_gene(chrom_data, pos)
-                if gene_id is None:
-                    continue
-
-                if gene_to_strand.get(gene_id, '+') == '-':
-                    ref = complement_base(ref)
-                    if alt != '.':
-                        alt = ','.join(complement_base(a) for a in alt.split(','))
-
-                partial = {}
-                add_site_to_stats(partial, gene_id, ref, alt, genotypes)
-                merge_partial_stats(stats, partial)
-
-        print(f"  Total VCF sites read: {line_count:,}", file=sys.stderr)
-        return stats
-
-    print(f"  Parallel mode enabled: workers={workers}, batch_size={batch_size}", file=sys.stderr)
-
-    with multiprocessing.Pool(processes=workers,
-                              initializer=worker_init,
-                              initargs=(intervals, gene_to_strand, target_chrom)) as pool:
-        pending = []
+        worker_init(intervals, gene_strand, min_called, target_chrom)
         batch = []
         with open(vcf_file, buffering=buffer_bytes) as fh:
             for line in fh:
                 if line.startswith('#'):
                     continue
                 line_count += 1
-                if line_count % 1_000_000 == 0:
-                    print(f"  {line_count:,} sites processed...", file=sys.stderr)
+                batch.append(line)
+                if len(batch) >= batch_size:
+                    merge_into(acc, process_batch(batch))
+                    batch = []
+                if line_count % 10_000_000 == 0:
+                    print(f"  {line_count:,} lines read...", file=sys.stderr)
+            if batch:
+                merge_into(acc, process_batch(batch))
+        return acc, line_count
 
+    print(f"  Parallel mode: workers={workers}, batch_size={batch_size}", file=sys.stderr)
+    with multiprocessing.Pool(processes=workers, initializer=worker_init,
+                              initargs=(intervals, gene_strand, min_called,
+                                        target_chrom)) as pool:
+        pending, batch = [], []
+        with open(vcf_file, buffering=buffer_bytes) as fh:
+            for line in fh:
+                if line.startswith('#'):
+                    continue
+                line_count += 1
                 batch.append(line)
                 if len(batch) >= batch_size:
                     pending.append(pool.apply_async(process_batch, (batch,)))
                     batch = []
-
-                    # Apply light backpressure to bound memory during long runs
-                    if len(pending) >= workers * 8:
-                        drain_n = workers * 4
-                        for _ in range(drain_n):
-                            merge_partial_stats(stats, pending.pop(0).get())
-
+                    if len(pending) >= workers * 8:          # bound memory
+                        for _ in range(workers * 4):
+                            merge_into(acc, pending.pop(0).get())
+                if line_count % 10_000_000 == 0:
+                    print(f"  {line_count:,} lines read...", file=sys.stderr)
             if batch:
                 pending.append(pool.apply_async(process_batch, (batch,)))
-
         for job in pending:
-            merge_partial_stats(stats, job.get())
-
-    print(f"  Total VCF sites read: {line_count:,}", file=sys.stderr)
-    return stats
+            merge_into(acc, job.get())
+    return acc, line_count
 
 
-def write_output(stats, output_path, buffer_bytes=16 * 1024 * 1024):
-    with open(output_path, 'w', buffering=buffer_bytes) as out:
-        out.write("Gene,n_sites,q_pref_C,pi_2allele_C,q_pref_G,pi_2allele_G\n")
-        for gene_id in sorted(stats):
-            gs = stats[gene_id]
-            n = gs.n_sites
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def write_gene_table(stats, path, buffer_bytes):
+    with open(path, 'w', buffering=buffer_bytes) as out:
+        out.write("Gene,n_sites,q_pref_C,pi_2allele_C,q_pref_G,pi_2allele_G,"
+                  "n_seg_C,n_fixed_C,n_seg_G,n_fixed_G\n")
+        for g in sorted(stats):
+            r = stats[g]
+            n = r[N_SITES]
             if n == 0:
                 continue
-            q_C  = gs.C_freq_sum / n
-            pi_C = gs.C_pi_sum   / n
-            q_G  = gs.G_freq_sum / n
-            pi_G = gs.G_pi_sum   / n
-            out.write(f"{gene_id},{n},{q_C:.8f},{pi_C:.8f},{q_G:.8f},{pi_G:.8f}\n")
+            out.write(f"{g},{n},{r[C_FREQ] / n:.8f},{r[C_PI] / n:.8f},"
+                      f"{r[G_FREQ] / n:.8f},{r[G_PI] / n:.8f},"
+                      f"{r[C_SEG]},{r[C_FIX]},{r[G_SEG]},{r[G_FIX]}\n")
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+def write_sfs(sfs, path, buffer_bytes):
+    with open(path, 'w', buffering=buffer_bytes) as out:
+        out.write("Gene,System,n,k,count\n")
+        for (g, system, n, k) in sorted(sfs):
+            out.write(f"{g},{system},{n},{k},{sfs[(g, system, n, k)]}\n")
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Two-allele intronic π for C and G systems (Wright UV calibration)"
-    )
-    parser.add_argument('vcf_file',    help="VCF with invariant+variant sites")
-    parser.add_argument('gff3_file',   help="Genome annotation (GFF3)")
-    parser.add_argument('output',      help="Output CSV path")
-    parser.add_argument('--trim-bp',   type=int, default=30,
-                        help="Bases trimmed at each splice junction (default: 30)")
-    parser.add_argument('--min-width', type=int, default=86,
-                        help="Minimum trimmed intron width in bp (default: 86)")
-    parser.add_argument('--chrom',     default=None,
-                        help="Restrict to this chromosome (default: all)")
-    parser.add_argument('--buffer-mb', type=int, default=16,
-                        help="Buffered I/O size in MB for GFF/VCF/CSV (default: 16)")
-    parser.add_argument('--workers',   type=int, default=1,
-                        help="Worker processes for parallel VCF batches (default: 1)")
-    parser.add_argument('--batch-size', type=int, default=20000,
-                        help="VCF lines per worker batch in parallel mode (default: 20000)")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(
+        description="Intronic two-allele statistics and per-gene SFS (C and G systems)")
+    ap.add_argument('vcf_file', help="ALL-SITES VCF (invariant + variant); /dev/stdin to stream")
+    ap.add_argument('gff3_file', help="Genome annotation (GFF3)")
+    ap.add_argument('output', help="Per-gene CSV")
+    ap.add_argument('--sfs-out', default=None,
+                    help="Per-gene segregating-site SFS CSV (default: <output stem>_sfs_by_gene.csv)")
+    ap.add_argument('--trim-bp', type=int, default=30)
+    ap.add_argument('--min-width', type=int, default=86,
+                    help="Minimum TRIMMED intron width; original must be >= 2*trim + this")
+    ap.add_argument('--min-called', type=int, default=10,
+                    help="Minimum strict-homozygote lines for a site to count (default 10)")
+    ap.add_argument('--all-isoforms', action='store_true',
+                    help="Use every mRNA, not only the primary (longest=1) transcript")
+    ap.add_argument('--chrom', default=None, help="Restrict to one chromosome")
+    ap.add_argument('--buffer-mb', type=int, default=16)
+    ap.add_argument('--workers', type=int, default=1)
+    ap.add_argument('--batch-size', type=int, default=20000)
+    ap.add_argument('--allow-variants-only', action='store_true',
+                    help="Skip the invariant-site check (results are then NOT per-site)")
+    args = ap.parse_args()
 
     buffer_bytes = max(1, args.buffer_mb) * 1024 * 1024
+    sfs_out = args.sfs_out or re.sub(r'\.csv$', '', args.output) + '_sfs_by_gene.csv'
 
     print(f"Parsing GFF3: {args.gff3_file}", file=sys.stderr)
-    print(f"  trim_bp={args.trim_bp}, min_width={args.min_width}", file=sys.stderr)
-    print(f"  io_buffer={args.buffer_mb} MB", file=sys.stderr)
-    intervals, gene_to_strand = parse_gff3_introns(args.gff3_file,
-                                                   trim_bp=args.trim_bp,
-                                                   min_width=args.min_width,
-                                                   buffer_bytes=buffer_bytes)
-    n_ivs = sum(len(v[0]) for v in intervals.values())
-    print(f"  {n_ivs:,} trimmed intron intervals across {len(intervals)} chromosomes",
-          file=sys.stderr)
+    intervals, gene_strand, gsum = parse_gff3_introns(
+        args.gff3_file, trim_bp=args.trim_bp, min_width=args.min_width,
+        primary_only=not args.all_isoforms, buffer_bytes=buffer_bytes)
+    print(f"  {gsum['introns']:,} trimmed introns in {gsum['genes']:,} genes from "
+          f"{gsum['transcripts']:,} transcripts (primary only: {gsum['primary_only']}); "
+          f"{gsum['union_bp']:,} bp", file=sys.stderr)
 
-    print(f"Processing VCF: {args.vcf_file}", file=sys.stderr)
-    if args.chrom:
-        print(f"  Restricting to chromosome: {args.chrom}", file=sys.stderr)
-    print(f"  workers={args.workers}, batch_size={args.batch_size}", file=sys.stderr)
-    stats = process_vcf(args.vcf_file, intervals, gene_to_strand,
-                        target_chrom=args.chrom,
-                        buffer_bytes=buffer_bytes,
-                        workers=max(1, args.workers),
-                        batch_size=max(1000, args.batch_size))
-    print(f"  {len(stats):,} genes with intronic data", file=sys.stderr)
+    print(f"Processing VCF: {args.vcf_file}  (min_called = {args.min_called})", file=sys.stderr)
+    (stats, sfs, tally), n_lines = process_vcf(
+        args.vcf_file, intervals, gene_strand, args.min_called,
+        target_chrom=args.chrom, buffer_bytes=buffer_bytes,
+        workers=max(1, args.workers), batch_size=max(1000, args.batch_size))
 
-    print(f"Writing output: {args.output}", file=sys.stderr)
-    write_output(stats, args.output, buffer_bytes=buffer_bytes)
+    used = tally['used']
+    inv_share = tally['used_invariant'] / used if used else 0.0
+    n_tot = sum(r[N_SITES] for r in stats.values()) or 1
+    q_c = sum(r[C_FREQ] for r in stats.values()) / n_tot
+    q_g = sum(r[G_FREQ] for r in stats.values()) / n_tot
+    seg_c = sum(r[C_SEG] for r in stats.values())
+    print(f"  VCF data lines read:        {n_lines:,}", file=sys.stderr)
+    print(f"  intronic lines:             {tally['intronic_lines']:,}", file=sys.stderr)
+    print(f"    skipped indel/multi/N:    {tally['skip_nonsnp']:,}", file=sys.stderr)
+    print(f"    skipped FORMAT:           {tally['skip_format']:,}", file=sys.stderr)
+    print(f"    skipped < min_called:     {tally['skip_lowcov']:,}", file=sys.stderr)
+    print(f"  sites used:                 {used:,} "
+          f"({100 * used / max(1, gsum['union_bp']):.1f}% of trimmed intronic bp)", file=sys.stderr)
+    print(f"  invariant share of used:    {inv_share:.3f}", file=sys.stderr)
+    print(f"  intronic C frequency:       {q_c:.4f}   G: {q_g:.4f}   "
+          f"(expect ~0.15 and ~0.17)", file=sys.stderr)
+    print(f"  C-system segregating sites: {seg_c:,}", file=sys.stderr)
+
+    if inv_share < 0.5 and not args.allow_variants_only:
+        print("ERROR: fewer than half of the intronic sites are invariant, so this is "
+              "not an all-sites VCF (the *_ready*.vcf files have had invariant sites "
+              "removed). Nothing written. Rerun on Lines187.to.IM767v2.1.vcf.gz.",
+              file=sys.stderr)
+        sys.exit(2)
+    if not 0.10 <= q_c <= 0.22:
+        print(f"WARNING: intronic C frequency {q_c:.3f} is outside 0.10-0.22; "
+              "check the strand handling and the VCF before using this output.",
+              file=sys.stderr)
+
+    print(f"Writing {args.output} ({len(stats):,} genes) and {sfs_out}", file=sys.stderr)
+    write_gene_table(stats, args.output, buffer_bytes)
+    write_sfs(sfs, sfs_out, buffer_bytes)
     print("Done.", file=sys.stderr)
 
 

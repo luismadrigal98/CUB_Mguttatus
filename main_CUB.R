@@ -443,10 +443,12 @@ p_effects <- plot_predictions(m_interaction,
            sides = "b", alpha = 0.05, inherit.aes = FALSE) +
   # THEME & LABELS
   theme_custom() + 
-  scale_fill_viridis_d() + 
-  scale_color_viridis_d() +
+  # Two contrasting Dark2 colours (Referee 1): viridis put the broad-breadth
+  # curve in yellow, which is close to invisible on white.
+  scale_fill_brewer(palette = "Dark2", name = "Expression breadth (tissues)") + 
+  scale_color_brewer(palette = "Dark2", name = "Expression breadth (tissues)") +
   labs(y = "Predicted CDC",
-       x = "Max Expression (Log10 CPM)")
+       x = expression("Maximum expression (log"[10] * " CPM)"))
 
 ggsave("./results/GAM_Interaction_Predictions_CDC.pdf", 
        plot = p_effects, width = 10, height = 6)
@@ -1146,13 +1148,16 @@ if (file.exists(sfs_G_file) && file.exists(sfs_C_file)) {
 rm(sfs_G_file, sfs_C_file)
 
 # Branch A: estimate U, V from SFS-derived intronic neutral mutation parameters ----
-# The VCF-based two-allele approach averages Q and pi over polymorphic sites only
-# (invariant sites are absent from VCF records). This inflates both estimates:
-# the resulting conditional Q (~0.32) is far from the observed intronic C content
-# (~0.16), and pi is inflated ~5x, producing U and V that are biologically wrong.
-# The SFS fit uses the full allele-frequency spectrum at intronic sites; its
-# implied Q = V/(U+V) is consistent with observed nucleotide composition and is
-# the correct calibration source.
+# U and V come from fitting Wright's two-allele model to the pooled intronic
+# SFS (sfs_introns_C.csv, built from the ALL-SITES VCF). Its implied
+# Q = V/(U+V) matches the observed intronic C content, and it is the calibration
+# source. data/intron_2_allele.csv is used below only as an independent check of
+# pi. Until November 2026 that file had been built from the variants-only VCF
+# (*_ready*.vcf, invariant sites removed), so its "C frequency" (~0.32) was the
+# composition of variable sites and its per-site values were not per site; the
+# old validation rescaled it by a total intronic length taken from a different
+# intron definition. Regenerated with Bash_scripts/run_intronic_twostate.sh on
+# the all-sites VCF, it is per site over all intronic sites and is used as is.
 #
 # Convention in neutral_mutation_parameters.csv:
 #   alpha_X = 4N*u for X  (unpreferred->preferred, i.e., rate TOWARD C/G)
@@ -1164,8 +1169,8 @@ rm(sfs_G_file, sfs_C_file)
 # DIRECTLY. An earlier version of this block divided by 2 (treating them as
 # 2N-scaled), which left Q unchanged (V/(U+V) is scale-invariant) but halved
 # pi_neutral_theory — producing a ~2x mismatch against observed intronic pi.
-# Validated below: with the direct assignment, pi_theory matches the observed
-# unconditional intronic 2-allele pi within ~7%.
+# Checked below against the observed intronic 2-allele pi (the earlier check,
+# which rescaled the variants-only file, agreed within ~7%).
 
 neutral_params <- tryCatch(
   read.csv("results/neutral_mutation_parameters.csv"),
@@ -1201,48 +1206,30 @@ if (!is.null(neutral_params)) {
   # by comparing wright_pi(0, U, V) to the observed unconditional intronic
   # 2-allele pi (sum of polymorphic pi over total intron bp).
   intron_two_path <- "data/intron_2_allele.csv"
-  feat_pi_path    <- "data/all_chromosomes.pi_per_gene_feature.txt"
-  if (file.exists(intron_two_path) && file.exists(feat_pi_path)) {
-    two_a <- data.table::fread(intron_two_path)
-    pf_a  <- data.table::fread(feat_pi_path)
-    pf_a[, Gene_norm := gsub("^MgIM767\\.", "", Gene)]
-    pf_a[, Gene_norm := gsub("\\.v2\\.1$",   "", Gene_norm)]
-    intron_bp <- pf_a[Feature_Type == "intron" & Degeneracy == "all",
-                      .(total_intron_bp = sum(Sites)), by = Gene_norm]
-    data.table::setnames(intron_bp, "Gene_norm", "Gene")
-    cal <- merge(two_a, intron_bp, by = "Gene")
-
-    # Observed unconditional intronic pi under the 2-allele system
-    pi_C_obs_intron <- sum(cal$pi_2allele_C * cal$n_sites) /
-                       sum(cal$total_intron_bp)
-    pi_G_obs_intron <- sum(cal$pi_2allele_G * cal$n_sites) /
-                       sum(cal$total_intron_bp)
-
-    # Theoretical values from current (post-fix) U, V
-    Q_theory_C  <- V_intron / (U_intron + V_intron)
+  two_a <- if (file.exists(intron_two_path)) data.table::fread(intron_two_path) else NULL
+  if (!is.null(two_a) && check_intron_two_allele(two_a, Q_implied_C)) {
+    # Per site over all intronic sites: the corrected file counts monomorphic
+    # sites in n_sites, so no outside denominator is needed.
+    q_C_obs  <- two_a[, sum(q_pref_C * n_sites) / sum(n_sites)]
+    q_G_obs  <- two_a[, sum(q_pref_G * n_sites) / sum(n_sites)]
+    pi_C_obs <- two_a[, sum(pi_2allele_C * n_sites) / sum(n_sites)]
+    pi_G_obs <- two_a[, sum(pi_2allele_G * n_sites) / sum(n_sites)]
     pi_theory_C <- wright_pi(0, U = U_intron, V = V_intron)
     pi_theory_G <- wright_pi(0, U = beta_G,   V = alpha_G)
 
-    intron_C_freq_known <- 0.16   # documented intronic C content (project memory)
-    intron_G_freq_known <- 0.17   # documented intronic G content (project memory)
-
-    cat("\n[Branch A - validation] expectation vs observation at S = 0:\n")
-    cat(sprintf("  Q_C : theory = %.4f  | observed intron C content ~ %.2f\n",
-                Q_theory_C, intron_C_freq_known))
-    cat(sprintf("  Q_G : theory = %.4f  | observed intron G content ~ %.2f\n",
-                Q_implied_G, intron_G_freq_known))
+    cat("\n[Branch A - validation] expectation vs observation at S = 0 (",
+        format(two_a[, sum(n_sites)], big.mark = ","), " intronic sites):\n", sep = "")
+    cat(sprintf("  Q_C : theory = %.4f  | observed = %.4f\n", Q_implied_C, q_C_obs))
+    cat(sprintf("  Q_G : theory = %.4f  | observed = %.4f\n", Q_implied_G, q_G_obs))
     cat(sprintf("  pi_C: theory = %.6f | observed = %.6f  (ratio %.2fx)\n",
-                pi_theory_C, pi_C_obs_intron, pi_C_obs_intron / pi_theory_C))
+                pi_theory_C, pi_C_obs, pi_C_obs / pi_theory_C))
     cat(sprintf("  pi_G: theory = %.6f | observed = %.6f  (ratio %.2fx)\n",
-                pi_theory_G, pi_G_obs_intron, pi_G_obs_intron / pi_theory_G))
-
-    rm(two_a, pf_a, intron_bp, cal, pi_C_obs_intron, pi_G_obs_intron,
-       Q_theory_C, pi_theory_C, pi_theory_G,
-       intron_C_freq_known, intron_G_freq_known,
-       intron_two_path, feat_pi_path)
+                pi_theory_G, pi_G_obs, pi_G_obs / pi_theory_G))
+    rm(q_C_obs, q_G_obs, pi_C_obs, pi_G_obs, pi_theory_C, pi_theory_G)
   } else {
-    cat("[Branch A - validation] intron_2_allele.csv or pi_per_gene_feature.txt missing; pi validation skipped.\n")
+    cat("[Branch A - validation] skipped: needs data/intron_2_allele.csv from the all-sites VCF.\n")
   }
+  rm(two_a, intron_two_path)
 
   rm(neutral_params, get_np, alpha_C, beta_C, alpha_G, beta_G,
      Q_implied_C, Q_implied_G)
@@ -2187,13 +2174,9 @@ plot_data$Chemistry <- factor(plot_data$Chemistry,
                                          "Negatively Charged"))
 plot_data$Third_Base <- factor(plot_data$Third_Base, levels = c("A", "C", "G", "U"))
 
-# Define colors for 3rd position nucleotide
-nuc_palette <- c(
-  "A" = "#4DAF4A",  # Green
-  "C" = "#377EB8",  # Blue
-  "G" = "#FF7F00",  # Orange
-  "U" = "#E41A1C"   # Red
-)
+# Colours for the 3rd-position base: the same scheme as the codon-share figure
+# (Referee 2), from the shared helper in src/theme_custom.R.
+nuc_palette <- nucleotide_palette("RNA")
 
 # Create the plot
 p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon)) +
@@ -2204,11 +2187,9 @@ p_comparison <- ggplot(plot_data, aes(x = Species, y = Amino_Acid, label = Codon
                                "C" = "C-ending",
                                "G" = "G-ending",
                                "U" = "U-ending"),
-                    name = "3rd Position Nucleotide") +
+                    name = "Third-position base") +
   facet_grid(Chemistry ~ ., scales = "free_y", space = "free_y") +
-  labs(title = "Preferred Codon Usage Across Plant Species",
-       subtitle = "Codons colored by 3rd-position nucleotide (wobble base)",
-       x = "", y = "") +
+  labs(x = NULL, y = NULL) +
   theme_custom() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic", size = 11),
         axis.text.y = element_text(size = 10),
@@ -2473,7 +2454,7 @@ from_primary <- function(y) (y - r4[1]) / diff(r4) * diff(r0) + r0[1]
 fig7a_dat <- dplyr::bind_rows(
   pi_by_expcat |> dplyr::transmute(Exp_cat, Metric = "4-fold",
                                    y = pi_4fold, lo = pi_4fold - se_4fold, hi = pi_4fold + se_4fold),
-  pi_by_expcat |> dplyr::transmute(Exp_cat, Metric = "Non-synonymous",
+  pi_by_expcat |> dplyr::transmute(Exp_cat, Metric = "0-fold",
                                    y = to_primary(pi_0fold),
                                    lo = to_primary(pi_0fold - se_0fold),
                                    hi = to_primary(pi_0fold + se_0fold))
@@ -2483,12 +2464,15 @@ p_fig7a <- ggplot(fig7a_dat, aes(x = factor(format(Exp_cat, nsmall = 1)),
                                  y = y, colour = Metric)) +
   geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.25, linewidth = 0.5) +
   geom_point(size = 2.2) +
-  scale_colour_manual(values = c("4-fold" = "#3B7DD8", "Non-synonymous" = "#E8291C"),
-                      name = "Metric") +
+  # "0-fold", not "non-synonymous" (Referee 1): the class is every coding site at
+  # which all three alternative bases change the amino acid
+  # (miscellanea_code/describe_gene_positions_by_degeneracy.py).
+  scale_colour_manual(values = c("4-fold" = "#3B7DD8", "0-fold" = "#E8291C"),
+                      name = "Site class") +
   scale_y_continuous(
-    name     = expression("4-fold Diversity (" * pi * ")"),
+    name     = expression(pi * " (4-fold)"),
     sec.axis = sec_axis(~ from_primary(.),
-                        name = expression("Non-synonymous Diversity (" * pi * ")"))
+                        name = expression(pi * " (0-fold)"))
   ) +
   labs(x = expression("Expression level category (log"[10] * ")")) +
   theme_custom() +
@@ -2610,9 +2594,19 @@ rm(recomb_map, p_recomb); gc()
 # Referee 1's line-535 test. Codon-usage selection can only act on a segregating
 # site if its alleles differ in preference; where both segregating alleles are
 # unpreferred, selection under a single-preferred-base model is indifferent
-# between them. That class is therefore an internal negative control: if the
-# diversity elevation at high expression is caused by selection opposing
-# mutation, it must be confined to the preferred/non-preferred class.
+# between them.
+#
+# The unpreferred/unpreferred class is NOT a flat control, and the paper must not
+# call it one (Referee 2, second round, expected it to be insensitive to
+# expression). Its sites sit in the same genes as the selected ones, so they
+# inherit everything gene-level: background selection (which is why both classes
+# decline with 0-fold pi across the bulk), and whatever lifts diversity in the
+# elite genes generally (intronic pi rises there too; see 12.1h). The test is
+# therefore the CONTRAST between the classes, paired within genes, and how it
+# changes across the drift barrier. Note what the contrast cannot exclude on its
+# own: a mutational shift toward C in elite genes would also favour the
+# preferred/unpreferred class. That alternative is tested with the introns of the
+# same genes in 12.1e-12.1f, not here.
 #
 # Note the quantity that matters is pi CONTRIBUTED PER 4-FOLD SITE (segregating
 # and monomorphic alike), not heterozygosity conditional on segregating. The
@@ -2700,17 +2694,45 @@ cat(sprintf("[Partition] categories where the bands overlap but the contrast exc
             paste(partition_overlap[bands_overlap & contrast_excludes_zero]$Exp_cat,
                   collapse = ", ")))
 
+# The two classes sum to the site-weighted 4-fold pi in every category; drawing
+# that sum stops a reader taking either class for the total (Referee 2 read them
+# as "half" of panel A's pi and suspected a calculation error).
+partition_total <- data.table::as.data.table(partition_genes)[
+  Exp_cat %in% partition_bands$Exp_cat,
+  .(pi_total = sum(pi_sum_pref + pi_sum_ctrl) / sum(tot_sites)), by = Exp_cat]
+data.table::setorder(partition_total, Exp_cat)
+cat(sprintf("[Partition] both classes per 4-fold site: %.4f to %.4f across categories\n",
+            min(partition_total$pi_total), max(partition_total$pi_total)))
+
 partition_breaks <- seq(0, max(partition_bands$Exp_cat), 0.4)
-p_partition <- (
-  plot_polymorphism_partition(partition_bands) +
-    scale_x_continuous(breaks = partition_breaks)
-) / (
-  plot_partition_contrast(partition_contrast, pooled = partition_pooled) +
-    scale_x_continuous(breaks = partition_breaks)
-) + patchwork::plot_annotation(tag_levels = "A")
+p_partition_classes <- plot_polymorphism_partition(partition_bands) +
+  scale_x_continuous(breaks = partition_breaks)
+p_partition_contrast <- plot_partition_contrast(partition_contrast, pooled = partition_pooled) +
+  scale_x_continuous(breaks = partition_breaks)
+p_partition <- (p_partition_classes / p_partition_contrast) +
+  patchwork::plot_annotation(tag_levels = "A")
 
 ggsave("./results/polymorphism_partition_density.pdf", p_partition,
        width = 6.5, height = 8)
+# Separate panels for assembling the main-text figure. The contrast panel is the
+# quantity actually tested and must travel with the class panel: on its own the
+# class panel shows overlapping marginal bands, which is what Referee 2 read as
+# "overlapping error bars".
+ggsave("./results/polymorphism_partition_classes.pdf", p_partition_classes,
+       width = 6.5, height = 4.5)
+ggsave("./results/polymorphism_partition_contrast.pdf", p_partition_contrast,
+       width = 6.5, height = 4)
+# For the response letter, not the figure: the classes with their sum. Drawn in
+# the figure it compresses the two classes and hides the reversal. The sum is
+# SITE-weighted; Fig 7A's 4-fold pi is GENE-averaged (see 12.1b), so the two
+# differ by that choice (e.g. ~0.025 vs ~0.028 at category 2.0), which the
+# legends must say.
+ggsave("./results/polymorphism_partition_classes_with_total.pdf",
+       plot_polymorphism_partition(partition_bands, total = partition_total) +
+         scale_x_continuous(breaks = partition_breaks) +
+         theme(legend.box = "vertical"),
+       width = 6.5, height = 5)
+rm(p_partition_classes, p_partition_contrast)
 
 # Trough-to-peak elevation in each class.
 {
@@ -2788,7 +2810,259 @@ rm(b, k)
   rm(pd, tp, m, ct)
 }
 
-rm(polymorphism_sites, p_partition, partition_bands, partition_breaks); gc()
+rm(polymorphism_sites, p_partition, partition_bands, partition_breaks, partition_total); gc()
+
+## -----------------------------------------------------------------------------
+## 12.1e-12.1h  The introns of the same genes as the no-selection control
+## -----------------------------------------------------------------------------
+# Referee 2 (second round) proposed that the elite genes' elevated 4-fold
+# diversity reflects a different mutational input (open chromatin), and asked
+# for the SFS by class and expression. Referee 1 asked whether 4-fold diversity
+# is actually higher than it would be without codon selection. Both are answered
+# against the introns of the same genes, which share chromatin, transcription,
+# recombination, linked selection and demography with the 4-fold sites but carry
+# no codons. No outgroup or divergence data are used: the study is framed on one
+# population.
+#
+# Population inputs (cluster, before this script):
+#   Bash_scripts/run_intronic_twostate.sh <ALL-SITES vcf.gz> <gff3>
+#       data/intron_2_allele.csv data/intron_sfs_by_gene.csv
+# Without them 12.1e runs on 4-fold sites alone and 12.1g is skipped; the
+# reference-sequence composition test (12.1f) needs only the genome.
+
+# Regions. The trough here is the stretch of falling C content before the
+# crossover, kept apart from it; the partition's trough (1.8-2.2) shares its top
+# category with the post-crossover region. Elite is a subset of post-crossover,
+# which is why the bootstrap below computes each region's indices separately.
+CONTROL_REGIONS <- list(
+  bulk           = c(-Inf, PARTITION_BULK_MAX),
+  trough         = c(1.4, 2.0),
+  post_crossover = c(PARTITION_CROSSOVER, Inf),
+  elite          = c(PARTITION_ELITE_MIN, Inf)
+)
+U_ctrl <- U_gene_calib
+V_ctrl <- V_gene_calib
+
+control_meta <- data.table::as.data.table(msd_data)[
+  , .(Gene = sub("^MgIM767\\.", "", Gene_name), Mean_Log10_Exp,
+      S = S_Wright_signed, Q4 = Q_pref_base, n4 = N_4fold_sites, pi4 = pi_2allele)]
+
+# The polarisation below takes C as the preferred base of every four-fold family.
+# That is this study's result (Section 8.2); stop if a rerun changes it.
+{
+  pref4 <- data.table::as.data.table(preferred_detection$preferred)[
+    Family %in% FOURFOLD_PREFIX]
+  if (nrow(pref4) != length(FOURFOLD_PREFIX) || any(pref4$Third_base != "C"))
+    stop("[12.1e] the SFS tests assume C is preferred in all eight four-fold families; ",
+         "Section 8.2 now says otherwise: ",
+         paste(pref4$Family, pref4$Third_base, sep = "=", collapse = ", "))
+  rm(pref4)
+}
+
+intron_two_file <- "data/intron_2_allele.csv"
+intron_sfs_file <- "data/intron_sfs_by_gene.csv"
+intron_two <- if (file.exists(intron_two_file)) data.table::fread(intron_two_file) else NULL
+intron_ok  <- !is.null(intron_two) && file.exists(intron_sfs_file) &&
+  check_intron_two_allele(intron_two, Q_expected = V_ctrl / (U_ctrl + V_ctrl))
+if (!intron_ok)
+  cat("[Introns] corrected intron_2_allele.csv / intron_sfs_by_gene.csv not available:",
+      "12.1e runs without the intronic series and 12.1g is skipped.\n")
+
+# 12.1e) Preference-polarised SFS at 4-fold sites, with the introns as null ----
+#
+# Under Wright's model at compositional equilibrium a segregating preferred
+# allele is equally likely to be the rare or the common one whatever the mutation
+# rate, mutation bias or demography; only selection (or something that mimics it)
+# makes the spectrum asymmetric. The statistic is the mean frequency of the focal
+# allele among segregating sites (0.5 under neutrality), per gene-bootstrap.
+# Introns are the empirical null in the same genes.
+
+fourfold_sites <- extract_fourfold_sites("data/all_chromosomes.codon_frequencies.txt",
+                                         pref_base = "C", min_called = 50L)
+fourfold_sites <- fourfold_sites[Gene %in% control_meta$Gene]
+cat(sprintf("[SFS] %d 4-fold sites (>= 50 called lines) in %d genes; segregating biallelic: %s\n",
+            nrow(fourfold_sites), data.table::uniqueN(fourfold_sites$Gene),
+            paste(fourfold_sites[Type %in% c("C/W", "C/G", "G/W", "A/T"), .N, by = Type][
+              , paste0(Type, " ", N)], collapse = ", ")))
+
+shape_genes <- gene_shape_table(polarised_site_table(fourfold_sites), control_meta)
+shape_genes <- pool_shape_types(shape_genes, c("C/W", "C/G"), "C/any")
+if (intron_ok) {
+  shape_genes <- rbind(shape_genes,
+                       intronic_gene_shape(intron_sfs_file, control_meta, focal = "C",
+                                           min_n = 50L, type_label = "Intron C"))
+  cat(sprintf("[SFS] introns: mean C frequency among %s segregating sites = %.4f (neutral 0.5)\n",
+              format(shape_genes[Type == "Intron C", sum(n_seg)], big.mark = ","),
+              shape_genes[Type == "Intron C", sum(f_sum) / sum(n_seg)]))
+}
+# Genome-wide pooled intronic spectrum from the U,V calibration run, for reference.
+if (file.exists("./data/sfs_introns_C.csv")) {
+  ii <- data.table::fread("./data/sfs_introns_C.csv")[n >= 50 & k > 0 & k < n]
+  cat(sprintf("[SFS] pooled intronic SFS (sfs_introns_C.csv): mean C frequency among %s segregating sites = %.4f\n",
+              format(ii[, sum(count)], big.mark = ","), ii[, sum(count * k / n) / sum(count)]))
+  rm(ii)
+}
+
+shape_by_cat <- bootstrap_shape_by_category(shape_genes[Type != "C/any"], n_boot = 2000L)
+data.table::fwrite(shape_by_cat, "./results/sfs_preference_shape_by_category.csv")
+
+# Focal-allele frequency against 0.5 by region, and its change from the bulk;
+# then the paired contrasts, genes resampled jointly so gene-level factors cancel.
+sfs_contrasts <- data.table::rbindlist(c(
+  lapply(intersect(c("C/W", "C/G", "G/W", "A/T", "Intron C"), unique(shape_genes$Type)),
+         function(t) bootstrap_type_contrast(shape_genes, t, NULL, CONTROL_REGIONS)),
+  list(bootstrap_type_contrast(shape_genes, "C/W", "G/W", CONTROL_REGIONS)),
+  if (intron_ok) list(bootstrap_type_contrast(shape_genes, "C/any", "Intron C", CONTROL_REGIONS))
+))
+data.table::fwrite(sfs_contrasts, "./results/sfs_preference_contrasts.csv")
+with(sfs_contrasts, for (i in seq_along(Contrast))
+  cat(sprintf("[SFS] %-17s %-15s %5d genes  %+.4f [%+.4f, %+.4f]%s\n",
+              Contrast[i], Region[i], n_genes[i], estimate[i], lo[i], hi[i],
+              if (is.na(P_change[i])) "" else
+                sprintf("   change vs bulk %+.4f [%+.4f, %+.4f] P = %.3g",
+                        change_vs_ref[i], change_lo[i], change_hi[i], P_change[i]))))
+
+# theta_pi / theta_W by type and region (1 = neutral equilibrium). Referee 2
+# expected ~1 and no expression trend for the unpreferred/unpreferred class; a
+# fall in every class, introns included, is the signature of linked selection.
+sfs_theta_ratio <- data.table::rbindlist(lapply(names(CONTROL_REGIONS), function(r) {
+  lim <- CONTROL_REGIONS[[r]]
+  shape_genes[Exp_cat >= lim[1] & Exp_cat <= lim[2],
+              .(Region = r, n_genes = .N, theta_pi_over_w = sum(theta_pi) / sum(theta_w)),
+              by = Type]
+}))
+data.table::fwrite(sfs_theta_ratio, "./results/sfs_theta_ratio_by_region.csv")
+print(data.table::dcast(sfs_theta_ratio, Type ~ Region, value.var = "theta_pi_over_w")[
+  , lapply(.SD, function(z) if (is.numeric(z)) round(z, 3) else z)])
+
+# Shape-based S: fitted to the segregating part of the projected spectrum only,
+# so it does not use composition and is independent of S_Wright, which is
+# inverted from composition.
+# THE NULL IS NOT S = 0. With U > V the model's neutral mean preferred-allele
+# frequency among segregating sites is slightly below 0.5 (0.486 at n = 100),
+# while the introns sit at 0.4999. Symmetric introns therefore return
+# S_shape ~ 0.09, and that intronic value, per region, is the baseline the
+# 4-fold estimates are compared against.
+sfs_S_fit <- data.table::rbindlist(c(
+  lapply(c("C/W", "C/G"), function(t) {
+    M <- project_gene_sfs(fourfold_sites, target_n = 100L, types = t)
+    data.table::data.table(Type = t,
+                           fit_shape_S_by_region(M, control_meta, CONTROL_REGIONS,
+                                                 U_ctrl, V_ctrl, n_boot = 300L))
+  }),
+  if (intron_ok) list({
+    M <- project_intronic_sfs(intron_sfs_file, intron_two, target_n = 100L, focal = "C")
+    data.table::data.table(Type = "Intron C",
+                           fit_shape_S_by_region(M, control_meta, CONTROL_REGIONS,
+                                                 U_ctrl, V_ctrl, n_boot = 300L))
+  })
+))
+sfs_S_fit <- merge(sfs_S_fit, data.table::rbindlist(lapply(names(CONTROL_REGIONS), function(r) {
+  lim <- CONTROL_REGIONS[[r]]
+  x <- control_meta[round(round(Mean_Log10_Exp / 0.2) * 0.2, 1) >= lim[1] &
+                    round(round(Mean_Log10_Exp / 0.2) * 0.2, 1) <= lim[2]]
+  data.table::data.table(Region = r, S_Wright_mean = mean(x$S, na.rm = TRUE),
+                         S_Wright_median = stats::median(x$S, na.rm = TRUE))
+})), by = "Region", sort = FALSE)
+data.table::fwrite(sfs_S_fit, "./results/sfs_shape_S_by_region.csv")
+print(sfs_S_fit[, .(Type, Region, n_genes, S_shape = round(S_shape, 3),
+                    CI = sprintf("[%.3f, %.3f]", S_lo, S_hi),
+                    S_Wright_mean = round(S_Wright_mean, 3))])
+
+# 12.1f) C content of 4-fold sites against the introns of the same genes ----
+#
+# Referee 2's mechanism (open chromatin changes the mutational input of the
+# most highly expressed genes) acts on the introns of those genes too. From the
+# reference sequence alone: if mutation drove the 4-fold rise in C, intronic C
+# would rise with it.
+
+intron_ref_comp <- intronic_reference_composition(
+  gff_file     = "data/Mguttatusvar_IM767_887_v2.1.gene.gff3",
+  genome_fasta = "data/Mguttatusvar_IM767_887_v2.0.fa")
+data.table::fwrite(intron_ref_comp, "./results/intron_reference_composition_by_gene.csv")
+cat(sprintf("[Composition] %d genes with trimmed introns; genome-wide intronic A %.3f C %.3f G %.3f T %.3f\n",
+            nrow(intron_ref_comp),
+            intron_ref_comp[, sum(A) / sum(n)], intron_ref_comp[, sum(C) / sum(n)],
+            intron_ref_comp[, sum(G) / sum(n)], intron_ref_comp[, sum(T) / sum(n)]))
+
+gene_q <- control_meta[n4 >= 20, .(Gene, Q4, n4, Exp = Mean_Log10_Exp)]
+intron_comp_use <- intron_ref_comp[n >= 200]
+comp_by_cat <- composition_exon_vs_intron(gene_q, intron_comp_use)
+data.table::fwrite(comp_by_cat, "./results/C_content_4fold_vs_intron_by_category.csv")
+
+comp_changes <- data.table::rbindlist(list(
+  composition_change_between(gene_q, intron_comp_use, CONTROL_REGIONS$bulk,   CONTROL_REGIONS$elite),
+  composition_change_between(gene_q, intron_comp_use, CONTROL_REGIONS$trough, CONTROL_REGIONS$elite),
+  composition_change_between(gene_q, intron_comp_use, CONTROL_REGIONS$trough, CONTROL_REGIONS$post_crossover)
+))
+data.table::fwrite(comp_changes, "./results/C_content_4fold_vs_intron_changes.csv")
+with(comp_changes, for (i in seq_along(from))
+  cat(sprintf("[Composition] %s -> %s: 4-fold C %+.1f%% [%+.1f, %+.1f], intronic C %+.1f%% [%+.1f, %+.1f]; difference %+.1f points, P = %.3g\n",
+              from[i], to[i], 100 * change_4fold[i], 100 * change_4fold_lo[i], 100 * change_4fold_hi[i],
+              100 * change_intron[i], 100 * change_intron_lo[i], 100 * change_intron_hi[i],
+              100 * difference[i], P_difference[i])))
+{
+  cc <- merge(gene_q, intron_comp_use[, .(Gene, fC)], by = "Gene")
+  cat(sprintf("[Composition] Spearman across %d genes: rho(intronic C, expression) = %+.3f; rho(4-fold Q, intronic C) = %+.3f\n",
+              nrow(cc), stats::cor(cc$fC, cc$Exp, method = "spearman"),
+              stats::cor(cc$Q4, cc$fC, method = "spearman")))
+  rm(cc)
+}
+
+control_breaks <- seq(0, 3, 0.4)
+p_sfs_comp <- (
+  plot_preference_asymmetry(shape_by_cat,
+                            intron_table = if (intron_ok) shape_by_cat[Type == "Intron C"]) +
+    scale_x_continuous(breaks = control_breaks) + labs(tag = "A")
+) / (
+  plot_composition_exon_vs_intron(comp_by_cat) +
+    scale_x_continuous(breaks = control_breaks) + labs(tag = "B")
+)
+ggsave("./results/sfs_preference_and_intron_composition.pdf", p_sfs_comp, width = 7, height = 9)
+rm(p_sfs_comp)
+
+# 12.1g) Synonymous diversity against the no-selection counterfactual ----
+#
+# Referee 1: Fig 7C shows 4-fold pi rising with S_Wright, which is a
+# correlation, not evidence that pi is higher than it would be WITHOUT codon
+# selection. Dividing by the intronic pi of the same gene removes what the two
+# share; Wright predicts the remaining ratio rises as pi(S)/pi(S_ref) for
+# 0 < S < ~1.5 (McVean & Charlesworth 1999). Both are C-vs-other two-allele pi
+# per site over all sites.
+if (intron_ok) {
+  ratio_by_S <- exon_intron_pi_ratio_by_S(control_meta[, .(Gene, S, pi4, n4)],
+                                          intron_two, U = U_ctrl, V = V_ctrl)
+  data.table::fwrite(ratio_by_S, "./results/pi_4fold_over_intron_by_S.csv")
+  print(ratio_by_S[, .(Sbin, n_genes, mean_S = round(mean_S, 2),
+                       observed = round(observed_inflation, 3),
+                       CI = sprintf("[%.3f, %.3f]", inflation_lo, inflation_hi),
+                       Wright = round(predicted_inflation, 3))])
+  ggsave("./results/pi_4fold_over_intron_by_S.pdf",
+         plot_exon_intron_pi_ratio(ratio_by_S), width = 7, height = 5)
+  rm(ratio_by_S)
+} else {
+  cat("[12.1g] skipped: needs the corrected data/intron_2_allele.csv.\n")
+}
+
+# 12.1h) How much of the elite-gene uptick do the introns share? ----
+#
+# Total (not two-allele) pi from the all-sites feature file, each sequence
+# relative to its own bulk. Whatever the introns share is not codon-specific,
+# so the paper claims the differential, not the total uptick.
+pi_shared_uptick <- pi_intron_vs_4fold_by_category(
+  "data/all_chromosomes.pi_per_gene_feature.txt", control_meta,
+  bulk_max = PARTITION_BULK_MAX)
+data.table::fwrite(pi_shared_uptick, "./results/pi_intron_vs_4fold_by_expression_category.csv")
+print(data.table::dcast(pi_shared_uptick[Exp_cat >= 1.6], Exp_cat ~ Sequence,
+                        value.var = "rel_to_bulk")[
+  , lapply(.SD, function(z) round(z, 3))])
+
+rm(fourfold_sites, shape_genes, shape_by_cat, sfs_contrasts, sfs_theta_ratio, sfs_S_fit,
+   intron_ref_comp, intron_comp_use, gene_q, comp_by_cat, comp_changes,
+   pi_shared_uptick, control_breaks, intron_two, intron_ok, control_meta,
+   intron_two_file, intron_sfs_file, U_ctrl, V_ctrl)
+gc()
+
 
 
 rm(fig7a_dat, p_fig7a, p_fig7d, r4, r0)

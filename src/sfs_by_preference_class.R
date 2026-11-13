@@ -339,11 +339,27 @@ bootstrap_type_contrast <- function(gene_shape, type_a, type_b, regions,
 # Plots (no titles: the legend text lives in the manuscript)
 # ---------------------------------------------------------------------------
 
-plot_preference_asymmetry <- function(category_table, min_genes = 40L,
-                                      neutral = 0.5, title = NULL) {
+pool_shape_types <- function(gene_shape, types = c("C/W", "C/G"), label = "C/any") {
+  #' Per-gene sums over several site types, as one new type. C/W + C/G pooled
+  #' is the 4-fold counterpart of the intronic C vs non-C spectrum, so the two
+  #' can be contrasted gene by gene with bootstrap_type_contrast().
+  g <- gene_shape[Type %in% types,
+                  .(n_seg = sum(n_seg), f_sum = sum(f_sum),
+                    theta_pi = sum(theta_pi), theta_w = sum(theta_w)),
+                  by = .(Gene, Expr, Exp_cat)]
+  g[, Type := label]
+  data.table::setcolorder(g, names(gene_shape))
+  rbind(gene_shape, g)
+}
+
+plot_preference_asymmetry <- function(category_table, intron_table = NULL,
+                                      min_genes = 40L, neutral = 0.5, title = NULL) {
   #' Focal-allele frequency among segregating sites, by site type and
   #' expression category, with gene-bootstrap bands.
   #' @param category_table output of `bootstrap_shape_by_category()`.
+  #' @param intron_table the same for the introns of the same genes
+  #'   (intronic_gene_shape() then bootstrap_shape_by_category()); drawn in grey
+  #'   as the no-selection reference.
   #' @param min_genes categories with fewer genes for a type are dropped.
   suppressPackageStartupMessages(require(ggplot2))
   # Labelled by base pair, not by the process each class was meant to isolate:
@@ -351,18 +367,28 @@ plot_preference_asymmetry <- function(category_table, min_genes = 40L,
   # not flat, so "neither" would overstate the control.
   lab <- c("C/G" = "C vs G (focal C)", "C/W" = "C vs A/T (focal C)",
            "G/W" = "G vs A/T (focal G)", "A/T" = "A vs T (focal A)")
-  d <- data.table::as.data.table(category_table)[n_genes >= min_genes]
-  d[, Type := factor(lab[Type], levels = lab)]
+  intron_lab <- "Introns, C vs other (focal C)"
+  pal <- c(stats::setNames(RColorBrewer::brewer.pal(4, "Dark2"), lab), grey35 = "grey35")
+  names(pal)[5] <- intron_lab
+  d <- data.table::as.data.table(category_table)[Type %in% names(lab)]
+  d[, Type := lab[Type]]
+  if (!is.null(intron_table)) {
+    it <- data.table::as.data.table(intron_table)
+    it[, Type := intron_lab]
+    d <- rbind(d, it, fill = TRUE)
+  }
+  d <- d[n_genes >= min_genes]
+  d[, Type := factor(Type, levels = intersect(names(pal), unique(Type)))]
   ggplot(d, aes(Exp_cat, mean_f, colour = Type, fill = Type)) +
     geom_hline(yintercept = neutral, linetype = "dashed", colour = "grey40") +
     geom_ribbon(aes(ymin = mean_f_lo, ymax = mean_f_hi), alpha = 0.18, colour = NA) +
     geom_line(linewidth = 0.8) + geom_point(size = 1.6) +
-    scale_colour_brewer(palette = "Dark2", name = NULL) +
-    scale_fill_brewer(palette = "Dark2", name = NULL) +
-    labs(x = "Expression category (mean log10 expression)",
-         y = "Focal-allele frequency", title = title) +
+    scale_colour_manual(values = pal, name = NULL) +
+    scale_fill_manual(values = pal, name = NULL) +
+    labs(x = expression("Expression level category (log"[10] * ")"),
+         y = "Focal-allele frequency\namong segregating sites", title = title) +
     theme_custom() + theme(legend.position = "bottom") +
-    guides(colour = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+    guides(colour = guide_legend(nrow = 3), fill = guide_legend(nrow = 3))
 }
 
 composition_exon_vs_intron <- function(gene_q, intron_comp, bin_width = 0.2,
@@ -395,7 +421,7 @@ plot_composition_exon_vs_intron <- function(tab, title = NULL) {
     geom_line(linewidth = 0.8) + geom_point(size = 1.6) +
     scale_colour_brewer(palette = "Set1", name = NULL) +
     scale_fill_brewer(palette = "Set1", name = NULL) +
-    labs(x = "Expression category (mean log10 expression)",
+    labs(x = expression("Expression level category (log"[10] * ")"),
          y = "C content relative to the bulk", title = title) +
     theme_custom() + theme(legend.position = "bottom")
 }

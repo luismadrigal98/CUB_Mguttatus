@@ -317,13 +317,18 @@ diagnose_partition_overlap <- function(gene_table, n_boot = 4000L,
 }
 
 
-plot_polymorphism_partition <- function(density_table, title = NULL) {
+plot_polymorphism_partition <- function(density_table, total = NULL, title = NULL) {
   #' Diversity per 4-fold site in each preference class across the expression range
   #'
   #' If `density_table` carries `ci_low`/`ci_high` — as returned by
   #' `bootstrap_partition_density_bands()` — the intervals are drawn as ribbons.
   #' Without them the function falls back to lines and points, so the older
   #' density table still plots.
+  #'
+  #' The two classes are components: per category they sum to the site-weighted
+  #' 4-fold pi. `total` (data.table: Exp_cat, pi_total) draws that sum as a grey
+  #' line, which is what stops a reader comparing either class with the 4-fold pi
+  #' of the neighbouring panel (Referee 2 read the classes as ~half of it).
 
   suppressPackageStartupMessages({require(ggplot2); require(data.table)})
   d <- data.table::copy(data.table::as.data.table(density_table))
@@ -335,6 +340,11 @@ plot_polymorphism_partition <- function(density_table, title = NULL) {
 
   p <- ggplot(d, aes(x = Exp_cat, y = pi_per_site,
                      colour = Class, fill = Class, shape = Class))
+  if (!is.null(total))
+    p <- p + geom_line(data = data.table::as.data.table(total),
+                       aes(x = Exp_cat, y = pi_total, linetype = "both classes"),
+                       inherit.aes = FALSE, colour = "grey45", linewidth = 0.6) +
+      scale_linetype_manual(values = c("both classes" = "22"), name = NULL)
   if (all(c("ci_low", "ci_high") %in% names(d)))
     p <- p + geom_ribbon(aes(ymin = ci_low, ymax = ci_high),
                          alpha = 0.18, colour = NA)
@@ -344,7 +354,7 @@ plot_polymorphism_partition <- function(density_table, title = NULL) {
     scale_colour_manual(values = pal) +
     scale_fill_manual(values = pal) +
     labs(x = expression("Expression level category (log"[10] * ")"),
-         y = expression(pi ~ "per 4-fold site"),
+         y = expression("Contribution to " * pi * " per 4-fold site"),
          colour = NULL, fill = NULL, shape = NULL, title = title) +
     theme_custom() +
     theme(legend.position = "top")

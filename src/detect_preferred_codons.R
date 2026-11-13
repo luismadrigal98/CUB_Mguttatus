@@ -457,17 +457,27 @@ plot_codon_regimes <- function(bin_table, families = NULL, output_file = NULL,
 
   p <- ggplot2::ggplot(d, ggplot2::aes(x = Mean_expression, y = Share,
                                        colour = Third_base, group = Codon)) +
-    ggplot2::geom_line(linewidth = 0.6) +
-    ggplot2::geom_point(size = 1.3) +
+    ggplot2::geom_line(linewidth = 0.9) +
+    ggplot2::geom_point(size = 1.8) +
     ggplot2::facet_wrap(~ Family, scales = "free_y", ncol = 5) +
-    ggplot2::scale_colour_manual(values = c("A" = "#3B7DD8", "C" = "#E08214",
-                                            "G" = "#1B7837", "T" = "#B2182B"),
-                                 name = "3rd base") +
+    # Same base colours as the cross-species preferred-codon figure (Referee 2).
+    ggplot2::scale_colour_manual(values = nucleotide_palette("DNA"),
+                                 name = "Third-position base") +
     ggplot2::labs(title = title,
-                  x = expression("Mean log"[10] * " expression"),
+                  x = expression("Mean expression (log"[10] * " CPM)"),
                   y = "Share within synonymous family") +
     theme_custom() +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 0, hjust = 0.5))
+    # Larger type throughout (Referee 1): the figure is 19 small panels and is
+    # reduced to page width, so the theme defaults print at ~6 pt.
+    ggplot2::theme(axis.text.x  = ggplot2::element_text(angle = 0, hjust = 0.5, size = 13),
+                   axis.text.y  = ggplot2::element_text(size = 13),
+                   axis.title   = ggplot2::element_text(size = 18, face = "bold"),
+                   strip.text   = ggplot2::element_text(size = 15, face = "bold"),
+                   legend.text  = ggplot2::element_text(size = 15),
+                   legend.title = ggplot2::element_text(size = 15, face = "bold"),
+                   legend.key.width = ggplot2::unit(1.6, "lines")) +
+    ggplot2::guides(colour = ggplot2::guide_legend(
+      override.aes = list(linewidth = 1.4, size = 3)))
 
   if (!is.null(output_file)) {
     ggplot2::ggsave(output_file, p, width = 14, height = 11, dpi = 300)
