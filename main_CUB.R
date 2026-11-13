@@ -2834,6 +2834,12 @@ rm(polymorphism_sites, p_partition, partition_bands, partition_breaks, partition
 # crossover, kept apart from it; the partition's trough (1.8-2.2) shares its top
 # category with the post-crossover region. Elite is a subset of post-crossover,
 # which is why the bootstrap below computes each region's indices separately.
+# Every bootstrap below reseeds the generator. Save its state here and restore
+# it at the end of 12.1h, so later sections (e.g. the median_cl_boot intervals
+# in Section 14) draw exactly the random numbers they drew before these
+# sections existed.
+rng_state_controls <- get(".Random.seed", envir = .GlobalEnv)
+
 CONTROL_REGIONS <- list(
   bulk           = c(-Inf, PARTITION_BULK_MAX),
   trough         = c(1.4, 2.0),
@@ -3062,6 +3068,8 @@ rm(fourfold_sites, shape_genes, shape_by_cat, sfs_contrasts, sfs_theta_ratio, sf
    pi_shared_uptick, control_breaks, intron_two, intron_ok, control_meta,
    intron_two_file, intron_sfs_file, U_ctrl, V_ctrl)
 gc()
+assign(".Random.seed", rng_state_controls, envir = .GlobalEnv)
+rm(rng_state_controls)
 
 
 
