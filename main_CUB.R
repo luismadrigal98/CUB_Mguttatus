@@ -2270,6 +2270,17 @@ aa_trna_check <- check_aa_frequency_vs_tRNA_supply(
 # Memory cleanup: polymorphism raw data (now joined into integrated_data) ---
 rm(pi_data)
 
+# Expression regions used throughout Section 12 (12.1b-bis, 12.1c, 12.1e-h).
+# Defined here, before their first use: they used to sit in 12.1c, after
+# 12.1b-bis had already read them, which only worked in an interactive session
+# that still held them and failed on the first clean run (2026-11-14).
+# The crossover sits at 2.2, so the elite region starts at the first category
+# above it; the bulk is every category at or below the last one where the
+# unpreferred/unpreferred class is still ahead.
+PARTITION_BULK_MAX  <- 1.2
+PARTITION_ELITE_MIN <- 2.4
+PARTITION_CROSSOVER <- 2.2
+
 # 12.1) Expression-ranked 4-fold π analysis (Kelly replication) ----
 # Bin genes into groups of ~1000 ranked by Mean_Log10_Exp, calculate
 # weighted mean 4-fold nucleotide diversity within each bin.
@@ -2613,12 +2624,9 @@ rm(recomb_map, p_recomb); gc()
 # conditional measure is flat-to-declining in both classes; the elevation lives
 # in the DENSITY of segregating sites.
 
-# Region boundaries for the bulk/elite contrast. The crossover sits at 2.2, so
-# the elite region starts at the first category above it; the bulk is every
-# category at or below the last one where the control class is still ahead.
-PARTITION_BULK_MAX  <- 1.2
-PARTITION_ELITE_MIN <- 2.4
-PARTITION_CROSSOVER <- 2.2
+# Region boundaries (PARTITION_BULK_MAX, PARTITION_ELITE_MIN,
+# PARTITION_CROSSOVER) are defined at the top of Section 12: 12.1b-bis uses them
+# first.
 
 polymorphism_sites <- classify_fourfold_polymorphism(
   codon_freq_file  = "data/all_chromosomes.codon_frequencies.txt",
