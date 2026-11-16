@@ -50,6 +50,11 @@ Outputs
     q_pref_G, pi_2allele_G   the same for G
     n_seg_C, n_fixed_C       segregating sites, and sites fixed for C, in the C system
     n_seg_G, n_fixed_G       the same for G
+    pi_total      total heterozygosity per site, 2 r a / (n (n-1)) summed / n_sites
+--mask NAME=BED (repeatable): the same table again as <output stem>_<NAME>.csv,
+    restricted to the BED's positions. Used with the intronic sites aligned to an
+    outgroup (miscellanea_code/divergence_by_gene.py), so that intronic pi and
+    divergence are measured on one set of sites. All masks share the one VCF pass.
 --sfs-out (CSV), segregating sites only:
     Gene, System (C or G), n, k (count of the focal base), count
     Monomorphic sites are the per-gene columns above: fixed for the focal base
@@ -72,8 +77,8 @@ EXONIC_FEATURES = {'exon', 'CDS', 'five_prime_UTR', 'three_prime_UTR'}
 MIN_HOM_RATIO = 5
 
 # Per-gene accumulator layout (a plain list keeps pickling cheap)
-N_SITES, C_FREQ, C_PI, G_FREQ, G_PI, C_SEG, C_FIX, G_SEG, G_FIX = range(9)
-N_FIELDS = 9
+N_SITES, C_FREQ, C_PI, G_FREQ, G_PI, C_SEG, C_FIX, G_SEG, G_FIX, TOT_PI = range(10)
+N_FIELDS = 10
 
 TALLY_KEYS = ('intronic_lines', 'used', 'used_invariant', 'skip_nonsnp',
               'skip_format', 'skip_lowcov')
@@ -234,18 +239,53 @@ def strict_homozygote_counts(fmt, samples):
     return ref_hom, alt_hom
 
 
-def add_system(rec, sfs, gene_id, system, k, n, i_freq, i_pi, i_seg, i_fix):
-    rec[i_freq] += k / n
-    if 0 < k < n:
-        rec[i_pi] += 2.0 * k * (n - k) / (n * (n - 1.0))
-        rec[i_seg] += 1
-        sfs[(gene_id, system, n, k)] += 1
-    elif k == n:
-        rec[i_fix] += 1
+def add_site(rec, k_c, k_g, n, het_total):
+    """One site's contribution to a per-gene record (both two-allele systems
+    plus total heterozygosity)."""
+    rec[N_SITES] += 1
+    for k, i_freq, i_pi, i_seg, i_fix in ((k_c, C_FREQ, C_PI, C_SEG, C_FIX),
+                                         (k_g, G_FREQ, G_PI, G_SEG, G_FIX)):
+        rec[i_freq] += k / n
+        if 0 < k < n:
+            rec[i_pi] += 2.0 * k * (n - k) / (n * (n - 1.0))
+            rec[i_seg] += 1
+        elif k == n:
+            rec[i_fix] += 1
+    rec[TOT_PI] += het_total
+
+
+def load_bed_mask(path):
+    """BED (0-based half-open) -> {chrom: (starts, ends)} of merged intervals."""
+    by_chrom = defaultdict(list)
+    with open(path) as fh:
+        for ln in fh:
+            f = ln.split()
+            if len(f) >= 3 and not ln.startswith(('#', 'track', 'browser')):
+                by_chrom[f[0]].append((int(f[1]), int(f[2])))
+    out = {}
+    for chrom, iv in by_chrom.items():
+        iv.sort()
+        starts, ends = [], []
+        for s0, e0 in iv:
+            if starts and s0 <= ends[-1]:
+                ends[-1] = max(ends[-1], e0)
+            else:
+                starts.append(s0); ends.append(e0)
+        out[chrom] = (starts, ends)
+    return out
+
+
+def in_mask(mask, chrom, pos1):
+    d = mask.get(chrom)
+    if d is None:
+        return False
+    starts, ends = d
+    i = bisect.bisect_right(starts, pos1 - 1) - 1
+    return i >= 0 and pos1 - 1 < ends[i]
 
 
 def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
-                 target_chrom=None):
+                 target_chrom=None, masks=None, mstats=None):
     if line.startswith('#'):
         return
     f = line.split('\t', 5)
@@ -293,10 +333,6 @@ def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
         if not invariant:
             alt = COMPLEMENT[alt]
 
-    rec = stats.get(gene_id)
-    if rec is None:
-        rec = stats[gene_id] = [0] * N_FIELDS
-    rec[N_SITES] += 1
     tally['used'] += 1
     if invariant:
         tally['used_invariant'] += 1
@@ -308,8 +344,26 @@ def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
             return alt_hom
         return 0
 
-    add_system(rec, sfs, gene_id, 'C', focal_count('C'), n, C_FREQ, C_PI, C_SEG, C_FIX)
-    add_system(rec, sfs, gene_id, 'G', focal_count('G'), n, G_FREQ, G_PI, G_SEG, G_FIX)
+    k_c, k_g = focal_count('C'), focal_count('G')
+    het_total = 2.0 * ref_hom * alt_hom / (n * (n - 1.0))
+    rec = stats.get(gene_id)
+    if rec is None:
+        rec = stats[gene_id] = [0] * N_FIELDS
+    add_site(rec, k_c, k_g, n, het_total)
+    if 0 < k_c < n:
+        sfs[(gene_id, 'C', n, k_c)] += 1
+    if 0 < k_g < n:
+        sfs[(gene_id, 'G', n, k_g)] += 1
+
+    # Same site, counted again for every mask that contains it (e.g. the
+    # intronic positions aligned to an outgroup, so pi and d share their sites).
+    if masks:
+        for name, mask in masks.items():
+            if in_mask(mask, chrom, pos):
+                mrec = mstats[name].get(gene_id)
+                if mrec is None:
+                    mrec = mstats[name][gene_id] = [0] * N_FIELDS
+                add_site(mrec, k_c, k_g, n, het_total)
 
 
 # ---------------------------------------------------------------------------
@@ -319,23 +373,23 @@ def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
 WORKER = {}
 
 
-def worker_init(intervals, gene_strand, min_called, target_chrom):
+def worker_init(intervals, gene_strand, min_called, target_chrom, masks=None):
     WORKER.update(intervals=intervals, gene_strand=gene_strand,
-                  min_called=min_called, target_chrom=target_chrom)
+                  min_called=min_called, target_chrom=target_chrom, masks=masks or {})
 
 
 def process_batch(lines):
     stats, sfs = {}, defaultdict(int)
     tally = dict.fromkeys(TALLY_KEYS, 0)
+    mstats = {name: {} for name in WORKER['masks']}
     for line in lines:
         process_line(line, WORKER['intervals'], WORKER['gene_strand'],
-                     WORKER['min_called'], stats, sfs, tally, WORKER['target_chrom'])
-    return stats, dict(sfs), tally
+                     WORKER['min_called'], stats, sfs, tally, WORKER['target_chrom'],
+                     WORKER['masks'], mstats)
+    return stats, dict(sfs), tally, mstats
 
 
-def merge_into(acc, part):
-    stats, sfs, tally = acc
-    p_stats, p_sfs, p_tally = part
+def _merge_stats(stats, p_stats):
     for g, rec in p_stats.items():
         a = stats.get(g)
         if a is None:
@@ -343,19 +397,28 @@ def merge_into(acc, part):
         else:
             for i in range(N_FIELDS):
                 a[i] += rec[i]
+
+
+def merge_into(acc, part):
+    stats, sfs, tally, mstats = acc
+    p_stats, p_sfs, p_tally, p_mstats = part
+    _merge_stats(stats, p_stats)
     for key, c in p_sfs.items():
         sfs[key] += c
     for k, v in p_tally.items():
         tally[k] += v
+    for name, ms in p_mstats.items():
+        _merge_stats(mstats.setdefault(name, {}), ms)
 
 
 def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
-                buffer_bytes=16 * 1024 * 1024, workers=1, batch_size=20000):
-    acc = ({}, defaultdict(int), dict.fromkeys(TALLY_KEYS, 0))
+                buffer_bytes=16 * 1024 * 1024, workers=1, batch_size=20000, masks=None):
+    masks = masks or {}
+    acc = ({}, defaultdict(int), dict.fromkeys(TALLY_KEYS, 0), {name: {} for name in masks})
     line_count = 0
 
     if workers <= 1:
-        worker_init(intervals, gene_strand, min_called, target_chrom)
+        worker_init(intervals, gene_strand, min_called, target_chrom, masks)
         batch = []
         with open(vcf_file, buffering=buffer_bytes) as fh:
             for line in fh:
@@ -375,7 +438,7 @@ def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
     print(f"  Parallel mode: workers={workers}, batch_size={batch_size}", file=sys.stderr)
     with multiprocessing.Pool(processes=workers, initializer=worker_init,
                               initargs=(intervals, gene_strand, min_called,
-                                        target_chrom)) as pool:
+                                        target_chrom, masks)) as pool:
         pending, batch = [], []
         with open(vcf_file, buffering=buffer_bytes) as fh:
             for line in fh:
@@ -405,7 +468,7 @@ def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
 def write_gene_table(stats, path, buffer_bytes):
     with open(path, 'w', buffering=buffer_bytes) as out:
         out.write("Gene,n_sites,q_pref_C,pi_2allele_C,q_pref_G,pi_2allele_G,"
-                  "n_seg_C,n_fixed_C,n_seg_G,n_fixed_G\n")
+                  "n_seg_C,n_fixed_C,n_seg_G,n_fixed_G,pi_total\n")
         for g in sorted(stats):
             r = stats[g]
             n = r[N_SITES]
@@ -413,7 +476,7 @@ def write_gene_table(stats, path, buffer_bytes):
                 continue
             out.write(f"{g},{n},{r[C_FREQ] / n:.8f},{r[C_PI] / n:.8f},"
                       f"{r[G_FREQ] / n:.8f},{r[G_PI] / n:.8f},"
-                      f"{r[C_SEG]},{r[C_FIX]},{r[G_SEG]},{r[G_FIX]}\n")
+                      f"{r[C_SEG]},{r[C_FIX]},{r[G_SEG]},{r[G_FIX]},{r[TOT_PI] / n:.8f}\n")
 
 
 def write_sfs(sfs, path, buffer_bytes):
@@ -442,6 +505,10 @@ def main():
     ap.add_argument('--buffer-mb', type=int, default=16)
     ap.add_argument('--workers', type=int, default=1)
     ap.add_argument('--batch-size', type=int, default=20000)
+    ap.add_argument('--mask', action='append', default=[], metavar='NAME=BED',
+                    help="Also write <output stem>_<NAME>.csv restricted to the BED's "
+                         "positions (0-based half-open), e.g. the intronic sites aligned "
+                         "to an outgroup. Repeatable; all masks share one VCF pass.")
     ap.add_argument('--allow-variants-only', action='store_true',
                     help="Skip the invariant-site check (results are then NOT per-site)")
     args = ap.parse_args()
@@ -457,11 +524,18 @@ def main():
           f"{gsum['transcripts']:,} transcripts (primary only: {gsum['primary_only']}); "
           f"{gsum['union_bp']:,} bp", file=sys.stderr)
 
+    masks = {}
+    for spec in args.mask:
+        name, path = spec.split('=', 1)
+        masks[name] = load_bed_mask(path)
+        n_bp = sum(e - s for st, en in masks[name].values() for s, e in zip(st, en))
+        print(f"  mask {name}: {n_bp:,} bp from {path}", file=sys.stderr)
+
     print(f"Processing VCF: {args.vcf_file}  (min_called = {args.min_called})", file=sys.stderr)
-    (stats, sfs, tally), n_lines = process_vcf(
+    (stats, sfs, tally, mstats), n_lines = process_vcf(
         args.vcf_file, intervals, gene_strand, args.min_called,
         target_chrom=args.chrom, buffer_bytes=buffer_bytes,
-        workers=max(1, args.workers), batch_size=max(1000, args.batch_size))
+        workers=max(1, args.workers), batch_size=max(1000, args.batch_size), masks=masks)
 
     used = tally['used']
     inv_share = tally['used_invariant'] / used if used else 0.0
@@ -495,6 +569,12 @@ def main():
     print(f"Writing {args.output} ({len(stats):,} genes) and {sfs_out}", file=sys.stderr)
     write_gene_table(stats, args.output, buffer_bytes)
     write_sfs(sfs, sfs_out, buffer_bytes)
+    for name, ms in mstats.items():
+        mpath = re.sub(r'\.csv$', '', args.output) + f'_{name}.csv'
+        n_ms = sum(r[N_SITES] for r in ms.values())
+        print(f"Writing {mpath} ({len(ms):,} genes, {n_ms:,} sites inside mask {name})",
+              file=sys.stderr)
+        write_gene_table(ms, mpath, buffer_bytes)
     print("Done.", file=sys.stderr)
 
 

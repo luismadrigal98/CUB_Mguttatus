@@ -17,7 +17,12 @@
 #   <out.csv>      per-gene two-allele statistics (C and G systems)
 #   [sfs_out.csv]  per-gene SFS of segregating intronic sites
 #
-# Expected log lines on success: invariant share ~0.95, intronic C ~0.15, G ~0.17.
+# Expected log lines on success: invariant share ~0.82, intronic C ~0.15, G ~0.17.
+#
+# Outgroup masks (optional): MASKS="NAME=bed NAME=bed" adds one --mask per entry,
+# writing <out stem>_<NAME>.csv restricted to those positions, in the same pass.
+# For the divergence layer (main_CUB.R 12.1i) run divergence_by_gene first, then:
+#   MASKS="JUNG1=data/divergence/intron_aligned_JUNG1.bed KONZA=data/divergence/intron_aligned_KONZA.bed" sbatch ...
 
 #SBATCH --job-name=intronic_pi
 #SBATCH --partition=eeb,kelly,kucg
@@ -57,6 +62,11 @@ BATCH_SIZE=${BATCH_SIZE:-20000}
 TRIM_BP=${TRIM_BP:-30}
 MIN_WIDTH=${MIN_WIDTH:-86}
 MIN_CALLED=${MIN_CALLED:-10}
+MASK_ARGS=()
+for m in ${MASKS:-}; do
+  [[ -f "${m#*=}" ]] || { echo "ERROR: mask file not found: ${m#*=}" >&2; exit 1; }
+  MASK_ARGS+=(--mask "$m")
+done
 
 echo "Job: ${SLURM_JOB_ID:-local}"
 echo "VCF: $VCF"
@@ -65,6 +75,7 @@ echo "OUT: $OUT"
 echo "SFS_OUT: $SFS_OUT"
 echo "CPUS: $CPUS, workers: $WORKERS, buffer_mb: $BUFFER_MB, batch_size: $BATCH_SIZE"
 echo "trim_bp: $TRIM_BP, min_width: $MIN_WIDTH, min_called: $MIN_CALLED"
+echo "masks: ${MASKS:-none}"
 
 if command -v module >/dev/null 2>&1; then
   module load conda
@@ -112,7 +123,8 @@ fi
   --batch-size "$BATCH_SIZE" \
   --trim-bp "$TRIM_BP" \
   --min-width "$MIN_WIDTH" \
-  --min-called "$MIN_CALLED"
+  --min-called "$MIN_CALLED" \
+  ${MASK_ARGS[@]+"${MASK_ARGS[@]}"}
 
 echo "Finished: $(date)"
 

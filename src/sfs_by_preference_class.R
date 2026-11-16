@@ -105,17 +105,24 @@ extract_fourfold_sites <- function(codon_freq_file, pref_base = "C",
   #' @param min_called minimum called (non-NNN) chromosomes, as in the
   #'   polymorphism partition.
   #' @return data.table: Gene, Family, n, A, C, G, T, k_pref, n_alleles, Type,
-  #'   next_base (first base of the following codon, CDS orientation), pos2.
+  #'   next_base (first base of the following codon, CDS orientation), pos2, and
+  #'   pos3 (1-based genomic coordinate of the 3rd codon position, the key that
+  #'   joins these sites to the outgroup alignment in divergence_by_gene.py) and
+  #'   ref3 (the reference base there, which the join checks).
   suppressPackageStartupMessages(require(data.table))
   d <- data.table::fread(codon_freq_file,
-                         select = c("Gene", "Codon_Pos", "Ref_Codon", "Codon_Variants"),
+                         select = c("Gene", "Codon_Pos", "Ref_Codon", "Genomic_Positions",
+                                    "Codon_Variants"),
                          showProgress = FALSE)
   data.table::setorder(d, Gene, Codon_Pos)
   # Context must be taken before the 4-fold filter removes the neighbours.
   d[, next_base := data.table::shift(substr(Ref_Codon, 1L, 1L), type = "lead"), by = Gene]
   d[, Family := FOURFOLD_PREFIX[substr(Ref_Codon, 1L, 2L)]]
   d <- d[!is.na(Family)]
-  d[, `:=`(site = .I, pos2 = substr(Ref_Codon, 2L, 2L))]
+  d[, `:=`(site = .I, pos2 = substr(Ref_Codon, 2L, 2L),
+           pos3 = as.integer(sub("^.*,", "", Genomic_Positions)),
+           ref3 = substr(Ref_Codon, 3L, 3L))]
+  d[, Genomic_Positions := NULL]
 
   parts <- strsplit(d$Codon_Variants, ";", fixed = TRUE)
   long  <- data.table::data.table(site = rep(d$site, lengths(parts)),
@@ -131,7 +138,7 @@ extract_fourfold_sites <- function(codon_freq_file, pref_base = "C",
   for (b in c("A", "C", "G", "T"))
     if (!b %in% names(bc)) data.table::set(bc, j = b, value = 0L)
 
-  out <- merge(d[, .(site, Gene, Family, next_base, pos2)],
+  out <- merge(d[, .(site, Gene, Family, next_base, pos2, pos3, ref3)],
                bc[, .(site, A, C, G, T)], by = "site")
   rm(d, bc); gc()
   out[, n := A + C + G + T]

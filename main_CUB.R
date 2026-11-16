@@ -3096,6 +3096,75 @@ print(data.table::dcast(pi_shared_uptick[Exp_cat >= 1.6], Exp_cat ~ Sequence,
                         value.var = "rel_to_bulk")[
   , lapply(.SD, function(z) round(z, 3))])
 
+# 12.1i) Polymorphism over divergence: M. jungermannioides outgroup ----
+#
+# pi and d are both proportional to a site class's mutational input, so pi / d
+# is flat under ANY mutational explanation (rate or spectrum, shared with the
+# intron or confined to exons). Weak selection raises pi and lowers the
+# substitution rate, so 4-fold pi / d rises with S; introns should stay flat.
+# Linked selection lowers pi but not d, so pi / d falls, introns included.
+# Outgroup: M. jungermannioides (JUNG1, ~22% 4-fold divergence: substitutions,
+# not shared ancestral polymorphism); M. glabratus (KONZA, ~7%) as the check.
+# pi and d are always measured over the same sites (aligned 4-fold sites joined
+# by coordinate; aligned intronic sites through the mask).
+#
+# Inputs (cluster, before this script):
+#   Bash_scripts/run_divergence_by_gene.sh            -> data/divergence/*
+#   MASKS="JUNG1=data/divergence/intron_aligned_JUNG1.bed KONZA=data/divergence/intron_aligned_KONZA.bed" \
+#     Bash_scripts/run_intronic_twostate.sh ...        -> data/intron_2_allele_{JUNG1,KONZA}.csv
+div_dir   <- "data/divergence"
+div_sites <- file.path(div_dir, "fourfold_sites.tsv.gz")
+div_intr  <- file.path(div_dir, "intron_divergence_by_gene.tsv")
+if (file.exists(div_sites) && file.exists(div_intr)) {
+  div_taxa <- c("JUNG1", "KONZA")
+  div_sites_tab <- data.table::fread(div_sites)
+  print(data.table::fread(file.path(div_dir, "summary_by_chrom.tsv"))[
+    , .(aligned_4fold = sum(n_4fold_aln) / sum(n_4fold), p_4fold = sum(sub_4fold) / sum(n_4fold_aln),
+        aligned_intron = sum(n_intron_aln) / sum(n_intron), p_intron = sum(sub_intron) / sum(n_intron_aln)),
+      by = Taxon][, lapply(.SD, function(z) if (is.numeric(z)) round(z, 4) else z)])
+
+  pd_S <- list(); pd_E <- list()
+  for (tx in div_taxa) {
+    g4 <- fourfold_pi_d_by_gene(fourfold_sites, div_sites_tab, tx)
+    j  <- attr(g4, "join")
+    cat(sprintf("[12.1i] %s 4-fold: %d codon-file sites, %d joined (reference base agrees %.4f), %d aligned\n",
+                tx, j["codon_sites"], j["joined"], j["ref_match"], j["aligned"]))
+    tabs <- list("4-fold sites" = g4)
+    masked <- sprintf("data/intron_2_allele_%s.csv", tx)
+    if (file.exists(masked)) tabs[["Introns, same genes"]] <- intron_pi_d_by_gene(div_intr, masked, tx)
+    else cat(sprintf("[12.1i] %s: %s missing; introns skipped (rerun the intronic script with MASKS)\n", tx, masked))
+    for (sq in names(tabs)) {
+      pd_S[[length(pd_S) + 1]] <- data.table::data.table(
+        Outgroup = tx, Sequence = sq, pi_d_by_S(tabs[[sq]], control_meta, U = U_ctrl, V = V_ctrl, measure = "C"))
+      pd_E[[length(pd_E) + 1]] <- data.table::data.table(
+        Outgroup = tx, Sequence = sq, pi_d_by_expression(tabs[[sq]], control_meta, measure = "tot",
+                                                         bulk_max = PARTITION_BULK_MAX))
+    }
+  }
+  pd_S <- data.table::rbindlist(pd_S); pd_E <- data.table::rbindlist(pd_E)
+  data.table::fwrite(pd_S, "./results/pi_over_d_by_S.csv")
+  data.table::fwrite(pd_E, "./results/pi_over_d_by_expression.csv")
+  print(pd_S[, .(Outgroup, Sequence, Sbin, n_genes, mean_S = round(mean_S, 2),
+                 pi_d = round(pd_rel, 3), CI = sprintf("[%.3f, %.3f]", pd_lo, pd_hi),
+                 Wright = round(pred_pd, 3), d_rel = round(d_rel, 3), Wright_d = round(pred_d, 3))])
+  print(pd_E[Exp_cat >= 1.6, .(Outgroup, Sequence, Exp_cat, n_genes, pi_rel = round(pi_rel, 3),
+                               d_rel = round(d_rel, 3), pi_d = round(pd_rel, 3),
+                               CI = sprintf("[%.3f, %.3f]", pd_lo, pd_hi))])
+
+  ggsave("./results/pi_over_d_by_S.pdf",
+         plot_pi_over_d_by_S(pd_S[Outgroup == "JUNG1"]), width = 6.5, height = 5)
+  ggsave("./results/pi_over_d_by_S_with_KONZA.pdf",
+         plot_pi_over_d_by_S(pd_S[Outgroup == "JUNG1"], check = pd_S[Outgroup == "KONZA"]),
+         width = 6.5, height = 5)
+  for (w in c("pd", "d", "pi"))
+    ggsave(sprintf("./results/%s_by_expression_JUNG1.pdf", c(pd = "pi_over_d", d = "divergence", pi = "pi_aligned")[w]),
+           plot_pi_d_by_expression(pd_E[Outgroup == "JUNG1"], what = w), width = 6.5, height = 5)
+  rm(div_taxa, div_sites_tab, pd_S, pd_E, g4, j, tabs, masked, tx, sq, w)
+} else {
+  cat("[12.1i] skipped: data/divergence/ not found (run Bash_scripts/run_divergence_by_gene.sh).\n")
+}
+rm(div_dir, div_sites, div_intr)
+
 rm(fourfold_sites, shape_genes, shape_by_cat, sfs_contrasts, sfs_theta_ratio, sfs_S_fit,
    intron_ref_comp, intron_comp_use, gene_q, comp_by_cat, comp_changes,
    pi_shared_uptick, control_breaks, intron_two, intron_ok, control_meta,

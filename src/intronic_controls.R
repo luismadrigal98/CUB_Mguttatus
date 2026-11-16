@@ -275,12 +275,18 @@ exon_intron_pi_ratio_by_S <- function(wright_genes, intron_two, U, V,
   out[]
 }
 
-plot_exon_intron_pi_ratio <- function(tab, title = NULL, vs_S0 = TRUE) {
+plot_exon_intron_pi_ratio <- function(tab, title = NULL, vs_S0 = TRUE, y_max = 2) {
   #' Observed 4-fold / intronic diversity by S_Wright bin (points, gene-bootstrap
   #' intervals) against two predictions: Wright's selection model and an
   #' exon-specific mutational shift reproducing the same C content (drawn when
   #' the table carries it). The dashed line at 1 is a mutational change shared
-  #' with the intron. Log scale, because the mutational curve climbs ~4-fold.
+  #' with the intron.
+  #'
+  #' @param y_max cap on the y axis. The mutational curve climbs ~4-fold, which
+  #'   squeezes the observed-vs-selection comparison the panel exists to show, so
+  #'   by default the axis stops at 2 and the mutational curve runs off the top,
+  #'   with its final value printed where it leaves. NULL draws the whole range
+  #'   on a log axis.
   suppressPackageStartupMessages(require(ggplot2))
   d <- data.table::as.data.table(tab)
   use_S0 <- vs_S0 && "observed_vs_S0" %in% names(d) && all(is.finite(d$observed_vs_S0))
@@ -296,12 +302,12 @@ plot_exon_intron_pi_ratio <- function(tab, title = NULL, vs_S0 = TRUE) {
   lab_sel <- "Selection (Wright)"
   lab_mut <- "Mutation, exon-specific"
   pred <- d[, .(mean_S, value = get(y_sel), Model = lab_sel)]
-  if (y_mut %in% names(d) && all(is.finite(d[[y_mut]])))
-    pred <- rbind(pred, d[, .(mean_S, value = get(y_mut), Model = lab_mut)])
+  has_mut <- y_mut %in% names(d) && all(is.finite(d[[y_mut]]))
+  if (has_mut) pred <- rbind(pred, d[, .(mean_S, value = get(y_mut), Model = lab_mut)])
   pred[, Model := factor(Model, levels = c(lab_sel, lab_mut))]
-  rng <- range(c(pred$value, d[[y_lo]], d[[y_hi]]), na.rm = TRUE)
+  y_min <- min(0.8, d[[y_lo]], pred$value, na.rm = TRUE)
 
-  ggplot() +
+  p <- ggplot() +
     geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
     geom_vline(xintercept = 0, linetype = "dotted", colour = "grey65", linewidth = 0.4) +
     geom_line(data = pred, aes(mean_S, value, colour = Model, linetype = Model),
@@ -315,9 +321,6 @@ plot_exon_intron_pi_ratio <- function(tab, title = NULL, vs_S0 = TRUE) {
     scale_linetype_manual(values = stats::setNames(c("solid", "22"), c(lab_sel, lab_mut)),
                           name = NULL) +
     scale_shape_manual(values = c(Observed = 16), name = NULL) +
-    scale_y_log10(breaks = c(0.8, 1, 1.25, 1.5, 2, 3, 4),
-                  labels = function(x) format(x, drop0trailing = TRUE, trim = TRUE),
-                  limits = c(min(0.8, rng[1]), max(1.6, rng[2]))) +
     labs(x = expression(S[Wright] * " (bin mean)"), y = ylab, title = title) +
     theme_custom() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
@@ -326,6 +329,26 @@ plot_exon_intron_pi_ratio <- function(tab, title = NULL, vs_S0 = TRUE) {
           legend.key.width = grid::unit(1.6, "lines")) +
     guides(shape = guide_legend(order = 1), colour = guide_legend(order = 2),
            linetype = guide_legend(order = 2))
+
+  if (is.null(y_max)) {
+    return(p + scale_y_log10(breaks = c(0.8, 1, 1.25, 1.5, 2, 3, 4),
+                             labels = function(x) format(x, drop0trailing = TRUE, trim = TRUE)))
+  }
+  # Capped: clip with coord_cartesian (not scale limits, which would drop the
+  # off-scale points and break the line) and print where the curve ends up.
+  p <- p + scale_y_continuous(breaks = seq(0.8, y_max, 0.2)) +
+    coord_cartesian(ylim = c(y_min, y_max))
+  if (has_mut && any(d[[y_mut]] > y_max)) {
+    m <- d[order(mean_S)]
+    k <- which(m[[y_mut]] > y_max)[1]
+    x_exit <- if (k > 1) stats::approx(m[[y_mut]][(k - 1):k], m$mean_S[(k - 1):k],
+                                       xout = y_max)$y else m$mean_S[k]
+    p <- p + annotate("text", x = x_exit + 0.05, y = y_max, vjust = 1.4, hjust = 0,
+                      colour = "#D95F02", size = 3.4,
+                      label = sprintf("reaches %.1f at S = %.1f",
+                                      max(m[[y_mut]]), m$mean_S[which.max(m[[y_mut]])]))
+  }
+  p
 }
 
 # ---------------------------------------------------------------------------
