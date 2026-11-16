@@ -199,7 +199,13 @@ exon_intron_pi_ratio_by_S <- function(wright_genes, intron_two, U, V,
   #' model is right, is pi(S) / pi(S_ref) for the bin's mean S. Both sides are
   #' per site over ALL sites (monomorphic included).
   #'
-  #' @param wright_genes data.table: Gene, S (S_Wright_signed), pi4 (pi_2allele), n4.
+  #' @param wright_genes data.table: Gene, S (S_Wright_signed), pi4 (pi_2allele), n4,
+  #'   and optionally Q4 (Q_pref_base). With Q4, the table also carries the
+  #'   prediction of the MUTATIONAL alternative: an exon-specific rise in mutation
+  #'   toward C that reproduces each bin's observed C content at neutral
+  #'   equilibrium (V' = Q U / (1 - Q), U held at the intronic value), so that
+  #'   pi4 / pi_intron would rise as pi_neutral(V') / pi_neutral(V_ref). A rise in
+  #'   mutation shared with the intron predicts no change at all (ratio 1).
   #' @param intron_two the corrected intron_2_allele.csv.
   #' @param ref_bin label of the reference bin. [0, 0.25) rather than S < 0,
   #'   which holds the genes whose composition sits below the mutational
@@ -238,6 +244,13 @@ exon_intron_pi_ratio_by_S <- function(wright_genes, intron_two, U, V,
   }
 
   wpi_0 <- wpi(0)
+  # Mutational alternative (deterministic; draws no random numbers, so the
+  # bootstrap columns are unchanged by it). At S = 0 Wright's two-allele pi is
+  # exactly pi_neutral(V), so the S = 0 reference is shared with the selection curve.
+  has_Q <- "Q4" %in% names(d)
+  pi_neutral <- function(Vp) 2 * U * Vp / ((U + Vp) * (1 + U + Vp))
+  V_of_Q <- function(Q) Q * U / (1 - Q)
+  Q_of <- function(x) sum(x$Q4 * x$n4) / sum(x$n4)
   out <- data.table::rbindlist(lapply(names(bins), function(b) {
     x  <- bins[[b]]
     bs <- replicate(n_boot, ratio(x[sample.int(nrow(x), nrow(x), TRUE)]))
@@ -252,7 +265,10 @@ exon_intron_pi_ratio_by_S <- function(wright_genes, intron_two, U, V,
       observed_vs_S0 = ratio(x) / r_s0_obs,
       vs_S0_lo = stats::quantile(infl_s0, 0.025, na.rm = TRUE),
       vs_S0_hi = stats::quantile(infl_s0, 0.975, na.rm = TRUE),
-      predicted_vs_S0 = wpi(mean(x$S)) / wpi_0)
+      predicted_vs_S0 = wpi(mean(x$S)) / wpi_0,
+      Q4_bin = if (has_Q) Q_of(x) else NA_real_,
+      mutation_inflation = if (has_Q) pi_neutral(V_of_Q(Q_of(x))) / pi_neutral(V_of_Q(Q_of(ref))) else NA_real_,
+      mutation_vs_S0 = if (has_Q) pi_neutral(V_of_Q(Q_of(x))) / pi_neutral(V) else NA_real_)
   }))
   attr(out, "reference_bin") <- ref_bin
   attr(out, "ratio_S0_interp") <- r_s0_obs
@@ -260,38 +276,56 @@ exon_intron_pi_ratio_by_S <- function(wright_genes, intron_two, U, V,
 }
 
 plot_exon_intron_pi_ratio <- function(tab, title = NULL, vs_S0 = TRUE) {
-  #' Observed inflation of 4-fold over intronic diversity by S_Wright bin
-  #' (points, gene-bootstrap intervals) against Wright's prediction (line).
+  #' Observed 4-fold / intronic diversity by S_Wright bin (points, gene-bootstrap
+  #' intervals) against two predictions: Wright's selection model and an
+  #' exon-specific mutational shift reproducing the same C content (drawn when
+  #' the table carries it). The dashed line at 1 is a mutational change shared
+  #' with the intron. Log scale, because the mutational curve climbs ~4-fold.
   suppressPackageStartupMessages(require(ggplot2))
   d <- data.table::as.data.table(tab)
-  if (vs_S0 && "observed_vs_S0" %in% names(d) && all(is.finite(d$observed_vs_S0))) {
-    y_obs  <- "observed_vs_S0"
-    y_lo   <- "vs_S0_lo"
-    y_hi   <- "vs_S0_hi"
-    y_pred <- "predicted_vs_S0"
-    ylab   <- expression(pi[4 * "-fold"] / pi[intron] * ", relative to " * S == 0)
+  use_S0 <- vs_S0 && "observed_vs_S0" %in% names(d) && all(is.finite(d$observed_vs_S0))
+  if (use_S0) {
+    y_obs <- "observed_vs_S0"; y_lo <- "vs_S0_lo"; y_hi <- "vs_S0_hi"
+    y_sel <- "predicted_vs_S0"; y_mut <- "mutation_vs_S0"
+    ylab  <- expression(pi["4-fold"] / pi["intron"] * ", relative to " * S == 0)
   } else {
-    y_obs  <- "observed_inflation"
-    y_lo   <- "inflation_lo"
-    y_hi   <- "inflation_hi"
-    y_pred <- "predicted_inflation"
-    ylab   <- expression(pi[4 * "-fold"] / pi[intron] * ", relative to the reference bin")
+    y_obs <- "observed_inflation"; y_lo <- "inflation_lo"; y_hi <- "inflation_hi"
+    y_sel <- "predicted_inflation"; y_mut <- "mutation_inflation"
+    ylab  <- expression(pi["4-fold"] / pi["intron"] * ", relative to the reference bin")
   }
-  ggplot(d, aes(x = mean_S)) +
-    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey40") +
-    geom_vline(xintercept = 0, linetype = "dotted", colour = "grey60") +
-    geom_line(aes(y = .data[[y_pred]], linetype = "Wright prediction"),
-              colour = "grey20", linewidth = 0.7) +
-    geom_errorbar(aes(ymin = .data[[y_lo]], ymax = .data[[y_hi]]), width = 0.03,
-                  colour = "#2166AC", linewidth = 0.5) +
-    geom_point(aes(y = .data[[y_obs]], size = n_genes), colour = "#2166AC") +
-    scale_size_continuous(name = "Genes", range = c(1.5, 4)) +
-    scale_linetype_manual(values = c("Wright prediction" = "solid"), name = NULL) +
-    labs(x = expression("Mean " * S[Wright] * " of the bin"),
-         y = ylab,
-         title = title) +
+  lab_sel <- "Selection (Wright)"
+  lab_mut <- "Mutation, exon-specific"
+  pred <- d[, .(mean_S, value = get(y_sel), Model = lab_sel)]
+  if (y_mut %in% names(d) && all(is.finite(d[[y_mut]])))
+    pred <- rbind(pred, d[, .(mean_S, value = get(y_mut), Model = lab_mut)])
+  pred[, Model := factor(Model, levels = c(lab_sel, lab_mut))]
+  rng <- range(c(pred$value, d[[y_lo]], d[[y_hi]]), na.rm = TRUE)
+
+  ggplot() +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
+    geom_vline(xintercept = 0, linetype = "dotted", colour = "grey65", linewidth = 0.4) +
+    geom_line(data = pred, aes(mean_S, value, colour = Model, linetype = Model),
+              linewidth = 0.8) +
+    geom_errorbar(data = d, aes(x = mean_S, ymin = .data[[y_lo]], ymax = .data[[y_hi]]),
+                  width = 0.05, colour = "#3B7DD8", linewidth = 0.5) +
+    geom_point(data = d, aes(mean_S, .data[[y_obs]], shape = "Observed"),
+               colour = "#3B7DD8", size = 2.4) +
+    scale_colour_manual(values = stats::setNames(c("grey15", "#D95F02"), c(lab_sel, lab_mut)),
+                        name = NULL) +
+    scale_linetype_manual(values = stats::setNames(c("solid", "22"), c(lab_sel, lab_mut)),
+                          name = NULL) +
+    scale_shape_manual(values = c(Observed = 16), name = NULL) +
+    scale_y_log10(breaks = c(0.8, 1, 1.25, 1.5, 2, 3, 4),
+                  labels = function(x) format(x, drop0trailing = TRUE, trim = TRUE),
+                  limits = c(min(0.8, rng[1]), max(1.6, rng[2]))) +
+    labs(x = expression(S[Wright] * " (bin mean)"), y = ylab, title = title) +
     theme_custom() +
-    theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+          legend.position = "top", legend.direction = "horizontal",
+          legend.background = element_blank(), legend.key = element_blank(),
+          legend.key.width = grid::unit(1.6, "lines")) +
+    guides(shape = guide_legend(order = 1), colour = guide_legend(order = 2),
+           linetype = guide_legend(order = 2))
 }
 
 # ---------------------------------------------------------------------------

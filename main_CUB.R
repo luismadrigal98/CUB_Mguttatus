@@ -3015,6 +3015,12 @@ gene_q <- control_meta[n4 >= 20, .(Gene, Q4, n4, Exp = Mean_Log10_Exp)]
 intron_comp_use <- intron_ref_comp[n >= 200]
 comp_by_cat <- composition_exon_vs_intron(gene_q, intron_comp_use)
 data.table::fwrite(comp_by_cat, "./results/C_content_4fold_vs_intron_by_category.csv")
+# Fig 7B: standalone half-width panel for the figure assembly.
+ggsave("./results/C_content_4fold_vs_intron_by_expression.pdf",
+       plot_composition_exon_vs_intron(comp_by_cat) +
+         scale_x_continuous(breaks = seq(0, 2.6, 0.4),
+                            labels = scales::number_format(accuracy = 0.1)),
+       width = 6.5, height = 5)
 
 comp_changes <- data.table::rbindlist(list(
   composition_change_between(gene_q, intron_comp_use, CONTROL_REGIONS$bulk,   CONTROL_REGIONS$elite),
@@ -3056,7 +3062,7 @@ rm(p_sfs_comp)
 # 0 < S < ~1.5 (McVean & Charlesworth 1999). Both are C-vs-other two-allele pi
 # per site over all sites.
 if (intron_ok) {
-  ratio_by_S <- exon_intron_pi_ratio_by_S(control_meta[, .(Gene, S, pi4, n4)],
+  ratio_by_S <- exon_intron_pi_ratio_by_S(control_meta[, .(Gene, S, pi4, n4, Q4)],
                                           intron_two, U = U_ctrl, V = V_ctrl)
   data.table::fwrite(ratio_by_S, "./results/pi_4fold_over_intron_by_S.csv")
   cat(sprintf("[12.1g] Interpolated S = 0 baseline pi_4fold / pi_intron = %.4f\n",
@@ -3067,9 +3073,11 @@ if (intron_ok) {
                        Wright = round(predicted_inflation, 3),
                        obs_vs_S0 = round(observed_vs_S0, 3),
                        CI_vs_S0 = sprintf("[%.3f, %.3f]", vs_S0_lo, vs_S0_hi),
-                       Wright_vs_S0 = round(predicted_vs_S0, 3))])
+                       Wright_vs_S0 = round(predicted_vs_S0, 3),
+                       mutation_vs_S0 = round(mutation_vs_S0, 3))])
+  # Fig 7C. Half-width panel, same size as the composition panel (Fig 7B).
   ggsave("./results/pi_4fold_over_intron_by_S.pdf",
-         plot_exon_intron_pi_ratio(ratio_by_S, vs_S0 = TRUE), width = 7, height = 5)
+         plot_exon_intron_pi_ratio(ratio_by_S, vs_S0 = TRUE), width = 6.5, height = 5)
   rm(ratio_by_S)
 } else {
   cat("[12.1g] skipped: needs the corrected data/intron_2_allele.csv.\n")

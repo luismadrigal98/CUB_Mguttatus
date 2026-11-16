@@ -414,14 +414,22 @@ composition_exon_vs_intron <- function(gene_q, intron_comp, bin_width = 0.2,
 }
 
 plot_composition_exon_vs_intron <- function(tab, title = NULL) {
+  #' C content of 4-fold sites and of the introns of the same genes, each
+  #' relative to its own drift-dominated bulk, with gene-bootstrap bands.
+  #' 4-fold sites in the blue of Fig 7A; introns in the grey used for the intronic
+  #' reference elsewhere (plot_preference_asymmetry()).
   suppressPackageStartupMessages(require(ggplot2))
-  ggplot(tab, aes(Exp_cat, rel, colour = Sequence, fill = Sequence)) +
-    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey40") +
+  pal <- c("4-fold sites" = "#3B7DD8", "Introns, same genes" = "grey35")
+  ggplot(tab, aes(Exp_cat, rel, colour = Sequence, fill = Sequence, shape = Sequence)) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
     geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.18, colour = NA) +
-    geom_line(linewidth = 0.8) + geom_point(size = 1.6) +
-    scale_colour_brewer(palette = "Set1", name = NULL) +
-    scale_fill_brewer(palette = "Set1", name = NULL) +
+    geom_line(linewidth = 0.8) + geom_point(size = 2) +
+    scale_colour_manual(values = pal, name = NULL) +
+    scale_fill_manual(values = pal, name = NULL) +
+    scale_shape_manual(values = c("4-fold sites" = 16, "Introns, same genes" = 17), name = NULL) +
     labs(x = expression("Expression level category (log"[10] * ")"),
          y = "C content relative to the bulk", title = title) +
-    theme_custom() + theme(legend.position = "bottom")
+    theme_custom() +
+    theme(legend.position = "top", legend.direction = "horizontal",
+          legend.background = element_blank(), legend.key = element_blank())
 }
