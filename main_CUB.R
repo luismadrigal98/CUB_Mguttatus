@@ -2682,6 +2682,13 @@ partition_pooled <- pool_partition_contrast(partition_genes, list(
   "drift-dominated bulk" = c(-Inf, PARTITION_BULK_MAX),
   "post-crossover"       = c(PARTITION_CROSSOVER, Inf)
 ), n_boot = 50000L)
+# The trough (1.8-2.2) is quoted in the Results ("5.8% less diverse through the
+# trough") but was never computed here. Its own call, so the two regions above
+# keep their bootstrap draws; it is reported, not plotted (it shares category
+# 2.2 with the post-crossover region).
+partition_pooled <- rbind(partition_pooled,
+  pool_partition_contrast(partition_genes, list(trough = c(1.8, PARTITION_CROSSOVER)),
+                          n_boot = 50000L))
 data.table::fwrite(partition_pooled,
                    "./results/polymorphism_partition_pooled_regions.csv")
 with(partition_pooled, for (i in seq_along(region))
@@ -2715,7 +2722,8 @@ cat(sprintf("[Partition] both classes per 4-fold site: %.4f to %.4f across categ
 partition_breaks <- seq(0, max(partition_bands$Exp_cat), 0.4)
 p_partition_classes <- plot_polymorphism_partition(partition_bands) +
   scale_x_continuous(breaks = partition_breaks)
-p_partition_contrast <- plot_partition_contrast(partition_contrast, pooled = partition_pooled) +
+p_partition_contrast <- plot_partition_contrast(partition_contrast,
+                                                pooled = partition_pooled[region != "trough"]) +
   scale_x_continuous(breaks = partition_breaks)
 p_partition <- (p_partition_classes / p_partition_contrast) +
   patchwork::plot_annotation(tag_levels = "A")
@@ -2937,8 +2945,12 @@ with(sfs_contrasts, for (i in seq_along(Contrast))
                         change_vs_ref[i], change_lo[i], change_hi[i], P_change[i]))))
 
 # theta_pi / theta_W by type and region (1 = neutral equilibrium). Referee 2
-# expected ~1 and no expression trend for the unpreferred/unpreferred class; a
-# fall in every class, introns included, is the signature of linked selection.
+# expected ~1 and no expression trend for the unpreferred/unpreferred class.
+# First full run (2026-11-14): every 4-fold class falls with expression (A/T
+# 0.98 -> 0.71, C/W 0.98 -> 0.84) while the introns of the same genes stay at
+# 0.965 in every region. The rare-variant excess is specific to 4-fold sites,
+# so linked selection, which reaches the interleaved introns too, does not
+# explain it.
 sfs_theta_ratio <- data.table::rbindlist(lapply(names(CONTROL_REGIONS), function(r) {
   lim <- CONTROL_REGIONS[[r]]
   shape_genes[Exp_cat >= lim[1] & Exp_cat <= lim[2],
@@ -3810,6 +3822,10 @@ p_global_contour <- ggplot(contour_global_long, aes(x = exp_norm, y = log_len)) 
 ggsave("./results/global_gene_level_pref_freq_contour.pdf", 
        p_global_contour, width = 12, height = 6)
 cat("  Saved: ./results/global_gene_level_pref_freq_contour.pdf\n")
+
+# Create a copy of the Env for manual inspection
+
+save.image("Env")
 
 ## %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ## END OF PAPER-REPLICATION PIPELINE
