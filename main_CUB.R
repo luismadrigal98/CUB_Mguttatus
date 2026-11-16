@@ -3059,12 +3059,17 @@ if (intron_ok) {
   ratio_by_S <- exon_intron_pi_ratio_by_S(control_meta[, .(Gene, S, pi4, n4)],
                                           intron_two, U = U_ctrl, V = V_ctrl)
   data.table::fwrite(ratio_by_S, "./results/pi_4fold_over_intron_by_S.csv")
+  cat(sprintf("[12.1g] Interpolated S = 0 baseline pi_4fold / pi_intron = %.4f\n",
+              attr(ratio_by_S, "ratio_S0_interp")))
   print(ratio_by_S[, .(Sbin, n_genes, mean_S = round(mean_S, 2),
                        observed = round(observed_inflation, 3),
                        CI = sprintf("[%.3f, %.3f]", inflation_lo, inflation_hi),
-                       Wright = round(predicted_inflation, 3))])
+                       Wright = round(predicted_inflation, 3),
+                       obs_vs_S0 = round(observed_vs_S0, 3),
+                       CI_vs_S0 = sprintf("[%.3f, %.3f]", vs_S0_lo, vs_S0_hi),
+                       Wright_vs_S0 = round(predicted_vs_S0, 3))])
   ggsave("./results/pi_4fold_over_intron_by_S.pdf",
-         plot_exon_intron_pi_ratio(ratio_by_S), width = 7, height = 5)
+         plot_exon_intron_pi_ratio(ratio_by_S, vs_S0 = TRUE), width = 7, height = 5)
   rm(ratio_by_S)
 } else {
   cat("[12.1g] skipped: needs the corrected data/intron_2_allele.csv.\n")

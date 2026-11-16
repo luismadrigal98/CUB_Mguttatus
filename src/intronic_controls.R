@@ -191,7 +191,8 @@ exon_intron_pi_ratio_by_S <- function(wright_genes, intron_two, U, V,
                                       ref_bin = "[0,0.25)", min_4fold = 20L, min_intron = 200L,
                                       n_boot = 2000L, seed = 1L) {
   #' Ratio of 4-fold to intronic two-allele (C vs non-C) diversity by S_Wright
-  #' bin, relative to a reference bin, against Wright's prediction.
+  #' bin, relative to both a reference bin and the interpolated S = 0 baseline,
+  #' against Wright's prediction.
   #'
   #' The intron of the same gene removes everything the two sequences share:
   #' mutation rate, linked selection, demography. What remains, if Wright's
@@ -218,37 +219,76 @@ exon_intron_pi_ratio_by_S <- function(wright_genes, intron_two, U, V,
   stopifnot(ref_bin %in% names(bins))
   ref  <- bins[[ref_bin]]
   bs_ref <- replicate(n_boot, ratio(ref[sample.int(nrow(ref), nrow(ref), TRUE)]))
+
+  # Empirical S = 0 baseline by linear interpolation between the [-Inf, 0) and
+  # [0, 0.25) bins, bootstrapped across genes within each flanking bin.
+  neg_bin <- "[-Inf,0)"
+  has_s0_interp <- neg_bin %in% names(bins)
+  if (has_s0_interp) {
+    neg <- bins[[neg_bin]]
+    m_neg <- mean(neg$S)
+    m_pos <- mean(ref$S)
+    w_pos <- -m_neg / (m_pos - m_neg)
+    bs_neg <- replicate(n_boot, ratio(neg[sample.int(nrow(neg), nrow(neg), TRUE)]))
+    r_s0_obs <- (1 - w_pos) * ratio(neg) + w_pos * ratio(ref)
+    bs_s0 <- (1 - w_pos) * bs_neg + w_pos * bs_ref
+  } else {
+    r_s0_obs <- NA_real_
+    bs_s0 <- rep(NA_real_, n_boot)
+  }
+
+  wpi_0 <- wpi(0)
   out <- data.table::rbindlist(lapply(names(bins), function(b) {
     x  <- bins[[b]]
     bs <- replicate(n_boot, ratio(x[sample.int(nrow(x), nrow(x), TRUE)]))
     infl <- bs / bs_ref
+    infl_s0 <- bs / bs_s0
     data.table::data.table(
       Sbin = b, n_genes = nrow(x), mean_S = mean(x$S),
       ratio = ratio(x), ratio_lo = stats::quantile(bs, 0.025), ratio_hi = stats::quantile(bs, 0.975),
       observed_inflation = ratio(x) / ratio(ref),
       inflation_lo = stats::quantile(infl, 0.025), inflation_hi = stats::quantile(infl, 0.975),
-      predicted_inflation = wpi(mean(x$S)) / wpi(mean(ref$S)))
+      predicted_inflation = wpi(mean(x$S)) / wpi(mean(ref$S)),
+      observed_vs_S0 = ratio(x) / r_s0_obs,
+      vs_S0_lo = stats::quantile(infl_s0, 0.025, na.rm = TRUE),
+      vs_S0_hi = stats::quantile(infl_s0, 0.975, na.rm = TRUE),
+      predicted_vs_S0 = wpi(mean(x$S)) / wpi_0)
   }))
   attr(out, "reference_bin") <- ref_bin
+  attr(out, "ratio_S0_interp") <- r_s0_obs
   out[]
 }
 
-plot_exon_intron_pi_ratio <- function(tab, title = NULL) {
+plot_exon_intron_pi_ratio <- function(tab, title = NULL, vs_S0 = TRUE) {
   #' Observed inflation of 4-fold over intronic diversity by S_Wright bin
   #' (points, gene-bootstrap intervals) against Wright's prediction (line).
   suppressPackageStartupMessages(require(ggplot2))
   d <- data.table::as.data.table(tab)
+  if (vs_S0 && "observed_vs_S0" %in% names(d) && all(is.finite(d$observed_vs_S0))) {
+    y_obs  <- "observed_vs_S0"
+    y_lo   <- "vs_S0_lo"
+    y_hi   <- "vs_S0_hi"
+    y_pred <- "predicted_vs_S0"
+    ylab   <- expression(pi[4 * "-fold"] / pi[intron] * ", relative to " * S == 0)
+  } else {
+    y_obs  <- "observed_inflation"
+    y_lo   <- "inflation_lo"
+    y_hi   <- "inflation_hi"
+    y_pred <- "predicted_inflation"
+    ylab   <- expression(pi[4 * "-fold"] / pi[intron] * ", relative to the reference bin")
+  }
   ggplot(d, aes(x = mean_S)) +
     geom_hline(yintercept = 1, linetype = "dashed", colour = "grey40") +
-    geom_line(aes(y = predicted_inflation, linetype = "Wright prediction"),
+    geom_vline(xintercept = 0, linetype = "dotted", colour = "grey60") +
+    geom_line(aes(y = .data[[y_pred]], linetype = "Wright prediction"),
               colour = "grey20", linewidth = 0.7) +
-    geom_errorbar(aes(ymin = inflation_lo, ymax = inflation_hi), width = 0.03,
+    geom_errorbar(aes(ymin = .data[[y_lo]], ymax = .data[[y_hi]]), width = 0.03,
                   colour = "#2166AC", linewidth = 0.5) +
-    geom_point(aes(y = observed_inflation, size = n_genes), colour = "#2166AC") +
+    geom_point(aes(y = .data[[y_obs]], size = n_genes), colour = "#2166AC") +
     scale_size_continuous(name = "Genes", range = c(1.5, 4)) +
     scale_linetype_manual(values = c("Wright prediction" = "solid"), name = NULL) +
     labs(x = expression("Mean " * S[Wright] * " of the bin"),
-         y = expression(pi[4 * "-fold"] / pi[intron] * ", relative to the reference bin"),
+         y = ylab,
          title = title) +
     theme_custom() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
