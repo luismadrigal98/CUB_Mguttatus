@@ -504,3 +504,135 @@ bootstrap_partition_contrast <- function(gene_table,
                       elite_max = elite_max, n_bulk = nb, n_elite = ne,
                       n_boot = n_boot))
 }
+
+
+# ---------------------------------------------------------------------------
+# The partition by allele pair (Referee 2, second round)
+# ---------------------------------------------------------------------------
+# The two-class partition pools, as "unpreferred/unpreferred", G-vs-A/T sites
+# (~80% of that class's diversity) with A-vs-T sites. Split by pair the picture
+# changes: the jump in the top expression category is shared by every pair,
+# A/T included (and by the introns of the same genes), so it is gene-level;
+# pooled over the whole post-crossover region only C-vs-A/T rises, while
+# G-vs-A/T falls. Pairs are defined on the 3rd base of 4-fold codons
+# (extract_fourfold_sites(); biallelic sites only).
+
+.pair_types  <- c("C/W", "C/G", "G/W", "A/T")
+.pair_labels <- c("C/G" = "C vs G", "C/W" = "C vs A/T", "G/W" = "G vs A/T", "A/T" = "A vs T")
+
+pair_type_pi_by_gene <- function(fourfold_sites, types = .pair_types) {
+  #' Per gene: number of 4-fold sites (the common denominator, monomorphic
+  #' included) and the summed diversity of the biallelic sites of each pair type.
+  s <- data.table::as.data.table(fourfold_sites)[, .(Gene, Type, n, A, C, G, T)]
+  s[, pi_site := n / (n - 1) * (1 - ((A / n)^2 + (C / n)^2 + (G / n)^2 + (T / n)^2))]
+  out <- merge(s[, .(sites = .N), by = Gene],
+               data.table::dcast(s[Type %in% types, .(pi = sum(pi_site)), by = .(Gene, Type)],
+                                 Gene ~ Type, value.var = "pi", fill = 0),
+               by = "Gene", all.x = TRUE)
+  for (k in types) {
+    if (!k %in% names(out)) out[, (k) := 0]
+    data.table::set(out, which(is.na(out[[k]])), k, 0)
+  }
+  out[]
+}
+
+.pair_dens <- function(g, i, types) vapply(types, function(k) sum(g[[k]][i]) / sum(g$sites[i]), numeric(1))
+
+pair_type_trajectory <- function(gene_pi, meta, types = .pair_types, bulk_max = 1.2,
+                                 bin_width = 0.2, min_genes = 60L, n_boot = 2000L, seed = 1L) {
+  #' Each pair type's contribution to 4-fold pi per site, by expression category,
+  #' relative to the drift-dominated bulk; genes resampled within the category
+  #' and within the bulk.
+  set.seed(seed)
+  g <- merge(data.table::as.data.table(gene_pi),
+             data.table::as.data.table(meta)[, .(Gene, Exp = Mean_Log10_Exp)], by = "Gene")
+  g[, Exp_cat := round(round(Exp / bin_width) * bin_width, 1)]
+  bulk <- which(g$Exp_cat <= bulk_max)
+  b0   <- .pair_dens(g, bulk, types)
+  cats <- sort(unique(g$Exp_cat))
+  cats <- cats[vapply(cats, function(cc) sum(g$Exp_cat == cc), integer(1)) >= min_genes]
+  data.table::rbindlist(lapply(cats, function(cc) {
+    i  <- which(g$Exp_cat == cc)
+    bs <- replicate(n_boot, .pair_dens(g, i[sample.int(length(i), length(i), TRUE)], types) /
+                      .pair_dens(g, bulk[sample.int(length(bulk), length(bulk), TRUE)], types))
+    data.table::data.table(Exp_cat = cc, n_genes = length(i), Type = types,
+                           rel = .pair_dens(g, i, types) / b0,
+                           lo = apply(bs, 1, stats::quantile, 0.025),
+                           hi = apply(bs, 1, stats::quantile, 0.975))
+  }))
+}
+
+pair_type_rise <- function(gene_pi, meta, from, windows, types = .pair_types,
+                           bin_width = 0.2, n_boot = 10000L, seed = 1L) {
+  #' Rise of each pair type's diversity per 4-fold site from the `from` region
+  #' to each window, and the paired contrasts C/W minus every other pair and
+  #' G/W minus A/T. Genes are resampled within each region; the pair types are
+  #' measured on the same genes, so the contrasts are paired.
+  #' @param from c(lo, hi) on the expression category (the trough).
+  #' @param windows named list of c(lo, hi).
+  set.seed(seed)
+  g <- merge(data.table::as.data.table(gene_pi),
+             data.table::as.data.table(meta)[, .(Gene, Exp = Mean_Log10_Exp)], by = "Gene")
+  g[, Exp_cat := round(round(Exp / bin_width) * bin_width, 1)]
+  i0 <- which(g$Exp_cat >= from[1] & g$Exp_cat <= from[2])
+  contrasts <- list(c("C/W", "A/T"), c("C/W", "G/W"), c("C/W", "C/G"), c("G/W", "A/T"))
+  data.table::rbindlist(lapply(names(windows), function(wn) {
+    i1 <- which(g$Exp_cat >= windows[[wn]][1] & g$Exp_cat <= windows[[wn]][2])
+    pt <- .pair_dens(g, i1, types) / .pair_dens(g, i0, types) - 1
+    bs <- replicate(n_boot, .pair_dens(g, i1[sample.int(length(i1), length(i1), TRUE)], types) /
+                      .pair_dens(g, i0[sample.int(length(i0), length(i0), TRUE)], types) - 1)
+    rows <- data.table::data.table(
+      Window = wn, n_from = length(i0), n_window = length(i1), Quantity = types, kind = "rise",
+      estimate = pt, lo = apply(bs, 1, stats::quantile, 0.025),
+      hi = apply(bs, 1, stats::quantile, 0.975), P = NA_real_)
+    con <- data.table::rbindlist(lapply(contrasts, function(cc) {
+      d <- bs[cc[1], ] - bs[cc[2], ]
+      data.table::data.table(Window = wn, n_from = length(i0), n_window = length(i1),
+                             Quantity = paste(cc, collapse = " minus "), kind = "contrast",
+                             estimate = pt[cc[1]] - pt[cc[2]],
+                             lo = stats::quantile(d, 0.025), hi = stats::quantile(d, 0.975),
+                             P = min(1, 2 * min(mean(d <= 0), mean(d >= 0))))
+    }))
+    rbind(rows, con)
+  }))
+}
+
+plot_pair_type_trajectory <- function(traj, title = NULL) {
+  #' Contribution of each pair type to 4-fold pi, relative to the bulk.
+  suppressPackageStartupMessages(require(ggplot2))
+  pal <- stats::setNames(RColorBrewer::brewer.pal(4, "Dark2"), .pair_labels[c("C/G", "C/W", "G/W", "A/T")])
+  d <- data.table::as.data.table(traj)
+  d[, Pair := factor(.pair_labels[Type], levels = .pair_labels[.pair_types])]
+  ggplot(d, aes(Exp_cat, rel, colour = Pair, fill = Pair)) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.14, colour = NA) +
+    geom_line(linewidth = 0.8) + geom_point(size = 1.8) +
+    scale_colour_manual(values = pal, name = NULL) +
+    scale_fill_manual(values = pal, name = NULL) +
+    scale_x_continuous(breaks = seq(0, 3, 0.4), labels = scales::number_format(accuracy = 0.1)) +
+    labs(x = expression("Expression level category (log"[10] * ")"),
+         y = expression("Contribution to " * pi * " (4-fold), relative to the bulk"), title = title) +
+    theme_custom() +
+    theme(legend.position = "top", legend.direction = "horizontal",
+          legend.background = element_blank(), legend.key = element_blank())
+}
+
+plot_pair_type_rise <- function(rise, title = NULL) {
+  #' Rise of each pair type from the trough, per window, with 95% intervals.
+  suppressPackageStartupMessages(require(ggplot2))
+  pal <- stats::setNames(RColorBrewer::brewer.pal(4, "Dark2"), .pair_labels[c("C/G", "C/W", "G/W", "A/T")])
+  d <- data.table::as.data.table(rise)[kind == "rise"]
+  d[, Pair := factor(.pair_labels[Quantity], levels = .pair_labels[.pair_types])]
+  d[, Window := factor(Window, levels = unique(Window))]
+  ggplot(d, aes(Pair, 100 * estimate, colour = Pair, shape = Window)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
+    geom_pointrange(aes(ymin = 100 * lo, ymax = 100 * hi),
+                    position = position_dodge(width = 0.55), size = 0.5, linewidth = 0.7) +
+    scale_colour_manual(values = pal, guide = "none") +
+    scale_shape_manual(values = c(16, 1), name = NULL) +
+    labs(x = NULL, y = "Rise from the trough (%)", title = title) +
+    theme_custom() +
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+          legend.position = "top", legend.direction = "horizontal",
+          legend.background = element_blank(), legend.key = element_blank())
+}

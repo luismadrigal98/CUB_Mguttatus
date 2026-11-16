@@ -2995,6 +2995,43 @@ print(sfs_S_fit[, .(Type, Region, n_genes, S_shape = round(S_shape, 3),
                     CI = sprintf("[%.3f, %.3f]", S_lo, S_hi),
                     S_Wright_mean = round(S_Wright_mean, 3))])
 
+# 12.1e-bis) The partition by allele pair ----
+#
+# Referee 2 read Fig 7B's two classes as rising together. Split by the pair of
+# bases segregating at each 4-fold site: the "unpreferred/unpreferred" class is
+# ~80% G-vs-A/T by diversity; the jump in the top expression category is shared
+# by every pair, A/T included (and the introns, 12.1h), so it is gene-level; and
+# pooled over the whole post-crossover region only C-vs-A/T rises, while G-vs-A/T
+# falls. Supplementary figure (the two-class version is the paired contrast of
+# 12.1c).
+pair_pi   <- pair_type_pi_by_gene(fourfold_sites)
+pair_traj <- pair_type_trajectory(pair_pi, control_meta, bulk_max = PARTITION_BULK_MAX)
+top_cat   <- max(pair_traj$Exp_cat)
+pair_windows <- list(c(PARTITION_CROSSOVER, Inf), c(top_cat, top_cat))
+names(pair_windows) <- c(sprintf("Post-crossover (%.1f and above)", PARTITION_CROSSOVER),
+                         sprintf("Top category (%.1f)", top_cat))
+pair_rise <- pair_type_rise(pair_pi, control_meta, from = CONTROL_REGIONS$trough,
+                            windows = pair_windows)
+data.table::fwrite(pair_traj, "./results/pi_by_pair_type_by_category.csv")
+data.table::fwrite(pair_rise, "./results/pi_by_pair_type_rise.csv")
+{
+  b <- merge(pair_pi, control_meta[, .(Gene, Mean_Log10_Exp)], by = "Gene")[
+    round(round(Mean_Log10_Exp / 0.2) * 0.2, 1) <= PARTITION_BULK_MAX]
+  cat(sprintf("[Pairs] unpreferred/unpreferred diversity carried by G vs A/T in the bulk: %.1f%%\n",
+              100 * sum(b[["G/W"]]) / (sum(b[["G/W"]]) + sum(b[["A/T"]]))))
+  rm(b)
+}
+with(pair_rise, for (i in seq_along(Quantity))
+  cat(sprintf("[Pairs] %-34s %-14s %+6.1f%s [%+6.1f, %+6.1f]%s\n", Window[i], Quantity[i],
+              100 * estimate[i], if (kind[i] == "contrast") " points" else "%",
+              100 * lo[i], 100 * hi[i],
+              if (is.na(P[i])) "" else sprintf("  P = %.4f", P[i]))))
+ggsave("./results/pi_by_pair_type.pdf",
+       (plot_pair_type_trajectory(pair_traj) + labs(tag = "A")) /
+         (plot_pair_type_rise(pair_rise) + labs(tag = "B")),
+       width = 7, height = 9)
+rm(pair_pi, pair_traj, top_cat, pair_windows, pair_rise)
+
 # 12.1f) C content of 4-fold sites against the introns of the same genes ----
 #
 # Referee 2's mechanism (open chromatin changes the mutational input of the
