@@ -31,3 +31,18 @@ nucleotide_palette <- function(alphabet = c("DNA", "RNA"))
   if (alphabet == "RNA") names(pal)[4] <- "U"
   pal
 }
+
+save_figure_panel <- function(plot, name, width, height, dir = "./results/figure_panels")
+{
+  #' Save a copy of a manuscript panel under its figure label (e.g. "Fig7C_..."),
+  #' so all panels for the Inkscape assembly sit in one folder. The pipeline's
+  #' descriptive filenames stay as they are; only these copies carry figure
+  #' numbers, which change with the manuscript and are cheap to rename here.
+  #' ___________________________________________________________________________
+
+  dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+  dev <- if (capabilities("cairo")) grDevices::cairo_pdf else grDevices::pdf
+  path <- file.path(dir, paste0(name, ".pdf"))
+  ggplot2::ggsave(path, plot, width = width, height = height, device = dev)
+  invisible(path)
+}

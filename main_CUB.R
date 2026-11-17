@@ -2493,6 +2493,7 @@ p_fig7a <- ggplot(fig7a_dat, aes(x = factor(format(Exp_cat, nsmall = 1)),
 
 ggsave("./results/pi_nonsyn_vs_4fold_by_expression.pdf",
        p_fig7a, width = 9, height = 5.5)
+save_figure_panel(p_fig7a, "Fig7A_pi_0fold_4fold_by_expression", width = 9, height = 5.5)
 cat("✓ Saved: ./results/pi_nonsyn_vs_4fold_by_expression.pdf\n")
 
 # --- (b) 4-fold diversity against the Wright selection coefficient -----------
@@ -2549,6 +2550,21 @@ p_qpref <- ggplot(q_pref_by_exp,
 ggsave("./results/Q_preferred_by_expression.pdf", p_qpref, width = 6.5, height = 5)
 cat(sprintf("✓ Saved: ./results/Q_preferred_by_expression.pdf (%d categories, Q from %.3f to %.3f)\n",
             nrow(q_pref_by_exp), min(q_pref_by_exp$Q_mean), max(q_pref_by_exp$Q_mean)))
+
+# S_Wright against expression (asked for by J. Kelly). Not linear: S inherits the
+# two-regime shape of Q, so the expression axis and the S axis group genes
+# differently, which is why the selection tests in 12.1e-12.1i bin by S.
+S_by_exp <- S_wright_by_expression(msd_data, barrier = S_BARRIER)
+data.table::fwrite(S_by_exp, "./results/S_Wright_by_expression_category.csv")
+cat(sprintf("[S vs expression] Spearman rho = %+.3f over %d genes; share above the barrier %.1f%%\n",
+            attr(S_by_exp, "rho"), nrow(attr(S_by_exp, "genes")), 100 * attr(S_by_exp, "share_above")))
+print(S_by_exp[, .(Exp_cat, n_genes, mean_S = round(mean_S, 3),
+                   CI = sprintf("[%.3f, %.3f]", mean_lo, mean_hi),
+                   above_pct = round(100 * above, 1))])
+p_S_exp <- plot_S_wright_by_expression(S_by_exp, barrier = S_BARRIER)
+ggsave("./results/S_Wright_by_expression.pdf", p_S_exp, width = 7, height = 8)
+save_figure_panel(p_S_exp, "FigS_S_Wright_by_expression", width = 7, height = 8)
+rm(S_by_exp, p_S_exp)
 
 rm(p_qpref)
 
@@ -2730,6 +2746,7 @@ p_partition <- (p_partition_classes / p_partition_contrast) +
 
 ggsave("./results/polymorphism_partition_density.pdf", p_partition,
        width = 6.5, height = 8)
+save_figure_panel(p_partition, "FigS_polymorphism_partition_two_class", width = 6.5, height = 8)
 # Separate panels for assembling the main-text figure. The contrast panel is the
 # quantity actually tested and must travel with the class panel: on its own the
 # class panel shows overlapping marginal bands, which is what Referee 2 read as
@@ -3026,11 +3043,11 @@ with(pair_rise, for (i in seq_along(Quantity))
               100 * estimate[i], if (kind[i] == "contrast") " points" else "%",
               100 * lo[i], 100 * hi[i],
               if (is.na(P[i])) "" else sprintf("  P = %.4f", P[i]))))
-ggsave("./results/pi_by_pair_type.pdf",
-       (plot_pair_type_trajectory(pair_traj) + labs(tag = "A")) /
-         (plot_pair_type_rise(pair_rise) + labs(tag = "B")),
-       width = 7, height = 9)
-rm(pair_pi, pair_traj, top_cat, pair_windows, pair_rise)
+p_pairs <- (plot_pair_type_trajectory(pair_traj) + labs(tag = "A")) /
+  (plot_pair_type_rise(pair_rise) + labs(tag = "B"))
+ggsave("./results/pi_by_pair_type.pdf", p_pairs, width = 7, height = 9)
+save_figure_panel(p_pairs, "FigS_pi_by_pair_type", width = 7, height = 9)
+rm(pair_pi, pair_traj, top_cat, pair_windows, pair_rise, p_pairs)
 
 # 12.1f) C content of 4-fold sites against the introns of the same genes ----
 #
@@ -3053,11 +3070,11 @@ intron_comp_use <- intron_ref_comp[n >= 200]
 comp_by_cat <- composition_exon_vs_intron(gene_q, intron_comp_use)
 data.table::fwrite(comp_by_cat, "./results/C_content_4fold_vs_intron_by_category.csv")
 # Fig 7B: standalone half-width panel for the figure assembly.
-ggsave("./results/C_content_4fold_vs_intron_by_expression.pdf",
-       plot_composition_exon_vs_intron(comp_by_cat) +
-         scale_x_continuous(breaks = seq(0, 2.6, 0.4),
-                            labels = scales::number_format(accuracy = 0.1)),
-       width = 6.5, height = 5)
+p_fig7b <- plot_composition_exon_vs_intron(comp_by_cat) +
+  scale_x_continuous(breaks = seq(0, 2.6, 0.4), labels = scales::number_format(accuracy = 0.1))
+ggsave("./results/C_content_4fold_vs_intron_by_expression.pdf", p_fig7b, width = 6.5, height = 5)
+save_figure_panel(p_fig7b, "Fig7B_C_content_4fold_vs_intron", width = 6.5, height = 5)
+rm(p_fig7b)
 
 comp_changes <- data.table::rbindlist(list(
   composition_change_between(gene_q, intron_comp_use, CONTROL_REGIONS$bulk,   CONTROL_REGIONS$elite),
@@ -3112,9 +3129,12 @@ if (intron_ok) {
                        CI_vs_S0 = sprintf("[%.3f, %.3f]", vs_S0_lo, vs_S0_hi),
                        Wright_vs_S0 = round(predicted_vs_S0, 3),
                        mutation_vs_S0 = round(mutation_vs_S0, 3))])
-  # Fig 7C. Half-width panel, same size as the composition panel (Fig 7B).
-  ggsave("./results/pi_4fold_over_intron_by_S.pdf",
-         plot_exon_intron_pi_ratio(ratio_by_S, vs_S0 = TRUE), width = 6.5, height = 5)
+  # Supplementary since 2026-11-17: Fig 7C is now the pi/d version (12.1i),
+  # which needs no constructed mutational curve.
+  p_ratio <- plot_exon_intron_pi_ratio(ratio_by_S, vs_S0 = TRUE)
+  ggsave("./results/pi_4fold_over_intron_by_S.pdf", p_ratio, width = 6.5, height = 5)
+  save_figure_panel(p_ratio, "FigS_pi4_over_intron_by_S", width = 6.5, height = 5)
+  rm(p_ratio)
   rm(ratio_by_S)
 } else {
   cat("[12.1g] skipped: needs the corrected data/intron_2_allele.csv.\n")
@@ -3160,7 +3180,7 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
         aligned_intron = sum(n_intron_aln) / sum(n_intron), p_intron = sum(sub_intron) / sum(n_intron_aln)),
       by = Taxon][, lapply(.SD, function(z) if (is.numeric(z)) round(z, 4) else z)])
 
-  pd_S <- list(); pd_E <- list()
+  pd_S <- list(); pd_E <- list(); pd_genes <- list()
   for (tx in div_taxa) {
     g4 <- fourfold_pi_d_by_gene(fourfold_sites, div_sites_tab, tx)
     j  <- attr(g4, "join")
@@ -3170,6 +3190,7 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
     masked <- sprintf("data/intron_2_allele_%s.csv", tx)
     if (file.exists(masked)) tabs[["Introns, same genes"]] <- intron_pi_d_by_gene(div_intr, masked, tx)
     else cat(sprintf("[12.1i] %s: %s missing; introns skipped (rerun the intronic script with MASKS)\n", tx, masked))
+    pd_genes[[tx]] <- tabs
     for (sq in names(tabs)) {
       pd_S[[length(pd_S) + 1]] <- data.table::data.table(
         Outgroup = tx, Sequence = sq, pi_d_by_S(tabs[[sq]], control_meta, U = U_ctrl, V = V_ctrl, measure = "C"))
@@ -3196,7 +3217,42 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
   for (w in c("pd", "d", "pi"))
     ggsave(sprintf("./results/%s_by_expression_JUNG1.pdf", c(pd = "pi_over_d", d = "divergence", pi = "pi_aligned")[w]),
            plot_pi_d_by_expression(pd_E[Outgroup == "JUNG1"], what = w), width = 6.5, height = 5)
-  rm(div_taxa, div_sites_tab, pd_S, pd_E, g4, j, tabs, masked, tx, sq, w)
+
+  # The selection test (Fig 7C): 4-fold pi/d over intronic pi/d of the same genes,
+  # by S. 4-fold pi/d alone understates selection, because linked selection is
+  # stronger in high-S genes and lowers pi/d in both classes (intronic pi/d falls
+  # to ~0.92 at S ~ 1.2). Mutation in any form and linked selection predict 1.
+  # S is not monotone with expression (rho ~ -0.12; it dips through categories
+  # 1.4-2.2), so the test is repeated within expression strata.
+  dbl_strata <- list("All genes" = c(-Inf, Inf),
+                     "Expression below 0.6" = c(-Inf, 0.4),
+                     "Bulk (0.6 to 1.2)" = c(0.6, PARTITION_BULK_MAX),
+                     "High (1.4 and above)" = c(1.4, Inf))
+  pd_dbl <- data.table::rbindlist(lapply(names(pd_genes), function(tx) {
+    tb <- pd_genes[[tx]]
+    if (!"Introns, same genes" %in% names(tb)) return(NULL)
+    data.table::rbindlist(lapply(names(dbl_strata), function(st) data.table::data.table(
+      Outgroup = tx, stratum = st,
+      pi_d_double_ratio_by_S(tb[["4-fold sites"]], tb[["Introns, same genes"]], control_meta,
+                             U = U_ctrl, V = V_ctrl, expr_range = dbl_strata[[st]]))))
+  }))
+  if (nrow(pd_dbl)) {
+    data.table::fwrite(pd_dbl, "./results/pi_d_4fold_over_intron_by_S.csv")
+    print(pd_dbl[, .(Outgroup, stratum, Sbin, n_genes, mean_S = round(mean_S, 2),
+                     pd4 = round(pd4_rel, 3), pdI = round(pdI_rel, 3), ratio = round(double, 3),
+                     CI = sprintf("[%.3f, %.3f]", lo, hi), P = signif(P, 2), Wright = round(pred_pd, 3))])
+    p_fig7c <- plot_pi_d_double_ratio(pd_dbl[Outgroup == "JUNG1" & stratum == "All genes"],
+                                      check = pd_dbl[Outgroup == "KONZA" & stratum == "All genes"])
+    ggsave("./results/pi_d_4fold_over_intron_by_S.pdf", p_fig7c, width = 6.5, height = 5)
+    save_figure_panel(p_fig7c, "Fig7C_pi_over_d_4fold_vs_intron_by_S", width = 6.5, height = 5)
+    p_strata <- plot_pi_d_double_ratio(pd_dbl[Outgroup == "JUNG1" & stratum != "All genes"],
+                                       check = pd_dbl[Outgroup == "KONZA" & stratum != "All genes"])
+    ggsave("./results/pi_d_4fold_over_intron_by_S_strata.pdf", p_strata, width = 12, height = 4.8)
+    save_figure_panel(p_strata, "FigS_pi_over_d_4fold_vs_intron_by_expression_stratum",
+                      width = 12, height = 4.8)
+    rm(p_fig7c, p_strata)
+  }
+  rm(div_taxa, div_sites_tab, pd_S, pd_E, pd_genes, pd_dbl, dbl_strata, g4, j, tabs, masked, tx, sq, w)
 } else {
   cat("[12.1i] skipped: data/divergence/ not found (run Bash_scripts/run_divergence_by_gene.sh).\n")
 }

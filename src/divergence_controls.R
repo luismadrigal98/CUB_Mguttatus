@@ -230,3 +230,102 @@ plot_pi_d_by_expression <- function(tab, what = c("pd", "d", "pi"), title = NULL
     theme(legend.position = "top", legend.direction = "horizontal",
           legend.background = element_blank(), legend.key = element_blank())
 }
+
+# ---------------------------------------------------------------------------
+# The selection test: 4-fold pi/d over intronic pi/d of the same genes, by S
+# ---------------------------------------------------------------------------
+
+pi_d_double_ratio_by_S <- function(g4, gI, meta, U, V,
+                                   S_breaks = c(-Inf, 0, 0.25, 0.5, 0.75, 1, 1.5, Inf),
+                                   expr_range = c(-Inf, Inf), bin_width = 0.2,
+                                   min_d_n = 20L, n_boot = 2000L, seed = 1L) {
+  #' (pi4 / d4) / (piI / dI), C-vs-other system, per S_Wright bin, relative to
+  #' S = 0 (interpolated between the bins flanking zero), genes resampled with
+  #' both sequence classes together.
+  #'
+  #' Why this and not 4-fold pi / d alone. Linked selection lowers pi but not d,
+  #' and it is stronger in high-S genes: intronic pi / d falls to ~0.92 at
+  #' S ~ 1.2. Dividing by the intron of the same gene removes it, together with
+  #' anything mutational. Mutation (rate or spectrum, shared or exon-specific)
+  #' and linked selection all predict 1; Wright's selection model predicts
+  #' pi(S)/pi(0) over K(S)/K(0).
+  #' @param expr_range c(lo, hi) on the expression category: S is not monotone
+  #'   with expression, so the test is repeated within expression strata.
+  set.seed(seed)
+  g <- merge(merge(data.table::as.data.table(g4), data.table::as.data.table(gI),
+                   by = "Gene", suffixes = c("4", "I")),
+             data.table::as.data.table(meta)[, .(Gene, S, Exp = Mean_Log10_Exp)], by = "Gene")
+  g <- g[d_n4 >= min_d_n & d_nI >= min_d_n & is.finite(S) & is.finite(Exp)]
+  g[, Exp_cat := round(round(Exp / bin_width) * bin_width, 1)]
+  g <- g[Exp_cat >= expr_range[1] & Exp_cat <= expr_range[2]]
+  g[, Sbin := cut(S, S_breaks, right = FALSE)]
+  rat <- function(i, cl) (sum(g[[paste0("pi_C", cl)]][i]) / sum(g[[paste0("pi_n", cl)]][i])) /
+                         (sum(g[[paste0("d_C", cl)]][i]) / sum(g[[paste0("d_n", cl)]][i]))
+  st <- function(i) { a <- rat(i, "4"); b <- rat(i, "I"); c(r4 = a, rI = b, dbl = a / b) }
+  bins <- levels(droplevels(g$Sbin))
+  idx  <- lapply(bins, function(b) which(g$Sbin == b)); names(idx) <- bins
+  stopifnot(all(c("[-Inf,0)", "[0,0.25)") %in% bins))
+  mS  <- vapply(idx, function(i) mean(g$S[i]), numeric(1))
+  w0  <- -mS["[-Inf,0)"] / (mS["[0,0.25)"] - mS["[-Inf,0)"])
+  est <- sapply(idx, st)
+  ref <- (1 - w0) * est[, "[-Inf,0)"] + w0 * est[, "[0,0.25)"]
+  bt  <- replicate(n_boot, sapply(idx, function(i) st(i[sample.int(length(i), length(i), TRUE)])))
+  ref_b <- (1 - w0) * bt[, "[-Inf,0)", ] + w0 * bt[, "[0,0.25)", ]
+  rel <- sweep(bt, c(1, 3), ref_b, "/")
+  q  <- function(k, p) apply(rel[k, , , drop = FALSE], 2, stats::quantile, p, na.rm = TRUE)
+  pv <- apply(rel["dbl", , , drop = FALSE], 2, function(z) min(1, 2 * min(mean(z <= 1), mean(z >= 1))))
+  pred <- (wright_pi_2allele(mS, U, V) / wright_pi_2allele(0, U, V)) /
+          (wright_substitution_rate(mS, U, V) / wright_substitution_rate(0, U, V))
+  data.table::data.table(
+    Sbin = bins, n_genes = lengths(idx), mean_S = mS,
+    pd4_rel = est["r4", ] / ref["r4"], pdI_rel = est["rI", ] / ref["rI"],
+    double = est["dbl", ] / ref["dbl"], lo = q("dbl", 0.025), hi = q("dbl", 0.975),
+    P = pv, pred_pd = pred)
+}
+
+plot_pi_d_double_ratio <- function(tab, check = NULL, title = NULL) {
+  #' The selection test: 4-fold over intronic pi / d by S_Wright bin, relative
+  #' to S = 0, with gene-bootstrap intervals; filled = M. jungermannioides,
+  #' open = M. glabratus (`check`). Solid line: Wright's selection prediction.
+  #' Dashed line at 1: any mutational explanation, and linked selection.
+  #' With a `stratum` column the panel is faceted by expression stratum.
+  suppressPackageStartupMessages(require(ggplot2))
+  d <- data.table::copy(data.table::as.data.table(tab))[, Outgroup := "JUNG1"]
+  if (!is.null(check))
+    d <- rbind(d, data.table::copy(data.table::as.data.table(check))[, Outgroup := "KONZA"], fill = TRUE)
+  d[, x := mean_S + ifelse(Outgroup == "KONZA", 0.03, 0)]
+  d[, Outgroup := factor(Outgroup, levels = c("JUNG1", "KONZA"))]
+  keep <- intersect(c("stratum", "mean_S", "pred_pd"), names(tab))
+  pred <- data.table::as.data.table(tab)[, ..keep]
+  p <- ggplot() +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
+    geom_vline(xintercept = 0, linetype = "dotted", colour = "grey65", linewidth = 0.4) +
+    geom_line(data = pred, aes(mean_S, pred_pd, linetype = "Selection (Wright)"),
+              colour = "grey15", linewidth = 0.8) +
+    geom_errorbar(data = d, aes(x = x, ymin = lo, ymax = hi), colour = "#3B7DD8",
+                  width = 0.04, linewidth = 0.5) +
+    geom_point(data = d, aes(x = x, y = double, shape = Outgroup), colour = "#3B7DD8",
+               size = 2.4, stroke = 0.9) +
+    scale_shape_manual(values = c(JUNG1 = 16, KONZA = 1), drop = TRUE,
+                       labels = c(JUNG1 = expression(italic("M. jungermannioides")),
+                                  KONZA = expression(italic("M. glabratus"))),
+                       name = "Outgroup") +
+    scale_linetype_manual(values = c("Selection (Wright)" = "solid"), name = NULL) +
+    labs(x = expression(S[Wright] * " (bin mean)"),
+         y = expression((pi / d)["4-fold"] / (pi / d)["intron"] * ", relative to " * S == 0),
+         title = title) +
+    theme_custom() +
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+          legend.position = "top", legend.direction = "horizontal",
+          legend.background = element_blank(), legend.key = element_blank())
+  if ("stratum" %in% names(d) && data.table::uniqueN(d$stratum) > 1) {
+    lv <- unique(d$stratum)
+    p$layers <- lapply(p$layers, function(l) {
+      if (is.data.frame(l$data) && "stratum" %in% names(l$data))
+        l$data$stratum <- factor(l$data$stratum, levels = lv)
+      l
+    })
+    p <- p + facet_wrap(~ stratum, nrow = 1)
+  }
+  p
+}

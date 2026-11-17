@@ -335,3 +335,69 @@ wright_threshold_candidates <- function(U, V) {
                            wright_invert_Q, numeric(1), U = U, V = V)
   cands
 }
+
+
+# ---------------------------------------------------------------------------
+# S_Wright against expression (requested by J. Kelly, 2026-11-17)
+# ---------------------------------------------------------------------------
+
+S_wright_by_expression <- function(gene_tab, s_col = "S_Wright_signed",
+                                   expression_var = "Mean_Log10_Exp", bin_width = 0.2,
+                                   barrier = 1, min_genes = 40L, n_boot = 2000L, seed = 1L) {
+  #' Per expression category: mean S_Wright with a gene-bootstrap interval, and
+  #' the share of genes above the drift barrier with a Wilson interval.
+  #' S is a monotone transform of 4-fold C content, so it inherits the two-regime
+  #' shape of Q: it falls across the drift-dominated bulk and rises only in the
+  #' most highly expressed genes. It is not linear in expression.
+  set.seed(seed)
+  g <- data.table::as.data.table(gene_tab)[, .(S = get(s_col), Exp = get(expression_var))]
+  g <- g[is.finite(S) & is.finite(Exp)]
+  g[, Exp_cat := round(round(Exp / bin_width) * bin_width, 1)]
+  out <- g[, {
+    bs <- replicate(n_boot, mean(S[sample.int(.N, .N, TRUE)]))
+    k <- sum(S > barrier); n <- .N; p <- k / n; z <- 1.96
+    centre <- (p + z^2 / (2 * n)) / (1 + z^2 / n)
+    half   <- z * sqrt(p * (1 - p) / n + z^2 / (4 * n^2)) / (1 + z^2 / n)
+    .(n_genes = n, mean_S = mean(S), mean_lo = stats::quantile(bs, 0.025),
+      mean_hi = stats::quantile(bs, 0.975), median_S = stats::median(S),
+      above = p, above_lo = centre - half, above_hi = centre + half)
+  }, by = Exp_cat][n_genes >= min_genes][order(Exp_cat)]
+  attr(out, "rho") <- stats::cor(g$S, g$Exp, method = "spearman")
+  attr(out, "share_above") <- mean(g$S > barrier)
+  attr(out, "genes") <- g
+  out[]
+}
+
+plot_S_wright_by_expression <- function(tab, barrier = 1, title = NULL) {
+  #' A: S_Wright of every gene against expression (grey), with the category means
+  #' and gene-bootstrap 95% intervals (blue); dashed line = drift barrier.
+  #' B: share of genes above the barrier per category, Wilson 95% intervals;
+  #' dashed line = genome-wide share.
+  suppressPackageStartupMessages({ require(ggplot2); require(patchwork) })
+  g <- attr(tab, "genes")
+  brk <- seq(0, ceiling(max(g$Exp) / 0.4) * 0.4, 0.4)
+  pA <- ggplot() +
+    geom_point(data = g, aes(Exp, S), colour = "grey55", alpha = 0.08, size = 0.4) +
+    geom_hline(yintercept = barrier, linetype = "dashed", colour = "grey30", linewidth = 0.4) +
+    geom_hline(yintercept = 0, linetype = "dotted", colour = "grey55", linewidth = 0.4) +
+    geom_errorbar(data = tab, aes(x = Exp_cat, ymin = mean_lo, ymax = mean_hi),
+                  colour = "#3B7DD8", width = 0.05, linewidth = 0.6) +
+    geom_line(data = tab, aes(Exp_cat, mean_S), colour = "#3B7DD8", linewidth = 0.7) +
+    geom_point(data = tab, aes(Exp_cat, mean_S), colour = "#3B7DD8", size = 2) +
+    scale_x_continuous(breaks = brk, labels = scales::number_format(accuracy = 0.1)) +
+    coord_cartesian(ylim = c(-1.5, 3)) +
+    labs(x = expression("Mean expression (log"[10] * " CPM)"),
+         y = expression(S[Wright]), title = title) +
+    theme_custom()
+  pB <- ggplot(tab, aes(Exp_cat, 100 * above)) +
+    geom_hline(yintercept = 100 * attr(tab, "share_above"), linetype = "dashed",
+               colour = "grey30", linewidth = 0.4) +
+    geom_errorbar(aes(ymin = 100 * above_lo, ymax = 100 * above_hi),
+                  colour = "#3B7DD8", width = 0.05, linewidth = 0.6) +
+    geom_line(colour = "#3B7DD8", linewidth = 0.7) + geom_point(colour = "#3B7DD8", size = 2) +
+    scale_x_continuous(breaks = brk, labels = scales::number_format(accuracy = 0.1)) +
+    labs(x = expression("Expression level category (log"[10] * ")"),
+         y = expression("Genes with " * S[Wright] > 1 * " (%)")) +
+    theme_custom()
+  (pA + labs(tag = "A")) / (pB + labs(tag = "B"))
+}
