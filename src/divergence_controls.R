@@ -329,3 +329,198 @@ plot_pi_d_double_ratio <- function(tab, check = NULL, title = NULL) {
   }
   p
 }
+
+# ---------------------------------------------------------------------------
+# Divergence on its own: raw means by expression, and the turnover test by S
+# ---------------------------------------------------------------------------
+# Neutral divergence measures the mutation rate (plus a share of ancestral
+# polymorphism, ~pi/d of it: ~0.17 at 4-fold sites for JUNG1, ~0.45 for KONZA).
+# The neutral rate is not constant across genes: it falls ~20% with expression
+# and rises ~30-50% with S. So the selection test needs a yardstick inside each
+# gene. Under Wright's model, C/non-C turnover at 4-fold sites per opportunity
+# is slower than the neutral rate by
+#   f(-S) (V e^S + U) / (U + V)        (~0.70 at S = 1.2 for U/V = 5.7)
+# because selection slows the loss of C more than it speeds its gain. Two
+# yardsticks: changes among A, G and T at the same 4-fold sites (neutral under
+# the C-preference model), and the introns of the same genes.
+
+divergence_per_gene <- function(fourfold_sites, zerofold_div, intron_div, intron_comp, taxon) {
+  #' Per gene, over every site aligned to `taxon`: aligned sites and
+  #' substitutions at 0-fold, 4-fold and intronic sites, plus the counts of the
+  #' turnover test (C vs other; and, among sites non-C in both sequences, the
+  #' A/G/T composition of each sequence and the A/G/T changes).
+  #' @param fourfold_sites divergence_by_gene.py fourfold_sites.tsv.gz, as a table.
+  #' @param zerofold_div,intron_div paths to its per-gene 0-fold and intronic
+  #'   tables; zerofold_div may be absent (runs before 2026-11-17).
+  #' @param intron_comp calculate_intronic_twostatepi.py output masked to
+  #'   `taxon` (q_pref_C: intronic C over the same aligned sites).
+  b  <- paste0(taxon, "_base")
+  ff <- data.table::as.data.table(fourfold_sites)[, .(Gene, r = Ref, o = get(b))][
+    r %chin% c("A", "C", "G", "T") & o %chin% c("A", "C", "G", "T")]
+  g <- ff[, .(n4 = .N, d4 = sum(r != o), C4_ref = sum(r == "C"), C4_out = sum(o == "C"),
+              d4C = sum((r == "C") != (o == "C")),
+              nN = sum(r != "C" & o != "C"), dN = sum(r != "C" & o != "C" & r != o),
+              rA = sum(r == "A" & o != "C"), rG = sum(r == "G" & o != "C"), rT = sum(r == "T" & o != "C"),
+              oA = sum(o == "A" & r != "C"), oG = sum(o == "G" & r != "C"), oT = sum(o == "T" & r != "C")),
+          by = Gene]
+  dI <- data.table::fread(intron_div)[, .(Gene, nI = get(paste0(taxon, "_n_aln")),
+                                         dI = get(paste0(taxon, "_sub")),
+                                         dIC = get(paste0(taxon, "_subC")))]
+  cI <- data.table::fread(intron_comp)[, .(Gene, QI = q_pref_C)]
+  g <- merge(merge(g, dI, by = "Gene", all = TRUE), cI, by = "Gene", all.x = TRUE)
+  if (!is.null(zerofold_div) && file.exists(zerofold_div)) {
+    z <- data.table::fread(zerofold_div)[, .(Gene, n0 = get(paste0(taxon, "_n_aln")),
+                                            d0 = get(paste0(taxon, "_sub")))]
+    g <- merge(g, z, by = "Gene", all = TRUE)
+  }
+  g[]
+}
+
+divergence_raw_by_expression <- function(gd, meta, bin_width = 0.2, bulk_max = 1.2,
+                                         min_sites = 20L, min_genes = 40L) {
+  #' Raw divergence (p, substitutions per aligned site) and its Jukes-Cantor
+  #' correction at 0-fold, 4-fold and intronic sites, per expression category,
+  #' on one gene set (every class aligned at >= min_sites), with each class
+  #' relative to the drift-dominated bulk (categories <= bulk_max) and the
+  #' 0-fold / 4-fold and 4-fold / intron ratios.
+  g <- merge(data.table::as.data.table(gd), meta[, .(Gene, Mean_Log10_Exp)], by = "Gene")
+  has0 <- "n0" %in% names(g)
+  g <- g[is.finite(Mean_Log10_Exp) & n4 >= min_sites & nI >= min_sites &
+           (if (has0) n0 >= min_sites else TRUE)]
+  g[, Exp_cat := round(round(Mean_Log10_Exp / bin_width) * bin_width, 1)]
+  jc <- function(p) -0.75 * log(1 - 4 * p / 3)
+  cls <- c(`0-fold` = "0", `4-fold` = "4", intron = "I")
+  if (!has0) cls <- cls[-1]
+  summ <- function(x) {
+    out <- list(genes = nrow(x))
+    for (k in names(cls)) {
+      p <- sum(x[[paste0("d", cls[k])]]) / sum(x[[paste0("n", cls[k])]])
+      out[[paste0("p_", k)]] <- p
+      out[[paste0("JC_", k)]] <- jc(p)
+    }
+    data.table::as.data.table(out)
+  }
+  tab <- rbind(g[, summ(.SD), by = Exp_cat][genes >= min_genes][order(Exp_cat)][
+                 , Exp_cat := as.character(Exp_cat)],
+               data.table::data.table(Exp_cat = sprintf("bulk (<= %.1f)", bulk_max),
+                                      summ(g[Exp_cat <= bulk_max])),
+               data.table::data.table(Exp_cat = "all genes", summ(g)))
+  bulk <- tab[startsWith(Exp_cat, "bulk")]
+  for (k in names(cls))
+    tab[, (paste0("rel_", k)) := get(paste0("p_", k)) / bulk[[paste0("p_", k)]]]
+  if (has0) tab[, p0_over_p4 := `p_0-fold` / `p_4-fold`]
+  tab[, p4_over_pI := `p_4-fold` / p_intron]
+  tab[]
+}
+
+divergence_turnover_by_S <- function(gd, meta, U, V,
+                                     S_breaks = c(-Inf, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, Inf),
+                                     min_sites = 20L, n_boot = 2000L, seed = 1L) {
+  #' The divergence-only selection test, per S_Wright bin, relative to S = 0
+  #' (interpolated between the bins flanking zero), genes resampled.
+  #' Each turnover is divergence over the mismatch expected between two
+  #' sequences drawn independently with the observed compositions, so it does
+  #' not move with composition:
+  #'   C/non-C at 4-fold sites   d_C / [Q_ref (1 - Q_out) + Q_out (1 - Q_ref)]
+  #'   A/G/T at 4-fold sites     (sites non-C in both) d / [1 - sum_b f_ref(b) f_out(b)]
+  #'   introns, C/non-C          d_C / [2 Q_I (1 - Q_I)]
+  #' ratio_nonC = C/non-C over A/G/T at the same 4-fold sites (all genes);
+  #' ratio_intron = C/non-C at 4-fold sites over introns (genes with introns).
+  #' Mutation, in any form shared with the yardstick: 1. Wright:
+  #' f(-S) (V e^S + U) / (U + V). Raw C/non-C divergence relative to S = 0, and
+  #' Wright's K(S) / K(0), are returned alongside.
+  set.seed(seed)
+  g <- merge(data.table::as.data.table(gd), meta[, .(Gene, S)], by = "Gene")
+  g <- g[is.finite(S) & n4 >= min_sites]
+  g[, hasI := !is.na(nI) & nI >= min_sites & is.finite(QI)]
+  g[, Sbin := cut(S, S_breaks, right = FALSE)]
+  sm <- function(v, i) sum(g[[v]][i])
+  st <- function(i) {
+    Qr <- sm("C4_ref", i) / sm("n4", i); Qo <- sm("C4_out", i) / sm("n4", i)
+    tC <- (sm("d4C", i) / sm("n4", i)) / (Qr * (1 - Qo) + Qo * (1 - Qr))
+    fr <- c(sm("rA", i), sm("rG", i), sm("rT", i)) / sm("nN", i)
+    fo <- c(sm("oA", i), sm("oG", i), sm("oT", i)) / sm("nN", i)
+    tN <- (sm("dN", i) / sm("nN", i)) / (1 - sum(fr * fo))
+    j  <- i[g$hasI[i]]
+    QI <- sum(g$QI[j] * g$nI[j]) / sm("nI", j)
+    tI <- (sm("dIC", j) / sm("nI", j)) / (2 * QI * (1 - QI))
+    c(d4C = sm("d4C", i) / sm("n4", i), dIC = sm("dIC", j) / sm("nI", j),
+      tC = tC, tN = tN, tI = tI, rN = tC / tN, rI = tC / tI)
+  }
+  bins <- levels(droplevels(g$Sbin))
+  idx  <- lapply(bins, function(b) which(g$Sbin == b)); names(idx) <- bins
+  stopifnot(all(c("[-Inf,0)", "[0,0.25)") %in% bins))
+  mS  <- vapply(idx, function(i) mean(g$S[i]), numeric(1))
+  w0  <- -mS["[-Inf,0)"] / (mS["[0,0.25)"] - mS["[-Inf,0)"])
+  est <- sapply(idx, st)
+  ref <- (1 - w0) * est[, "[-Inf,0)"] + w0 * est[, "[0,0.25)"]
+  bt  <- replicate(n_boot, sapply(idx, function(i) st(i[sample.int(length(i), length(i), TRUE)])))
+  rel <- sweep(bt, c(1, 3), (1 - w0) * bt[, "[-Inf,0)", ] + w0 * bt[, "[0,0.25)", ], "/")
+  q  <- function(k, p) apply(rel[k, , , drop = FALSE], 2, stats::quantile, p, na.rm = TRUE)
+  pv <- function(k) apply(rel[k, , , drop = FALSE], 2,
+                          function(z) min(1, 2 * min(mean(z <= 1), mean(z >= 1))))
+  f  <- function(x) ifelse(abs(x) < 1e-8, 1, x / (1 - exp(-x)))
+  comp <- function(a, b) vapply(idx, function(i) sm(a, i) / sm(b, i), numeric(1))
+  data.table::data.table(
+    Sbin = bins, n_genes = lengths(idx), n_genes_intron = vapply(idx, function(i) sum(g$hasI[i]), 1L),
+    mean_S = mS, Q4_ref = comp("C4_ref", "n4"), Q4_out = comp("C4_out", "n4"),
+    G_share_nonC = comp("rG", "nN"),
+    d4C_rel = est["d4C", ] / ref["d4C"], dIC_rel = est["dIC", ] / ref["dIC"],
+    Wright_K = wright_substitution_rate(mS, U, V) / wright_substitution_rate(0, U, V),
+    turnover_C = est["tC", ] / ref["tC"], turnover_nonC = est["tN", ] / ref["tN"],
+    turnover_intron = est["tI", ] / ref["tI"],
+    ratio_nonC = est["rN", ] / ref["rN"], lo_nonC = q("rN", 0.025), hi_nonC = q("rN", 0.975),
+    P_nonC = pv("rN"),
+    ratio_intron = est["rI", ] / ref["rI"], lo_intron = q("rI", 0.025), hi_intron = q("rI", 0.975),
+    P_intron = pv("rI"),
+    Wright_turnover = f(-mS) * (V * exp(mS) + U) / (U + V))
+}
+
+plot_divergence_turnover <- function(tab, check = NULL, yardstick = c("nonC", "intron"),
+                                     title = NULL) {
+  #' The divergence-only selection test (Fig 7D): C/non-C substitution rate at
+  #' 4-fold sites over the neutral yardstick of the same genes, by S_Wright bin,
+  #' relative to S = 0, with gene-bootstrap intervals; filled = M.
+  #' jungermannioides, open = M. glabratus (`check`). Solid line: Wright's
+  #' selection prediction. Dashed line at 1: any mutational explanation.
+  #' @param yardstick "nonC" (A/G/T changes at the same 4-fold sites, Fig 7D) or
+  #'   "intron" (introns of the same genes, supplement).
+  yardstick <- match.arg(yardstick)
+  suppressPackageStartupMessages(require(ggplot2))
+  cols <- if (yardstick == "nonC") c("ratio_nonC", "lo_nonC", "hi_nonC") else
+    c("ratio_intron", "lo_intron", "hi_intron")
+  pick <- function(x, lab) {
+    x <- data.table::as.data.table(x)
+    data.table::data.table(Outgroup = lab, mean_S = x$mean_S, y = x[[cols[1]]],
+                           lo = x[[cols[2]]], hi = x[[cols[3]]])
+  }
+  d <- pick(tab, "JUNG1")
+  if (!is.null(check) && nrow(check)) d <- rbind(d, pick(check, "KONZA"))
+  d[, x := mean_S + ifelse(Outgroup == "KONZA", 0.03, 0)]
+  d[, Outgroup := factor(Outgroup, levels = c("JUNG1", "KONZA"))]
+  pred <- data.table::as.data.table(tab)[, .(mean_S, Wright_turnover)]
+  # K = substitution rate per opportunity (divergence over the mismatch expected
+  # from composition alone); the legend text defines it.
+  ylab <- if (yardstick == "nonC")
+    expression((K["C/non-C"] / K["A/G/T"])["4-fold"] * ", relative to " * S == 0) else
+    expression(K["C/non-C, 4-fold"] / K["C/non-C, intron"] * ", relative to " * S == 0)
+  ggplot() +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
+    geom_vline(xintercept = 0, linetype = "dotted", colour = "grey65", linewidth = 0.4) +
+    geom_line(data = pred, aes(mean_S, Wright_turnover, linetype = "Selection (Wright)"),
+              colour = "grey15", linewidth = 0.8) +
+    geom_errorbar(data = d, aes(x = x, ymin = lo, ymax = hi), colour = "#3B7DD8",
+                  width = 0.04, linewidth = 0.5) +
+    geom_point(data = d, aes(x = x, y = y, shape = Outgroup), colour = "#3B7DD8",
+               size = 2.4, stroke = 0.9) +
+    scale_shape_manual(values = c(JUNG1 = 16, KONZA = 1), drop = TRUE,
+                       labels = c(JUNG1 = expression(italic("M. jungermannioides")),
+                                  KONZA = expression(italic("M. glabratus"))),
+                       name = "Outgroup") +
+    scale_linetype_manual(values = c("Selection (Wright)" = "solid"), name = NULL) +
+    labs(x = expression(S[Wright] * " (bin mean)"), y = ylab, title = title) +
+    theme_custom() +
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+          legend.position = "top", legend.direction = "horizontal",
+          legend.background = element_blank(), legend.key = element_blank())
+}

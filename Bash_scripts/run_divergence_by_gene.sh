@@ -4,7 +4,7 @@
 # Per-gene divergence from IM767 to JUNG1 (outgroup) and KONZA (check) at 4-fold
 # and trimmed intronic sites, from the AnchorWave proAli alignments of 2026-11-04.
 # Writes into data/divergence/ (default):
-#   fourfold_sites.tsv.gz, intron_divergence_by_gene.tsv,
+#   fourfold_sites.tsv.gz, intron_divergence_by_gene.tsv, zerofold_divergence_by_gene.tsv,
 #   intron_aligned_{JUNG1,KONZA}.bed, summary_by_chrom.tsv
 # The two BEDs are the --mask inputs of the next step:
 #   MASKS="JUNG1=data/divergence/intron_aligned_JUNG1.bed KONZA=data/divergence/intron_aligned_KONZA.bed" \

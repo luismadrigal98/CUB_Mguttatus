@@ -3252,6 +3252,57 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
                       width = 12, height = 4.8)
     rm(p_fig7c, p_strata)
   }
+
+  # Divergence on its own. (1) Raw p and Jukes-Cantor at 0-fold, 4-fold and
+  # intronic sites by expression category, one gene set, before any scaling.
+  # (2) The divergence-only selection test: neutral divergence tracks the
+  # mutation rate, and that rate rises ~30-50% with S (introns; A/G/T changes at
+  # 4-fold sites), so raw 4-fold C divergence overshoots Wright's K(S). Against a
+  # yardstick inside the same genes (A/G/T changes at the same 4-fold sites;
+  # introns as a second), C/non-C turnover per opportunity is 1 under any shared
+  # mutational model and f(-S) (V e^S + U) / (U + V) under Wright (~0.70 at S = 1.2).
+  div_zero <- file.path(div_dir, "zerofold_divergence_by_gene.tsv")
+  if (!file.exists(div_zero))
+    cat("[12.1i] no 0-fold divergence: rerun Bash_scripts/run_divergence_by_gene.sh\n")
+  div_raw <- list(); div_turn <- list()
+  for (tx in div_taxa) {
+    masked <- sprintf("data/intron_2_allele_%s.csv", tx)
+    if (!file.exists(masked)) next
+    gd <- divergence_per_gene(div_sites_tab, div_zero, div_intr, masked, tx)
+    div_raw[[tx]]  <- data.table::data.table(
+      Outgroup = tx, divergence_raw_by_expression(gd, control_meta, bulk_max = PARTITION_BULK_MAX))
+    div_turn[[tx]] <- data.table::data.table(
+      Outgroup = tx, divergence_turnover_by_S(gd, control_meta, U = U_ctrl, V = V_ctrl))
+  }
+  if (length(div_raw)) {
+    div_raw <- data.table::rbindlist(div_raw); div_turn <- data.table::rbindlist(div_turn)
+    data.table::fwrite(div_raw, "./results/divergence_raw_by_expression.csv")
+    data.table::fwrite(div_turn, "./results/divergence_turnover_4fold_vs_intron_by_S.csv")
+    num <- names(div_raw)[vapply(div_raw, is.numeric, logical(1))]
+    print(div_raw[, (num) := lapply(.SD, signif, 3), .SDcols = num][])
+    print(div_turn[, .(Outgroup, Sbin, n_genes, mean_S = round(mean_S, 2),
+                       d4C = round(d4C_rel, 3), Wright_K = round(Wright_K, 3),
+                       tC = round(turnover_C, 3), tAGT = round(turnover_nonC, 3),
+                       tI = round(turnover_intron, 3),
+                       vs_AGT = round(ratio_nonC, 3), CI = sprintf("[%.3f, %.3f]", lo_nonC, hi_nonC),
+                       vs_intron = round(ratio_intron, 3),
+                       CI_I = sprintf("[%.3f, %.3f]", lo_intron, hi_intron),
+                       Wright = round(Wright_turnover, 3))])
+    # Fig 7D: the divergence-only test, A/G/T changes at the same 4-fold sites
+    # as the yardstick; the intronic yardstick goes to the supplement.
+    turn_chk <- div_turn[Outgroup == "KONZA"]
+    if (!nrow(turn_chk)) turn_chk <- NULL
+    p_fig7d <- plot_divergence_turnover(div_turn[Outgroup == "JUNG1"], check = turn_chk)
+    ggsave("./results/divergence_turnover_by_S.pdf", p_fig7d, width = 6.5, height = 5)
+    save_figure_panel(p_fig7d, "Fig7D_divergence_turnover_by_S", width = 6.5, height = 5)
+    p_turn_I <- plot_divergence_turnover(div_turn[Outgroup == "JUNG1"], check = turn_chk,
+                                         yardstick = "intron")
+    ggsave("./results/divergence_turnover_intron_yardstick_by_S.pdf", p_turn_I, width = 6.5, height = 5)
+    save_figure_panel(p_turn_I, "FigS_divergence_turnover_intron_yardstick_by_S",
+                      width = 6.5, height = 5)
+    rm(num, gd, turn_chk, p_fig7d, p_turn_I)
+  }
+  rm(div_zero, div_raw, div_turn)
   rm(div_taxa, div_sites_tab, pd_S, pd_E, pd_genes, pd_dbl, dbl_strata, g4, j, tabs, masked, tx, sq, w)
 } else {
   cat("[12.1i] skipped: data/divergence/ not found (run Bash_scripts/run_divergence_by_gene.sh).\n")

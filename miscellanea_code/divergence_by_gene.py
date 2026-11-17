@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Per-gene divergence from IM767 to outgroup assemblies, from AnchorWave alignments,
-at 4-fold degenerate sites and at trimmed intronic sites.
+at 4-fold degenerate sites, at 0-fold sites and at trimmed intronic sites.
 
 Divergence is the polymorphism-free counterpart of the CUB pipeline's diversity
 (main_CUB.R, Section 12.1i): pi / d at the same sites is invariant to the
@@ -31,6 +31,11 @@ Outputs (in --out-dir):
                                  entry of Genomic_Positions in the codon file);
                                  bases on the coding strand, '.' if unaligned.
   intron_divergence_by_gene.tsv  Gene n_sites <T>_n_aln <T>_sub <T>_subC ...
+  zerofold_divergence_by_gene.tsv Gene n_sites <T>_n_aln <T>_sub ...
+                                 0-fold sites: every other base changes the amino
+                                 acid (stop counts as one), the definition of
+                                 describe_gene_positions_by_degeneracy.py, so these
+                                 match the pipeline's Sites_0fold / Pi_sum_0fold.
   intron_aligned_<T>.bed         merged aligned intronic positions per taxon,
                                  0-based half-open; the --mask for the intronic
                                  polymorphism script, so pi uses the same sites.
@@ -100,8 +105,31 @@ def primary_cds(gff_path):
     return out
 
 
-def fourfold_positions(ref, strand, parts):
-    """0-based genomic positions of 4-fold 3rd codon positions, in coding order."""
+_BASES = "TCAG"
+_AA = "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG"
+GENETIC_CODE = {(a + b + c).encode(): _AA[16 * i + 4 * j + k]
+                for i, a in enumerate(_BASES) for j, b in enumerate(_BASES)
+                for k, c in enumerate(_BASES)}
+
+
+def _zerofold_offsets(codon):
+    """Codon positions (0-2) at which every other base changes the amino acid
+    (stop counts as an amino acid), as in describe_gene_positions_by_degeneracy.py."""
+    aa = GENETIC_CODE[codon]
+    out = []
+    for k in range(3):
+        if all(GENETIC_CODE[codon[:k] + b + codon[k + 1:]] != aa
+               for b in (b"A", b"C", b"G", b"T") if b != codon[k:k + 1]):
+            out.append(k)
+    return tuple(out)
+
+
+ZEROFOLD_OFFSETS = {c: _zerofold_offsets(c) for c in GENETIC_CODE}
+
+
+def degenerate_positions(ref, strand, parts):
+    """0-based genomic positions of 4-fold 3rd codon positions and of 0-fold
+    positions, each in coding order."""
     parts = sorted(parts, key=lambda c: c[0], reverse=(strand == "-"))
     ph = parts[0][2]
     phase = int(ph) if ph in ("0", "1", "2") else 0
@@ -111,11 +139,13 @@ def fourfold_positions(ref, strand, parts):
     coding = bytes(ref[p] for p in coord)
     if strand == "-":
         coding = coding.translate(COMP)
-    out = []
+    four, zero = [], []
     for i in range(phase, len(coding) - 2, 3):
         if coding[i:i + 2] in FOURFOLD_PREFIX:
-            out.append(coord[i + 2])
-    return out
+            four.append(coord[i + 2])
+        for k in ZEROFOLD_OFFSETS.get(coding[i:i + 3], ()):
+            zero.append(coord[i + k])
+    return four, zero
 
 
 def maf_query_bases(maf_path, ref_len):
@@ -187,6 +217,7 @@ def main():
     ff = gzip.open(os.path.join(a.out_dir, "fourfold_sites.tsv.gz"), "wt")
     ff.write("Gene\tChrom\tPos\tStrand\tRef\t" + "\t".join(f"{t}_base" for t in taxa) + "\n")
     intr = {}                                       # gene -> [n_sites, (n_aln, sub, subC) x taxa]
+    zf = {}                                         # gene -> [n_sites, (n_aln, sub) x taxa]
     beds = {t: [] for t in taxa}
     summary = []
 
@@ -201,12 +232,28 @@ def main():
                 raise SystemExit(f"missing alignment: {path}")
             q[t] = maf_query_bases(path, n)
 
-        # ---- 4-fold sites ----------------------------------------------------
-        n4 = 0
+        # ---- 4-fold and 0-fold sites -----------------------------------------
+        n4 = n0 = 0
         al4 = {t: 0 for t in taxa}
         sub4 = {t: 0 for t in taxa}
+        al0 = {t: 0 for t in taxa}
+        sub0 = {t: 0 for t in taxa}
         for gene, strand, parts in cds_by_chrom.get(chrom, []):
-            for p in fourfold_positions(ref, strand, parts):
+            four, zero = degenerate_positions(ref, strand, parts)
+            z = np.asarray(zero, dtype=np.int64)
+            z = z[np.isin(ref_arr[z], ACGT)] if z.size else z
+            rec0 = zf.setdefault(gene, [0] + [0] * (2 * len(taxa)))
+            rec0[0] += int(z.size)
+            n0 += int(z.size)
+            for j, t in enumerate(taxa):
+                qq = q[t][z]
+                al = qq != 0
+                s = int((al & (qq != ref_arr[z])).sum())
+                rec0[1 + 2 * j] += int(al.sum())
+                rec0[2 + 2 * j] += s
+                al0[t] += int(al.sum())
+                sub0[t] += s
+            for p in four:
                 rb = ref[p]
                 if rb not in b"ACGT":
                     continue
@@ -255,9 +302,10 @@ def main():
         for t in taxa:
             pos = np.unique(np.concatenate(aligned_pos[t])) if aligned_pos[t] else np.array([], dtype=np.int64)
             beds[t].extend(merged_bed(chrom, pos))
-            summary.append((chrom, t, n4, al4[t], sub4[t], nI, alI[t], subI[t]))
+            summary.append((chrom, t, n4, al4[t], sub4[t], nI, alI[t], subI[t], n0, al0[t], sub0[t]))
             print(f"  {chrom} {t:6s} 4-fold aligned {100 * al4[t] / max(n4, 1):5.1f}% "
-                  f"p {100 * sub4[t] / max(al4[t], 1):5.2f}% | intron aligned "
+                  f"p {100 * sub4[t] / max(al4[t], 1):5.2f}% | 0-fold aligned "
+                  f"{100 * al0[t] / max(n0, 1):5.1f}% p {100 * sub0[t] / max(al0[t], 1):5.2f}% | intron aligned "
                   f"{100 * alI[t] / max(nI, 1):5.1f}% p {100 * subI[t] / max(alI[t], 1):5.2f}%",
                   file=sys.stderr)
         del q
@@ -267,12 +315,17 @@ def main():
         fh.write("Gene\tn_sites\t" + "\t".join(f"{t}_n_aln\t{t}_sub\t{t}_subC" for t in taxa) + "\n")
         for g in sorted(intr):
             fh.write(g + "\t" + "\t".join(map(str, intr[g])) + "\n")
+    with open(os.path.join(a.out_dir, "zerofold_divergence_by_gene.tsv"), "w") as fh:
+        fh.write("Gene\tn_sites\t" + "\t".join(f"{t}_n_aln\t{t}_sub" for t in taxa) + "\n")
+        for g in sorted(zf):
+            fh.write(g + "\t" + "\t".join(map(str, zf[g])) + "\n")
     for t in taxa:
         with open(os.path.join(a.out_dir, f"intron_aligned_{t}.bed"), "w") as fh:
             for c, s, e in beds[t]:
                 fh.write(f"{c}\t{s}\t{e}\n")
     with open(os.path.join(a.out_dir, "summary_by_chrom.tsv"), "w") as fh:
-        fh.write("Chrom\tTaxon\tn_4fold\tn_4fold_aln\tsub_4fold\tn_intron\tn_intron_aln\tsub_intron\n")
+        fh.write("Chrom\tTaxon\tn_4fold\tn_4fold_aln\tsub_4fold\tn_intron\tn_intron_aln\tsub_intron"
+                 "\tn_0fold\tn_0fold_aln\tsub_0fold\n")
         for row in summary:
             fh.write("\t".join(map(str, row)) + "\n")
     print("Done.", file=sys.stderr)
