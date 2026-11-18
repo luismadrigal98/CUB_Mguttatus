@@ -36,6 +36,12 @@ Outputs (in --out-dir):
                                  acid (stop counts as one), the definition of
                                  describe_gene_positions_by_degeneracy.py, so these
                                  match the pipeline's Sites_0fold / Pi_sum_0fold.
+  intron_outgroup_<T>.fa.gz      the outgroup's base at every aligned intronic
+                                 position, '-' elsewhere: one line per chromosome,
+                                 IM767 coordinates, + strand. The --outgroup input of
+                                 calculate_intronic_twostatepi.py, which counts FIXED
+                                 intronic differences (the outgroup base absent from
+                                 every line) in the same VCF pass as pi.
   intron_aligned_<T>.bed         merged aligned intronic positions per taxon,
                                  0-based half-open; the --mask for the intronic
                                  polymorphism script, so pi uses the same sites.
@@ -219,6 +225,8 @@ def main():
     intr = {}                                       # gene -> [n_sites, (n_aln, sub, subC) x taxa]
     zf = {}                                         # gene -> [n_sites, (n_aln, sub) x taxa]
     beds = {t: [] for t in taxa}
+    tracks = {t: gzip.open(os.path.join(a.out_dir, f"intron_outgroup_{t}.fa.gz"), "wb",
+                           compresslevel=6) for t in taxa}
     summary = []
 
     for chrom in chroms:
@@ -302,6 +310,9 @@ def main():
         for t in taxa:
             pos = np.unique(np.concatenate(aligned_pos[t])) if aligned_pos[t] else np.array([], dtype=np.int64)
             beds[t].extend(merged_bed(chrom, pos))
+            trk = np.full(n, ord("-"), dtype=np.uint8)
+            trk[pos] = q[t][pos]
+            tracks[t].write(f">{chrom}\n".encode() + trk.tobytes() + b"\n")
             summary.append((chrom, t, n4, al4[t], sub4[t], nI, alI[t], subI[t], n0, al0[t], sub0[t]))
             print(f"  {chrom} {t:6s} 4-fold aligned {100 * al4[t] / max(n4, 1):5.1f}% "
                   f"p {100 * sub4[t] / max(al4[t], 1):5.2f}% | 0-fold aligned "
@@ -311,6 +322,8 @@ def main():
         del q
 
     ff.close()
+    for t in taxa:
+        tracks[t].close()
     with open(os.path.join(a.out_dir, "intron_divergence_by_gene.tsv"), "w") as fh:
         fh.write("Gene\tn_sites\t" + "\t".join(f"{t}_n_aln\t{t}_sub\t{t}_subC" for t in taxa) + "\n")
         for g in sorted(intr):

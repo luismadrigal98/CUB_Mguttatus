@@ -3244,7 +3244,8 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
     p_fig7c <- plot_pi_d_double_ratio(pd_dbl[Outgroup == "JUNG1" & stratum == "All genes"],
                                       check = pd_dbl[Outgroup == "KONZA" & stratum == "All genes"])
     ggsave("./results/pi_d_4fold_over_intron_by_S.pdf", p_fig7c, width = 6.5, height = 5)
-    save_figure_panel(p_fig7c, "Fig7C_pi_over_d_4fold_vs_intron_by_S", width = 6.5, height = 5)
+    # Supplement since 2026-11-18 (Fig 7C is now pi and divergence by S, below).
+    save_figure_panel(p_fig7c, "FigS_pi_d_double_ratio_4fold_vs_intron_by_S", width = 6.5, height = 5)
     p_strata <- plot_pi_d_double_ratio(pd_dbl[Outgroup == "JUNG1" & stratum != "All genes"],
                                        check = pd_dbl[Outgroup == "KONZA" & stratum != "All genes"])
     ggsave("./results/pi_d_4fold_over_intron_by_S_strata.pdf", p_strata, width = 12, height = 4.8)
@@ -3264,45 +3265,112 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
   div_zero <- file.path(div_dir, "zerofold_divergence_by_gene.tsv")
   if (!file.exists(div_zero))
     cat("[12.1i] no 0-fold divergence: rerun Bash_scripts/run_divergence_by_gene.sh\n")
-  div_raw <- list(); div_turn <- list()
+  # Two ways to count a 4-fold difference (John Kelly, 2026-11-18): IM767's base
+  # vs the outgroup's picks up polymorphism (37% of JUNG1 and 72% of KONZA
+  # reference differences fall on sites segregating among the 187 lines, which
+  # carry half of pi). Every 4-fold test therefore uses FIXED differences, the
+  # outgroup base absent from all lines. The reference counts remain for the raw
+  # table and for the intronic yardstick, which has no per-site polymorphism.
+  div_raw <- list(); div_turn <- list(); div_turn_ref <- list(); div_comp <- list()
+  div_robust <- list(); part_scaled <- NULL
   for (tx in div_taxa) {
     masked <- sprintf("data/intron_2_allele_%s.csv", tx)
     if (!file.exists(masked)) next
     gd <- divergence_per_gene(div_sites_tab, div_zero, div_intr, masked, tx)
+    gf <- divergence_per_gene(div_sites_tab, div_zero, div_intr, masked, tx,
+                              pop_sites = fourfold_sites)
+    ov <- attr(gf, "overlap")
+    cat(sprintf(paste0("[12.1i] %s: %.1f%% of 4-fold sites segregate; %.1f%% of reference ",
+                       "differences fall on them (%.1f%% if independent) and carry %.1f%% of pi; ",
+                       "divergence %.4f by reference, %.4f fixed\n"),
+                tx, 100 * ov[["segregating"]], 100 * ov[["ref_differences_on_segregating_sites"]],
+                100 * ov[["expected_if_independent"]], 100 * ov[["share_of_pi_on_ref_differences"]],
+                ov[["differ_from_ref"]], ov[["fixed"]]))
     div_raw[[tx]]  <- data.table::data.table(
       Outgroup = tx, divergence_raw_by_expression(gd, control_meta, bulk_max = PARTITION_BULK_MAX))
+    # Fixed differences: use ratio_nonC only (its ratio_intron would mix fixed
+    # 4-fold counts with reference-based intronic ones).
     div_turn[[tx]] <- data.table::data.table(
+      Outgroup = tx, divergence_turnover_by_S(gf, control_meta, U = U_ctrl, V = V_ctrl))
+    div_turn_ref[[tx]] <- data.table::data.table(
       Outgroup = tx, divergence_turnover_by_S(gd, control_meta, U = U_ctrl, V = V_ctrl))
+    # Numerators and denominators: pi and fixed divergence by S, raw and per unit
+    # of the neutral rate, against Wright's pi(S) and K(S).
+    div_comp[[tx]] <- data.table::data.table(
+      Outgroup = tx, pi_d_components_by_S(gf, control_meta, U = U_ctrl, V = V_ctrl))
+    # Referee 2's partition: both classes rise at the top because the neutral
+    # rate does; per unit of it, only the preferred/unpreferred class recovers.
+    if (tx == "JUNG1")
+      part_scaled <- partition_scaled_by_neutral(partition_genes, gf, bulk_max = PARTITION_BULK_MAX)
+    # Fig 7D's robustness: A<->T and intronic yardsticks, split-half S, and S from
+    # each gene's own intronic mutation bias instead of the global U/V.
+    div_robust[[tx]] <- data.table::data.table(
+      Outgroup = tx, divergence_turnover_robustness(fourfold_sites, div_sites_tab, control_meta,
+                                                    masked, U = U_ctrl, V = V_ctrl, taxon = tx))
+    rm(gd, gf, ov)
   }
   if (length(div_raw)) {
     div_raw <- data.table::rbindlist(div_raw); div_turn <- data.table::rbindlist(div_turn)
+    div_turn_ref <- data.table::rbindlist(div_turn_ref); div_comp <- data.table::rbindlist(div_comp)
+    div_robust <- data.table::rbindlist(div_robust)
+    data.table::fwrite(div_robust, "./results/divergence_turnover_robustness.csv")
+    print(div_robust[Sbin %in% c("[0.5,0.75)", "[1,1.5)"),
+                     .(Outgroup, variant, Sbin, S = round(S, 2), turnover = round(turnover, 3),
+                       CI = sprintf("[%.3f, %.3f]", lo, hi), Wright = round(Wright, 3),
+                       bias_alone = sprintf("%.2f to %.2f", bias_less_C_loss, bias_more_C_gain))])
     data.table::fwrite(div_raw, "./results/divergence_raw_by_expression.csv")
-    data.table::fwrite(div_turn, "./results/divergence_turnover_4fold_vs_intron_by_S.csv")
+    data.table::fwrite(div_turn, "./results/divergence_turnover_fixed_by_S.csv")
+    data.table::fwrite(div_turn_ref, "./results/divergence_turnover_reference_by_S.csv")
+    data.table::fwrite(div_comp, "./results/pi_and_divergence_by_S_components.csv")
     num <- names(div_raw)[vapply(div_raw, is.numeric, logical(1))]
     print(div_raw[, (num) := lapply(.SD, signif, 3), .SDcols = num][])
     print(div_turn[, .(Outgroup, Sbin, n_genes, mean_S = round(mean_S, 2),
-                       d4C = round(d4C_rel, 3), Wright_K = round(Wright_K, 3),
-                       tC = round(turnover_C, 3), tAGT = round(turnover_nonC, 3),
-                       tI = round(turnover_intron, 3),
                        vs_AGT = round(ratio_nonC, 3), CI = sprintf("[%.3f, %.3f]", lo_nonC, hi_nonC),
-                       vs_intron = round(ratio_intron, 3),
-                       CI_I = sprintf("[%.3f, %.3f]", lo_intron, hi_intron),
-                       Wright = round(Wright_turnover, 3))])
-    # Fig 7D: the divergence-only test, A/G/T changes at the same 4-fold sites
-    # as the yardstick; the intronic yardstick goes to the supplement.
+                       P = signif(P_nonC, 2), Wright = round(Wright_turnover, 3))])
+    print(div_turn_ref[, .(Outgroup, Sbin, mean_S = round(mean_S, 2),
+                           vs_AGT_ref = round(ratio_nonC, 3), vs_intron = round(ratio_intron, 3),
+                           CI_I = sprintf("[%.3f, %.3f]", lo_intron, hi_intron),
+                           Wright = round(Wright_turnover, 3))])
+    print(div_comp[, .(Outgroup, Sbin, mean_S = round(mean_S, 2),
+                       pi = round(pi_rel, 3), pi_per_neutral = round(pi_sc_rel, 3), Wright_pi = round(Wright_pi_rel, 3),
+                       d = round(d_rel, 3), d_per_neutral = round(d_sc_rel, 3), Wright_d = round(Wright_d_rel, 3),
+                       neutral = round(neutral_rel, 3), pi_d = round(pd_rel, 3), Wright_pi_d = round(Wright_pd_rel, 3))])
+    # Fig 7D: the divergence-only test with fixed differences, A/G/T changes at
+    # the same 4-fold sites as the yardstick. Supplement: the intronic yardstick
+    # (reference counts), the numerator/denominator panels, the scaled partition.
     turn_chk <- div_turn[Outgroup == "KONZA"]
     if (!nrow(turn_chk)) turn_chk <- NULL
     p_fig7d <- plot_divergence_turnover(div_turn[Outgroup == "JUNG1"], check = turn_chk)
     ggsave("./results/divergence_turnover_by_S.pdf", p_fig7d, width = 6.5, height = 5)
     save_figure_panel(p_fig7d, "Fig7D_divergence_turnover_by_S", width = 6.5, height = 5)
-    p_turn_I <- plot_divergence_turnover(div_turn[Outgroup == "JUNG1"], check = turn_chk,
+    ref_chk <- div_turn_ref[Outgroup == "KONZA"]
+    if (!nrow(ref_chk)) ref_chk <- NULL
+    p_turn_I <- plot_divergence_turnover(div_turn_ref[Outgroup == "JUNG1"], check = ref_chk,
                                          yardstick = "intron")
     ggsave("./results/divergence_turnover_intron_yardstick_by_S.pdf", p_turn_I, width = 6.5, height = 5)
     save_figure_panel(p_turn_I, "FigS_divergence_turnover_intron_yardstick_by_S",
                       width = 6.5, height = 5)
-    rm(num, gd, turn_chk, p_fig7d, p_turn_I)
+    # Fig 7C: pi and fixed divergence separately, raw and per unit of the neutral
+    # rate, against Wright (replaces the double ratio, which needed introns).
+    p_comp <- plot_pi_d_components(div_comp[Outgroup == "JUNG1"])
+    ggsave("./results/pi_and_divergence_by_S_components.pdf", p_comp, width = 10, height = 5)
+    save_figure_panel(p_comp, "Fig7C_pi_and_divergence_by_S", width = 10, height = 5)
+    if (nrow(div_comp[Outgroup == "KONZA"]))
+      save_figure_panel(plot_pi_d_components(div_comp[Outgroup == "KONZA"]),
+                        "FigS_pi_and_divergence_by_S_KONZA", width = 10, height = 5)
+    p_robust <- plot_turnover_robustness(div_robust)
+    ggsave("./results/divergence_turnover_robustness.pdf", p_robust, width = 12, height = 8)
+    save_figure_panel(p_robust, "FigS_divergence_turnover_robustness", width = 12, height = 8)
+    if (!is.null(part_scaled)) {
+      data.table::fwrite(part_scaled, "./results/polymorphism_partition_per_neutral_rate.csv")
+      p_part_sc <- plot_partition_scaled(part_scaled)
+      ggsave("./results/polymorphism_partition_per_neutral_rate.pdf", p_part_sc, width = 6.5, height = 5.5)
+      save_figure_panel(p_part_sc, "FigS_polymorphism_partition_per_neutral_rate", width = 6.5, height = 5.5)
+      rm(p_part_sc)
+    }
+    rm(num, turn_chk, ref_chk, p_fig7d, p_turn_I, p_comp, p_robust)
   }
-  rm(div_zero, div_raw, div_turn)
+  rm(div_zero, div_raw, div_turn, div_turn_ref, div_comp, div_robust, part_scaled); gc()
   rm(div_taxa, div_sites_tab, pd_S, pd_E, pd_genes, pd_dbl, dbl_strata, g4, j, tabs, masked, tx, sq, w)
 } else {
   cat("[12.1i] skipped: data/divergence/ not found (run Bash_scripts/run_divergence_by_gene.sh).\n")

@@ -5,9 +5,10 @@
 # and trimmed intronic sites, from the AnchorWave proAli alignments of 2026-11-04.
 # Writes into data/divergence/ (default):
 #   fourfold_sites.tsv.gz, intron_divergence_by_gene.tsv, zerofold_divergence_by_gene.tsv,
+#   intron_outgroup_{JUNG1,KONZA}.fa.gz (outgroup base per aligned intronic site),
 #   intron_aligned_{JUNG1,KONZA}.bed, summary_by_chrom.tsv
-# The two BEDs are the --mask inputs of the next step:
-#   MASKS="JUNG1=data/divergence/intron_aligned_JUNG1.bed KONZA=data/divergence/intron_aligned_KONZA.bed" \
+# The base tracks are the --outgroup inputs of the next step (fixed differences):
+#   OUTGROUPS="JUNG1=data/divergence/intron_outgroup_JUNG1.fa.gz KONZA=data/divergence/intron_outgroup_KONZA.fa.gz" \
 #     sbatch Bash_scripts/run_intronic_twostate.sh <all-sites vcf.gz> <gff3> data/intron_2_allele.csv data/intron_sfs_by_gene.csv
 #
 # ~10 s per chromosome; memory is dominated by the genome (~0.5 GB).

@@ -19,10 +19,13 @@
 #
 # Expected log lines on success: invariant share ~0.82, intronic C ~0.15, G ~0.17.
 #
-# Outgroup masks (optional): MASKS="NAME=bed NAME=bed" adds one --mask per entry,
-# writing <out stem>_<NAME>.csv restricted to those positions, in the same pass.
-# For the divergence layer (main_CUB.R 12.1i) run divergence_by_gene first, then:
-#   MASKS="JUNG1=data/divergence/intron_aligned_JUNG1.bed KONZA=data/divergence/intron_aligned_KONZA.bed" sbatch ...
+# Outgroups (the divergence layer, main_CUB.R 12.1i): run divergence_by_gene first,
+# then pass its base tracks. Each writes <out stem>_<NAME>.csv over the intronic
+# sites the outgroup aligns, with pi AND fixed-difference counts (the outgroup
+# base absent from every line), in the same VCF pass:
+#   OUTGROUPS="JUNG1=data/divergence/intron_outgroup_JUNG1.fa.gz KONZA=data/divergence/intron_outgroup_KONZA.fa.gz" sbatch ...
+# (MASKS="NAME=bed ..." still works: pi over a BED, without divergence counts.)
+# Memory: each track holds one byte per reference base, ~0.3 GB per outgroup.
 
 #SBATCH --job-name=intronic_pi
 #SBATCH --partition=eeb,kelly,kucg
@@ -67,6 +70,10 @@ for m in ${MASKS:-}; do
   [[ -f "${m#*=}" ]] || { echo "ERROR: mask file not found: ${m#*=}" >&2; exit 1; }
   MASK_ARGS+=(--mask "$m")
 done
+for m in ${OUTGROUPS:-}; do
+  [[ -f "${m#*=}" ]] || { echo "ERROR: outgroup track not found: ${m#*=}" >&2; exit 1; }
+  MASK_ARGS+=(--outgroup "$m")
+done
 
 echo "Job: ${SLURM_JOB_ID:-local}"
 echo "VCF: $VCF"
@@ -76,6 +83,7 @@ echo "SFS_OUT: $SFS_OUT"
 echo "CPUS: $CPUS, workers: $WORKERS, buffer_mb: $BUFFER_MB, batch_size: $BATCH_SIZE"
 echo "trim_bp: $TRIM_BP, min_width: $MIN_WIDTH, min_called: $MIN_CALLED"
 echo "masks: ${MASKS:-none}"
+echo "outgroups: ${OUTGROUPS:-none}"
 
 if command -v module >/dev/null 2>&1; then
   module load conda

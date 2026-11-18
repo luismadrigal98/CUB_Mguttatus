@@ -55,6 +55,18 @@ Outputs
     restricted to the BED's positions. Used with the intronic sites aligned to an
     outgroup (miscellanea_code/divergence_by_gene.py), so that intronic pi and
     divergence are measured on one set of sites. All masks share the one VCF pass.
+--outgroup NAME=FASTA (repeatable): like --mask, with the mask taken from the
+    outgroup base track that divergence_by_gene.py writes
+    (intron_outgroup_<NAME>.fa.gz), and five more columns on <output stem>_<NAME>.csv:
+    n_out        sites with an outgroup base (= n_sites)
+    out_C        sites where the outgroup carries C (transcript orientation)
+    sub_ref      reference base != outgroup base
+    fixed_sub    outgroup base absent from every called line (a fixed difference)
+    fixed_subC   C-vs-other fixed difference: outgroup C and no line C, or
+                 outgroup non-C and every line C
+    Counting against the reference picks up polymorphism (at 4-fold sites 37% of
+    JUNG1 and 72% of KONZA reference differences fall on segregating sites), so
+    the R side uses the fixed counts.
 --sfs-out (CSV), segregating sites only:
     Gene, System (C or G), n, k (count of the focal base), count
     Monomorphic sites are the per-gene columns above: fixed for the focal base
@@ -79,6 +91,9 @@ MIN_HOM_RATIO = 5
 # Per-gene accumulator layout (a plain list keeps pickling cheap)
 N_SITES, C_FREQ, C_PI, G_FREQ, G_PI, C_SEG, C_FIX, G_SEG, G_FIX, TOT_PI = range(10)
 N_FIELDS = 10
+# Outgroup tables carry five more fields
+D_N, D_OUTC, D_SUBREF, D_FIX, D_FIXC = range(10, 15)
+N_FIELDS_OUT = 15
 
 TALLY_KEYS = ('intronic_lines', 'used', 'used_invariant', 'skip_nonsnp',
               'skip_format', 'skip_lowcov')
@@ -275,6 +290,47 @@ def load_bed_mask(path):
     return out
 
 
+def load_outgroup_track(path):
+    """divergence_by_gene.py intron_outgroup_<T>.fa.gz -> {chrom: bytes}, one byte
+    per reference position (0-based index), the outgroup base or '-'."""
+    import gzip
+    opener = gzip.open if path.endswith('.gz') else open
+    out, name, buf = {}, None, []
+    with opener(path, 'rb') as fh:
+        for ln in fh:
+            if ln[:1] == b'>':
+                if name is not None:
+                    out[name] = b''.join(buf)
+                name, buf = ln[1:].split()[0].decode(), []
+            else:
+                buf.append(ln.rstrip(b'\r\n'))
+    if name is not None:
+        out[name] = b''.join(buf)
+    return out
+
+
+def add_divergence(rec, out_base, ref, alt, invariant, ref_hom, alt_hom, k_c, n):
+    """One site's outgroup comparison (transcript orientation throughout)."""
+    rec[D_N] += 1
+    if out_base == 'C':
+        rec[D_OUTC] += 1
+    if out_base != ref:
+        rec[D_SUBREF] += 1
+    if out_base == ref:
+        out_count = ref_hom
+    elif not invariant and out_base == alt:
+        out_count = alt_hom
+    else:
+        out_count = 0
+    if out_count == 0:
+        rec[D_FIX] += 1
+    if (out_base == 'C' and k_c == 0) or (out_base != 'C' and k_c == n):
+        rec[D_FIXC] += 1
+
+
+_TRACK_BASES = {ord(b): b for b in 'ACGT'}
+
+
 def in_mask(mask, chrom, pos1):
     d = mask.get(chrom)
     if d is None:
@@ -285,7 +341,7 @@ def in_mask(mask, chrom, pos1):
 
 
 def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
-                 target_chrom=None, masks=None, mstats=None):
+                 target_chrom=None, masks=None, mstats=None, outgroups=None):
     if line.startswith('#'):
         return
     f = line.split('\t', 5)
@@ -364,6 +420,23 @@ def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
                 if mrec is None:
                     mrec = mstats[name][gene_id] = [0] * N_FIELDS
                 add_site(mrec, k_c, k_g, n, het_total)
+    # Outgroup tracks: the site is in the table if the outgroup has a base here.
+    if outgroups:
+        minus = gene_strand.get(gene_id, '+') == '-'
+        for name, track in outgroups.items():
+            t = track.get(chrom)
+            if t is None or pos > len(t):
+                continue
+            b = _TRACK_BASES.get(t[pos - 1])
+            if b is None:
+                continue
+            if minus:
+                b = COMPLEMENT[b]
+            mrec = mstats[name].get(gene_id)
+            if mrec is None:
+                mrec = mstats[name][gene_id] = [0] * N_FIELDS_OUT
+            add_site(mrec, k_c, k_g, n, het_total)
+            add_divergence(mrec, b, ref, alt, invariant, ref_hom, alt_hom, k_c, n)
 
 
 # ---------------------------------------------------------------------------
@@ -373,19 +446,20 @@ def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
 WORKER = {}
 
 
-def worker_init(intervals, gene_strand, min_called, target_chrom, masks=None):
+def worker_init(intervals, gene_strand, min_called, target_chrom, masks=None, outgroups=None):
     WORKER.update(intervals=intervals, gene_strand=gene_strand,
-                  min_called=min_called, target_chrom=target_chrom, masks=masks or {})
+                  min_called=min_called, target_chrom=target_chrom, masks=masks or {},
+                  outgroups=outgroups or {})
 
 
 def process_batch(lines):
     stats, sfs = {}, defaultdict(int)
     tally = dict.fromkeys(TALLY_KEYS, 0)
-    mstats = {name: {} for name in WORKER['masks']}
+    mstats = {name: {} for name in list(WORKER['masks']) + list(WORKER['outgroups'])}
     for line in lines:
         process_line(line, WORKER['intervals'], WORKER['gene_strand'],
                      WORKER['min_called'], stats, sfs, tally, WORKER['target_chrom'],
-                     WORKER['masks'], mstats)
+                     WORKER['masks'], mstats, WORKER['outgroups'])
     return stats, dict(sfs), tally, mstats
 
 
@@ -395,7 +469,7 @@ def _merge_stats(stats, p_stats):
         if a is None:
             stats[g] = rec
         else:
-            for i in range(N_FIELDS):
+            for i in range(len(rec)):
                 a[i] += rec[i]
 
 
@@ -412,13 +486,16 @@ def merge_into(acc, part):
 
 
 def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
-                buffer_bytes=16 * 1024 * 1024, workers=1, batch_size=20000, masks=None):
+                buffer_bytes=16 * 1024 * 1024, workers=1, batch_size=20000, masks=None,
+                outgroups=None):
     masks = masks or {}
-    acc = ({}, defaultdict(int), dict.fromkeys(TALLY_KEYS, 0), {name: {} for name in masks})
+    outgroups = outgroups or {}
+    acc = ({}, defaultdict(int), dict.fromkeys(TALLY_KEYS, 0),
+           {name: {} for name in list(masks) + list(outgroups)})
     line_count = 0
 
     if workers <= 1:
-        worker_init(intervals, gene_strand, min_called, target_chrom, masks)
+        worker_init(intervals, gene_strand, min_called, target_chrom, masks, outgroups)
         batch = []
         with open(vcf_file, buffering=buffer_bytes) as fh:
             for line in fh:
@@ -438,7 +515,7 @@ def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
     print(f"  Parallel mode: workers={workers}, batch_size={batch_size}", file=sys.stderr)
     with multiprocessing.Pool(processes=workers, initializer=worker_init,
                               initargs=(intervals, gene_strand, min_called,
-                                        target_chrom, masks)) as pool:
+                                        target_chrom, masks, outgroups)) as pool:
         pending, batch = [], []
         with open(vcf_file, buffering=buffer_bytes) as fh:
             for line in fh:
@@ -465,10 +542,11 @@ def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
 # Output
 # ---------------------------------------------------------------------------
 
-def write_gene_table(stats, path, buffer_bytes):
+def write_gene_table(stats, path, buffer_bytes, outgroup=False):
     with open(path, 'w', buffering=buffer_bytes) as out:
         out.write("Gene,n_sites,q_pref_C,pi_2allele_C,q_pref_G,pi_2allele_G,"
-                  "n_seg_C,n_fixed_C,n_seg_G,n_fixed_G,pi_total\n")
+                  "n_seg_C,n_fixed_C,n_seg_G,n_fixed_G,pi_total"
+                  + (",n_out,out_C,sub_ref,fixed_sub,fixed_subC" if outgroup else "") + "\n")
         for g in sorted(stats):
             r = stats[g]
             n = r[N_SITES]
@@ -476,7 +554,9 @@ def write_gene_table(stats, path, buffer_bytes):
                 continue
             out.write(f"{g},{n},{r[C_FREQ] / n:.8f},{r[C_PI] / n:.8f},"
                       f"{r[G_FREQ] / n:.8f},{r[G_PI] / n:.8f},"
-                      f"{r[C_SEG]},{r[C_FIX]},{r[G_SEG]},{r[G_FIX]},{r[TOT_PI] / n:.8f}\n")
+                      f"{r[C_SEG]},{r[C_FIX]},{r[G_SEG]},{r[G_FIX]},{r[TOT_PI] / n:.8f}"
+                      + (f",{r[D_N]},{r[D_OUTC]},{r[D_SUBREF]},{r[D_FIX]},{r[D_FIXC]}"
+                         if outgroup else "") + "\n")
 
 
 def write_sfs(sfs, path, buffer_bytes):
@@ -509,6 +589,11 @@ def main():
                     help="Also write <output stem>_<NAME>.csv restricted to the BED's "
                          "positions (0-based half-open), e.g. the intronic sites aligned "
                          "to an outgroup. Repeatable; all masks share one VCF pass.")
+    ap.add_argument('--outgroup', action='append', default=[], metavar='NAME=FASTA',
+                    help="Outgroup base track from divergence_by_gene.py "
+                         "(intron_outgroup_<NAME>.fa.gz): writes <output stem>_<NAME>.csv "
+                         "over the sites the outgroup aligns, with fixed-difference "
+                         "counts. Repeatable; shares the one VCF pass.")
     ap.add_argument('--allow-variants-only', action='store_true',
                     help="Skip the invariant-site check (results are then NOT per-site)")
     args = ap.parse_args()
@@ -530,12 +615,21 @@ def main():
         masks[name] = load_bed_mask(path)
         n_bp = sum(e - s for st, en in masks[name].values() for s, e in zip(st, en))
         print(f"  mask {name}: {n_bp:,} bp from {path}", file=sys.stderr)
+    outgroups = {}
+    for spec in args.outgroup:
+        name, path = spec.split('=', 1)
+        if name in masks:
+            sys.exit(f"ERROR: {name} given as both --mask and --outgroup")
+        outgroups[name] = load_outgroup_track(path)
+        n_bp = sum(len(t) - t.count(b'-') for t in outgroups[name].values())
+        print(f"  outgroup {name}: {n_bp:,} aligned intronic bp from {path}", file=sys.stderr)
 
     print(f"Processing VCF: {args.vcf_file}  (min_called = {args.min_called})", file=sys.stderr)
     (stats, sfs, tally, mstats), n_lines = process_vcf(
         args.vcf_file, intervals, gene_strand, args.min_called,
         target_chrom=args.chrom, buffer_bytes=buffer_bytes,
-        workers=max(1, args.workers), batch_size=max(1000, args.batch_size), masks=masks)
+        workers=max(1, args.workers), batch_size=max(1000, args.batch_size), masks=masks,
+        outgroups=outgroups)
 
     used = tally['used']
     inv_share = tally['used_invariant'] / used if used else 0.0
@@ -574,7 +668,12 @@ def main():
         n_ms = sum(r[N_SITES] for r in ms.values())
         print(f"Writing {mpath} ({len(ms):,} genes, {n_ms:,} sites inside mask {name})",
               file=sys.stderr)
-        write_gene_table(ms, mpath, buffer_bytes)
+        write_gene_table(ms, mpath, buffer_bytes, outgroup=name in outgroups)
+        if name in outgroups:
+            nd = sum(r[D_N] for r in ms.values()) or 1
+            print(f"  {name}: divergence {sum(r[D_SUBREF] for r in ms.values()) / nd:.4f} "
+                  f"by reference, {sum(r[D_FIX] for r in ms.values()) / nd:.4f} fixed",
+                  file=sys.stderr)
     print("Done.", file=sys.stderr)
 
 
