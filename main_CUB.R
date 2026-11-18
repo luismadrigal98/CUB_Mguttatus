@@ -3403,6 +3403,13 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
     div_abs <- data.table::rbindlist(div_abs); div_count <- data.table::rbindlist(div_count)
     data.table::fwrite(div_abs, "./results/pi_and_divergence_absolute_by_S.csv")
     data.table::fwrite(div_count, "./results/divergence_by_expression_all_vs_fixed.csv")
+    # John's layout: d at 0-fold, 4-fold and intronic sites only, two rows per
+    # expression category and outgroup (all aligned sites; fixed differences).
+    div_count_short <- div_count[, .(Outgroup, Exp_cat, Counting, Genes = genes,
+                                     d_0fold = if ("p_0-fold" %in% names(div_count)) `p_0-fold` else NA_real_,
+                                     d_4fold = `p_4-fold`, d_intron = p_intron)]
+    data.table::fwrite(div_count_short, "./results/divergence_0fold_4fold_intron_by_expression.csv")
+    rm(div_count_short)
     print(div_abs[, .(Outgroup, Sbin, n_genes, S = round(mean_S, 2), pi = signif(pi, 3),
                       pi_Wright = signif(pi_Wright, 3), d = signif(d, 3), d_Wright = signif(d_Wright, 3),
                       d_per_opp = signif(d_per_opp, 3), d_per_opp_Wright = signif(d_per_opp_Wright, 3),
