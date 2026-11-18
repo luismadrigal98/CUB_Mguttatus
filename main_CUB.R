@@ -3272,7 +3272,26 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
   # outgroup base absent from all lines. The reference counts remain for the raw
   # table and for the intronic yardstick, which has no per-site polymorphism.
   div_raw <- list(); div_turn <- list(); div_turn_ref <- list(); div_comp <- list()
-  div_robust <- list(); part_scaled <- NULL
+  div_robust <- list(); part_scaled <- NULL; div_abs <- list(); div_count <- list()
+  # Fixed 0-fold differences: per-site outgroup bases (divergence_by_gene.py from
+  # 2026-11-18) joined to the lines' codon counts at 0-fold positions.
+  zf_file <- file.path(div_dir, "zerofold_sites.tsv.gz")
+  zf_gene <- list()
+  if (file.exists(zf_file)) {
+    zf_sites <- data.table::fread(zf_file)
+    zf_pop <- extract_zerofold_sites("data/all_chromosomes.codon_frequencies.txt", min_called = 50L,
+                                     genes = control_meta$Gene)
+    for (tx in div_taxa) {
+      zf_gene[[tx]] <- zerofold_divergence_by_gene(zf_sites, zf_pop, tx)
+      j <- attr(zf_gene[[tx]], "join")
+      cat(sprintf("[12.1i] %s 0-fold: %d aligned sites, %d joined to the lines (reference base agrees %.4f)\n",
+                  tx, j[["aligned"]], j[["joined"]], j[["ref_match"]]))
+    }
+    rm(zf_sites, zf_pop); gc()
+  } else {
+    cat("[12.1i] no zerofold_sites.tsv.gz: 0-fold divergence is reference-based only ",
+        "(rerun Bash_scripts/run_divergence_by_gene.sh)\n")
+  }
   for (tx in div_taxa) {
     masked <- sprintf("data/intron_2_allele_%s.csv", tx)
     if (!file.exists(masked)) next
@@ -3307,7 +3326,20 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
     div_robust[[tx]] <- data.table::data.table(
       Outgroup = tx, divergence_turnover_robustness(fourfold_sites, div_sites_tab, control_meta,
                                                     masked, U = U_ctrl, V = V_ctrl, taxon = tx))
-    rm(gd, gf, ov)
+    # Without the ratios (John Kelly, 2026-11-18): absolute pi and divergence by S
+    # with Wright's predictions for a divergence time t, and raw divergence by
+    # expression category counted on all aligned sites and as fixed differences.
+    a <- divergence_absolute_by_S(gf, control_meta, U = U_ctrl, V = V_ctrl)
+    cat(sprintf("[12.1i] %s: divergence time t = %.2f [%.2f, %.2f] (4N generations, both lineages) from ",
+                tx, attr(a, "t")[["t"]], attr(a, "t")[["lo"]], attr(a, "t")[["hi"]]),
+        sprintf("4-fold sites at S = 0; from introns alone: %s\n",
+                if (is.finite(attr(a, "t_intron"))) sprintf("%.2f", attr(a, "t_intron")) else "needs fixed intronic d"))
+    div_abs[[tx]] <- data.table::data.table(Outgroup = tx, t = attr(a, "t")[["t"]],
+                                            t_intron = attr(a, "t_intron"), a)
+    div_count[[tx]] <- divergence_counting_by_expression(
+      fourfold_sites, div_sites_tab, control_meta, tx, div_intr, masked,
+      zerofold = zf_gene[[tx]], zerofold_div = div_zero, bulk_max = PARTITION_BULK_MAX)
+    rm(gd, gf, ov, a)
   }
   if (length(div_raw)) {
     div_raw <- data.table::rbindlist(div_raw); div_turn <- data.table::rbindlist(div_turn)
@@ -3368,9 +3400,45 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
       save_figure_panel(p_part_sc, "FigS_polymorphism_partition_per_neutral_rate", width = 6.5, height = 5.5)
       rm(p_part_sc)
     }
-    rm(num, turn_chk, ref_chk, p_fig7d, p_turn_I, p_comp, p_robust)
+    div_abs <- data.table::rbindlist(div_abs); div_count <- data.table::rbindlist(div_count)
+    data.table::fwrite(div_abs, "./results/pi_and_divergence_absolute_by_S.csv")
+    data.table::fwrite(div_count, "./results/divergence_by_expression_all_vs_fixed.csv")
+    print(div_abs[, .(Outgroup, Sbin, n_genes, S = round(mean_S, 2), pi = signif(pi, 3),
+                      pi_Wright = signif(pi_Wright, 3), d = signif(d, 3), d_Wright = signif(d_Wright, 3),
+                      d_per_opp = signif(d_per_opp, 3), d_per_opp_Wright = signif(d_per_opp_Wright, 3),
+                      AGT_per_opp = signif(dAGT_per_opp, 3), pi_over_d = round(pi_over_d, 3),
+                      pi_over_d_Wright = round(pi_over_d_Wright, 3))])
+    num <- names(div_count)[startsWith(names(div_count), "p_")]
+    print(div_count[, c("Outgroup", "Exp_cat", "Counting", "genes", num), with = FALSE][
+      , (num) := lapply(.SD, signif, 3), .SDcols = num][])
+    p_abs <- plot_divergence_absolute(div_abs[Outgroup == "JUNG1"])
+    ggsave("./results/pi_and_divergence_absolute_by_S.pdf", p_abs, width = 12, height = 4.6)
+    save_figure_panel(p_abs, "FigS_pi_and_divergence_absolute_by_S", width = 12, height = 4.6)
+    rm(num, turn_chk, ref_chk, p_fig7d, p_turn_I, p_comp, p_robust, p_abs)
+    # Above S ~ 1.5 divergence runs above Wright while pi does not. Test the two
+    # cheap explanations: a recent C gain on the IM lineage (IM vs its sister
+    # M. glabratus) and an artifact of ranking genes on IM's own composition
+    # (rank on the outgroup, or on both, instead). Split half throughout.
+    if (all(c("JUNG1_base", "KONZA_base") %in% names(div_sites_tab))) {
+      hiS <- divergence_high_S_check(fourfold_sites, div_sites_tab, U = U_ctrl, V = V_ctrl)
+      data.table::fwrite(hiS, "./results/divergence_high_S_check.csv")
+      print(hiS[, .(ranking, Sbin, n_genes, S = round(S, 2), turnover = round(turnover, 3),
+                    CI = sprintf("[%.3f, %.3f]", turnover_lo, turnover_hi),
+                    Wright = round(Wright_turnover, 3), d_per_neutral = round(d_per_neutral, 3),
+                    Wright_K = round(Wright_K, 3), pi_per_neutral = round(pi_per_neutral, 3),
+                    Wright_pi = round(Wright_pi, 3), asym = round(asym, 3),
+                    IM_minus_JUNG1 = round(IM_minus_out, 4), KONZA_minus_JUNG1 = round(sister_minus_out, 4),
+                    IM_minus_KONZA = round(IM_minus_sister, 4))])
+      p_hiS <- plot_high_S_check(hiS)
+      ggsave("./results/divergence_high_S_composition.pdf", p_hiS$composition, width = 6.5, height = 5)
+      ggsave("./results/divergence_high_S_ranking.pdf", p_hiS$ranking, width = 6.5, height = 5)
+      save_figure_panel(p_hiS$composition, "FigS_high_S_C_content_by_taxon", width = 6.5, height = 5)
+      save_figure_panel(p_hiS$ranking, "FigS_high_S_turnover_by_ranking", width = 6.5, height = 5)
+      rm(hiS, p_hiS)
+    }
   }
-  rm(div_zero, div_raw, div_turn, div_turn_ref, div_comp, div_robust, part_scaled); gc()
+  rm(div_zero, div_raw, div_turn, div_turn_ref, div_comp, div_robust, part_scaled, div_abs, div_count,
+     zf_file, zf_gene); gc()
   rm(div_taxa, div_sites_tab, pd_S, pd_E, pd_genes, pd_dbl, dbl_strata, g4, j, tabs, masked, tx, sq, w)
 } else {
   cat("[12.1i] skipped: data/divergence/ not found (run Bash_scripts/run_divergence_by_gene.sh).\n")

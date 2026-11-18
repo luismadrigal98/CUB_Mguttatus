@@ -31,6 +31,10 @@ Outputs (in --out-dir):
                                  entry of Genomic_Positions in the codon file);
                                  bases on the coding strand, '.' if unaligned.
   intron_divergence_by_gene.tsv  Gene n_sites <T>_n_aln <T>_sub <T>_subC ...
+  zerofold_sites.tsv.gz          same layout as fourfold_sites.tsv.gz, one row per
+                                 0-fold site (all three codon positions can occur);
+                                 joined in R to the 187 lines' codon counts to count
+                                 FIXED 0-fold differences (main_CUB.R, 12.1i).
   zerofold_divergence_by_gene.tsv Gene n_sites <T>_n_aln <T>_sub ...
                                  0-fold sites: every other base changes the amino
                                  acid (stop counts as one), the definition of
@@ -65,6 +69,9 @@ from calculate_intronic_twostatepi import parse_gff3_introns, short_gene_id  # n
 
 FOURFOLD_PREFIX = {b"GC", b"GG", b"CC", b"AC", b"GT", b"CT", b"TC", b"CG"}
 COMP = bytes.maketrans(b"ACGTN", b"TGCAN")
+COMP_ARR = np.arange(256, dtype=np.uint8)              # complement; 0 (unaligned) stays 0
+for _a, _b in zip(b"ACGTN", b"TGCAN"):
+    COMP_ARR[_a] = _b
 ACGT = np.frombuffer(b"ACGT", dtype=np.uint8)
 GAP, DOT = ord("-"), ord(".")
 
@@ -222,6 +229,8 @@ def main():
 
     ff = gzip.open(os.path.join(a.out_dir, "fourfold_sites.tsv.gz"), "wt")
     ff.write("Gene\tChrom\tPos\tStrand\tRef\t" + "\t".join(f"{t}_base" for t in taxa) + "\n")
+    zz = gzip.open(os.path.join(a.out_dir, "zerofold_sites.tsv.gz"), "wt")
+    zz.write("Gene\tChrom\tPos\tStrand\tRef\t" + "\t".join(f"{t}_base" for t in taxa) + "\n")
     intr = {}                                       # gene -> [n_sites, (n_aln, sub, subC) x taxa]
     zf = {}                                         # gene -> [n_sites, (n_aln, sub) x taxa]
     beds = {t: [] for t in taxa}
@@ -261,6 +270,17 @@ def main():
                 rec0[2 + 2 * j] += s
                 al0[t] += int(al.sum())
                 sub0[t] += s
+            if z.size:                                  # per-site rows, coding strand
+                rb = ref_arr[z]
+                cols = [q[t][z] for t in taxa]
+                if strand == "-":
+                    rb = COMP_ARR[rb]
+                    cols = [COMP_ARR[c] for c in cols]
+                cs = [np.where(c == 0, ord("."), c).astype(np.uint8).tobytes().decode() for c in cols]
+                rs = rb.tobytes().decode()
+                zz.write("".join(
+                    f"{gene}\t{chrom}\t{int(z[m]) + 1}\t{strand}\t{rs[m]}\t"
+                    + "\t".join(c[m] for c in cs) + "\n" for m in range(z.size)))
             for p in four:
                 rb = ref[p]
                 if rb not in b"ACGT":
@@ -322,6 +342,7 @@ def main():
         del q
 
     ff.close()
+    zz.close()
     for t in taxa:
         tracks[t].close()
     with open(os.path.join(a.out_dir, "intron_divergence_by_gene.tsv"), "w") as fh:

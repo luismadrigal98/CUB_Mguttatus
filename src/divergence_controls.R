@@ -446,6 +446,7 @@ divergence_per_gene <- function(fourfold_sites, zerofold_div, intron_div, intron
     g <- merge(g, z, by = "Gene", all = TRUE)
   }
   if (!is.null(ov)) attr(g, "overlap") <- ov
+  attr(g, "intron_counting") <- if (!is.null(pop_sites) && has_fixed) "fixed" else "reference"
   g[]
 }
 
@@ -941,4 +942,426 @@ plot_turnover_robustness <- function(tab, title = NULL) {
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           legend.position = "top", legend.direction = "horizontal",
           legend.background = element_blank(), legend.key = element_blank())
+}
+
+# ---------------------------------------------------------------------------
+# The high-S divergence excess (S > ~1.5, ~5% of genes)
+# ---------------------------------------------------------------------------
+# Above S ~ 1.5, fixed divergence exceeds Wright's K(S) while pi matches pi(S).
+# Two cheap explanations, each with a direct test:
+#  (1) IM gained C recently (composition not at equilibrium on the IM lineage).
+#      Then IM carries more C than its sister M. glabratus (KONZA) at the same
+#      sites. Topology (((guttatus, nasutus), glabratus), jungermannioides).
+#  (2) Ranking genes on IM's own composition picks genes whose S rose on the IM
+#      side, which have extra recent C gains (regression to the mean across
+#      lineages). Then ranking on the outgroup's composition, or on the mean of
+#      both, removes the excess, and the IM-vs-outgroup asymmetry with it.
+# Every ranking is split half (rank on one half of a gene's sites, measure on the
+# other), so per-site sampling noise is not shared between ranking and measure.
+# Wright is read at the composition actually measured (mean of the IM reference
+# and the outgroup on the measured half), scaled to the same S = 0 reference.
+# Result (2026-11-18, local data): IM - M. glabratus <= 0.006 at every S; ranking
+# on either lineage or both leaves the top-bin turnover at 0.79-0.81 (Wright 0.65)
+# while the asymmetry falls from 0.24 to 0.06. Neither explanation holds.
+
+divergence_high_S_check <- function(pop_sites, div_sites, U, V, outgroup = "JUNG1",
+                                    sister = "KONZA",
+                                    S_breaks = c(-Inf, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, Inf),
+                                    min_sites = 20L, n_boot = 1000L, seed = 1L) {
+  #' @param pop_sites extract_fourfold_sites() output.
+  #' @param div_sites divergence_by_gene.py fourfold_sites.tsv.gz, as a table, with
+  #'   `<outgroup>_base` and `<sister>_base`.
+  #' @return data.table ranking, Sbin, n_genes, S (measured), turnover / d and pi
+  #'   per neutral rate relative to S = 0 with CIs and Wright, asym (IM-side C
+  #'   minus outgroup-side C among fixed C/non-C differences, over their sum), and
+  #'   C-content differences IM - outgroup, sister - outgroup, IM - sister (sites
+  #'   aligned in all three; IM = mean over the 187 lines) with CIs.
+  set.seed(seed)
+  grid <- seq(-6, 9, by = 0.002); qg <- .wright_Q_kummer(grid, U, V)
+  invS <- function(q) stats::approx(qg, grid, xout = q, ties = mean)$y
+  f    <- function(z) ifelse(abs(z) < 1e-8, 1, z / (1 - exp(-z)))
+  Wt   <- function(S) f(-S) * (V * exp(S) + U) / (U + V)
+  acgt <- c("A", "C", "G", "T")
+  x <- merge(data.table::as.data.table(pop_sites)[, .(Gene, pos3, ref3, n, A, C, G, T)],
+             data.table::as.data.table(div_sites)[, .(Gene, Pos, r = Ref,
+                                                      o = get(paste0(outgroup, "_base")),
+                                                      s = get(paste0(sister, "_base")))],
+             by.x = c("Gene", "pos3"), by.y = c("Gene", "Pos"))[ref3 == r & o %chin% acgt]
+  data.table::setorder(x, Gene, pos3)
+  x[, half := ifelse(seq_len(.N) %% 2L == 1L, "A", "B"), by = Gene]
+  x[, `:=`(oc = data.table::fcase(o == "A", A, o == "C", C, o == "G", G, o == "T", T),
+           noC = C == 0L, s3 = s %chin% acgt)]
+  g <- x[, .(
+    n4 = .N, Cr = sum(r == "C"), QIM = sum(C / n), Qo = sum(o == "C"),
+    piC = sum(2 * C * (n - C) / (n * (n - 1))),
+    dC = sum((o == "C" & C == 0L) | (o != "C" & C == n)),
+    aIM = sum(o != "C" & C == n), bO = sum(o == "C" & C == 0L),
+    nN = sum(noC & o != "C"), dN = sum(noC & o != "C" & oc == 0L),
+    fA = sum((A / n)[noC & o != "C"]), fG = sum((G / n)[noC & o != "C"]),
+    fT = sum((T / n)[noC & o != "C"]),
+    oA = sum(noC & o == "A"), oG = sum(noC & o == "G"), oT = sum(noC & o == "T"),
+    n3 = sum(s3), q3IM = sum((C / n)[s3]), q3s = sum(s3 & s == "C"), q3o = sum(s3 & o == "C")),
+    by = .(Gene, half)]
+  # ranking scores from the OTHER half: IM reference, outgroup, and their mean
+  # (single genomes each, so the three are on the same footing)
+  oth <- g[, .(Gene, half = ifelse(half == "A", "B", "A"), m = n4,
+               S_IM = invS(Cr / n4), S_out = invS(Qo / n4), S_both = invS((Cr + Qo) / (2 * n4)))]
+  g <- merge(g, oth[m >= min_sites %/% 2], by = c("Gene", "half"))[n4 >= min_sites %/% 2]
+  stat <- function(i) {
+    s  <- function(v) sum(g[[v]][i])
+    QI <- s("QIM") / s("n4"); Qo <- s("Qo") / s("n4")
+    fr <- c(s("fA"), s("fG"), s("fT")) / s("nN"); fo <- c(s("oA"), s("oG"), s("oT")) / s("nN")
+    nr <- (s("dN") / s("nN")) / (1 - sum(fr * fo))
+    c(turn = (s("dC") / s("n4")) / (QI * (1 - Qo) + Qo * (1 - QI)) / nr,
+      d_sc = (s("dC") / s("n4")) / nr, pi_sc = (s("piC") / s("n4")) / nr,
+      asym = (s("aIM") - s("bO")) / (s("aIM") + s("bO")),
+      IM_minus_out = (s("q3IM") - s("q3o")) / s("n3"),
+      sister_minus_out = (s("q3s") - s("q3o")) / s("n3"),
+      IM_minus_sister = (s("q3IM") - s("q3s")) / s("n3"))
+  }
+  rel_k <- c("turn", "d_sc", "pi_sc")
+  genes <- unique(g$Gene); gi <- split(seq_len(nrow(g)), g$Gene)
+  run <- function(Scol, label) {
+    b <- cut(g[[Scol]], S_breaks, right = FALSE)
+    bins <- levels(droplevels(b[!is.na(b)]))
+    idx  <- lapply(bins, function(z) which(b == z)); names(idx) <- bins
+    mS   <- vapply(idx, function(i) mean(g[[Scol]][i]), numeric(1))
+    w0   <- -mS[1] / (mS[2] - mS[1])
+    xS   <- vapply(idx, function(i) invS((sum(g$Cr[i]) + sum(g$Qo[i])) / (2 * sum(g$n4[i]))), numeric(1))
+    sc   <- function(v) v / ((1 - w0) * v[1] + w0 * v[2])
+    norm <- function(e) { e[rel_k, ] <- e[rel_k, ] / ((1 - w0) * e[rel_k, 1] + w0 * e[rel_k, 2]); e }
+    est  <- norm(sapply(idx, stat))
+    bt <- replicate(n_boot, {
+      rows <- unlist(gi[sample(genes, length(genes), TRUE)], use.names = FALSE)
+      bb <- b[rows]
+      norm(sapply(bins, function(z) stat(rows[!is.na(bb) & bb == z])))
+    })
+    q <- function(k, p) apply(bt[k, , , drop = FALSE], 2, stats::quantile, p, na.rm = TRUE)
+    out <- data.table::data.table(ranking = label, Sbin = bins,
+      n_genes = vapply(idx, function(i) data.table::uniqueN(g$Gene[i]), integer(1)), S = xS,
+      Wright_turnover = sc(Wt(xS)), Wright_K = sc(wright_substitution_rate(xS, U, V)),
+      Wright_pi = sc(wright_pi_2allele(xS, U, V)))
+    for (k in rownames(est)) {
+      out[, (k) := est[k, ]]
+      out[, (paste0(k, "_lo")) := q(k, 0.025)]
+      out[, (paste0(k, "_hi")) := q(k, 0.975)]
+    }
+    data.table::setnames(out, c("turn", "d_sc", "pi_sc"), c("turnover", "d_per_neutral", "pi_per_neutral"))
+    data.table::setnames(out, function(z) sub("^turn_", "turnover_", sub("^d_sc_", "d_per_neutral_",
+                                              sub("^pi_sc_", "pi_per_neutral_", z))))
+    out
+  }
+  res <- data.table::rbindlist(list(run("S_IM", "IM"), run("S_out", outgroup),
+                                    run("S_both", paste("IM and", outgroup))))
+  res[, ranking := factor(ranking, levels = unique(ranking))]
+  attr(res, "taxa") <- c(outgroup = outgroup, sister = sister)
+  res[]
+}
+
+plot_high_S_check <- function(tab, title = NULL) {
+  #' Two panels. composition: C content of IM (mean of 187 lines) and of the
+  #' sister M. glabratus, each minus M. jungermannioides, at sites aligned in all
+  #' three, genes ranked on IM (split half). ranking: Fig 7D's turnover with genes
+  #' ranked on IM, on the outgroup, or on both; line = Wright at the measured S.
+  suppressPackageStartupMessages(require(ggplot2))
+  d  <- data.table::as.data.table(tab)
+  pal <- RColorBrewer::brewer.pal(3, "Dark2")
+  cm <- d[ranking == levels(ranking)[1]]
+  cm <- data.table::rbindlist(list(
+    cm[, .(S, who = "IM (187 lines)", y = IM_minus_out, lo = IM_minus_out_lo, hi = IM_minus_out_hi)],
+    cm[, .(S = S + 0.03, who = "M. glabratus", y = sister_minus_out, lo = sister_minus_out_lo,
+           hi = sister_minus_out_hi)]))
+  p1 <- ggplot(cm, aes(S, y, colour = who)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
+    geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.04, linewidth = 0.45) +
+    geom_line(linewidth = 0.5) + geom_point(size = 2) +
+    scale_colour_manual(values = c("IM (187 lines)" = pal[1], "M. glabratus" = pal[2]),
+                        labels = c(expression("IM (187 lines)"), expression(italic("M. glabratus"))),
+                        name = NULL) +
+    labs(x = expression(S[Wright]),
+         y = expression("C content minus " * italic("M. jungermannioides")), title = title) +
+    theme_custom() + theme(legend.position = "top", axis.text.x = element_text(angle = 0, hjust = 0.5))
+  d[, x := S + (as.integer(ranking) - 2) * 0.03]
+  ln <- d[ranking == levels(ranking)[3]]
+  p2 <- ggplot(d) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
+    geom_line(data = ln, aes(S, Wright_turnover), colour = "grey15", linewidth = 0.8) +
+    geom_errorbar(aes(x = x, ymin = turnover_lo, ymax = turnover_hi, colour = ranking),
+                  width = 0.04, linewidth = 0.45) +
+    geom_point(aes(x = x, y = turnover, colour = ranking), size = 2) +
+    scale_colour_manual(values = stats::setNames(pal, levels(d$ranking)), name = "Genes ranked on",
+                        labels = c(expression("IM"), expression(italic("M. jungermannioides")),
+                                   expression("Both"))) +
+    labs(x = expression(S[Wright]),
+         y = expression((K["C/non-C"] / K["neutral"])["4-fold"] * ", relative to " * S == 0)) +
+    theme_custom() + theme(legend.position = "top", axis.text.x = element_text(angle = 0, hjust = 0.5))
+  list(composition = p1, ranking = p2)
+}
+
+# ---------------------------------------------------------------------------
+# Fixed 0-fold differences (needs zerofold_sites.tsv.gz, divergence_by_gene.py
+# from 2026-11-18 on)
+# ---------------------------------------------------------------------------
+
+.ZEROFOLD_OFFSETS <- local({
+  # Same rule as divergence_by_gene.py and describe_gene_positions_by_degeneracy.py:
+  # a codon position is 0-fold when every other base changes the amino acid
+  # (stop counts as an amino acid). Value: the 0-fold positions (1-3) as a string.
+  b   <- c("T", "C", "A", "G")
+  cod <- with(expand.grid(k = b, j = b, i = b, stringsAsFactors = FALSE), paste0(i, j, k))
+  aa  <- stats::setNames(strsplit("FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG", "")[[1]], cod)
+  vapply(cod, function(cd) {
+    ks <- Filter(function(k) {
+      alt <- setdiff(c("A", "C", "G", "T"), substr(cd, k, k))
+      all(aa[vapply(alt, function(x) { y <- cd; substr(y, k, k) <- x; y }, "")] != aa[[cd]])
+    }, 1:3)
+    paste(ks, collapse = "")
+  }, "")
+})
+
+extract_zerofold_sites <- function(codon_freq_file, min_called = 50L, genes = NULL) {
+  #' One row per 0-fold site with the 187 lines' base counts, from the codon file.
+  #' @return data.table Gene, pos (1-based genomic coordinate, the key of
+  #'   zerofold_sites.tsv.gz), ref (reference base, coding strand), A, C, G, T, n.
+  d <- data.table::fread(codon_freq_file, select = c("Gene", "Ref_Codon", "Genomic_Positions",
+                                                    "Codon_Variants"), showProgress = FALSE)
+  if (!is.null(genes)) d <- d[Gene %chin% genes]
+  d <- d[Ref_Codon %chin% names(.ZEROFOLD_OFFSETS)]
+  d[, `:=`(row = .I, off = .ZEROFOLD_OFFSETS[Ref_Codon])]
+  gp <- data.table::tstrsplit(d$Genomic_Positions, ",", fixed = TRUE, type.convert = TRUE)
+  d[, Genomic_Positions := NULL]
+  parts <- strsplit(d$Codon_Variants, ";", fixed = TRUE)
+  d[, Codon_Variants := NULL]
+  long <- data.table::data.table(row = rep(d$row, lengths(parts)), kv = unlist(parts, use.names = FALSE))
+  rm(parts); gc()
+  long[, `:=`(codon = substr(kv, 1L, 3L), cnt = as.integer(sub("^[^:]+:", "", kv)))]
+  long[, kv := NULL]
+  long <- long[codon != "NNN" & !is.na(cnt) & cnt > 0L]
+  data.table::setkey(long, row)
+  out <- vector("list", 3L)
+  for (k in 1:3) {
+    rk <- d$row[grepl(as.character(k), d$off, fixed = TRUE)]
+    lk <- long[data.table::J(rk), nomatch = 0L]
+    lk[, base := substr(codon, k, k)]
+    lk <- lk[base %chin% c("A", "C", "G", "T"), .(cnt = sum(cnt)), by = .(row, base)]
+    bc <- data.table::dcast(lk, row ~ base, value.var = "cnt", fill = 0L)
+    for (b in c("A", "C", "G", "T")) if (!b %in% names(bc)) data.table::set(bc, j = b, value = 0L)
+    out[[k]] <- bc[, .(Gene = d$Gene[row], pos = gp[[k]][row], ref = substr(d$Ref_Codon[row], k, k),
+                       A, C, G, T)]
+    rm(lk, bc)
+  }
+  rm(long, d, gp); gc()
+  res <- data.table::rbindlist(out)
+  res[, n := A + C + G + T]
+  res[n >= min_called]
+}
+
+zerofold_divergence_by_gene <- function(zerofold_sites, zf_pop, taxon) {
+  #' Per gene, over 0-fold sites aligned to `taxon` and called in >= min_called
+  #' lines: n0 sites, d0_all (IM767 reference differs from the outgroup) and
+  #' d0_fix (the outgroup base is carried by none of the lines). Same sites for both.
+  b <- paste0(taxon, "_base")
+  z <- data.table::as.data.table(zerofold_sites)[, .(Gene, Pos, r = Ref, o = get(b))][
+    o %chin% c("A", "C", "G", "T") & r %chin% c("A", "C", "G", "T")]
+  x <- merge(data.table::as.data.table(zf_pop), z, by.x = c("Gene", "pos"), by.y = c("Gene", "Pos"))
+  ref_match <- x[, mean(ref == r)]
+  x <- x[ref == r]
+  x[, oc := data.table::fcase(o == "A", A, o == "C", C, o == "G", G, o == "T", T)]
+  g <- x[, .(n0 = .N, d0_all = sum(r != o), d0_fix = sum(oc == 0L)), by = Gene]
+  attr(g, "join") <- c(aligned = nrow(z), joined = nrow(x), ref_match = ref_match)
+  g[]
+}
+
+# ---------------------------------------------------------------------------
+# Raw divergence by expression category: all aligned sites vs fixed differences
+# (John Kelly, 2026-11-18)
+# ---------------------------------------------------------------------------
+
+divergence_counting_by_expression <- function(pop_sites, div_sites, meta, taxon, intron_div,
+                                              intron_comp, zerofold = NULL, zerofold_div = NULL,
+                                              bin_width = 0.2, bulk_max = 1.2, min_sites = 20L,
+                                              min_genes = 40L) {
+  #' Raw divergence (differences per aligned site, no correction) per expression
+  #' category, for one outgroup, counted two ways on the SAME sites:
+  #'   "All aligned sites"  the IM767 reference differs from the outgroup
+  #'   "Fixed differences"  the outgroup base is carried by none of the 187 lines
+  #'                        (the counting every test in the paper uses)
+  #' Classes: 0-fold, 4-fold (any change), 4-fold C/non-C (the selected system),
+  #' 4-fold A/G/T (the neutral yardstick; sites non-C on both sides) and introns.
+  #' One gene set for every class and both countings. Columns for classes whose
+  #' input is missing are NA (0-fold fixed needs zerofold_sites.tsv.gz; intronic
+  #' fixed needs the intronic script run with OUTGROUPS).
+  acgt <- c("A", "C", "G", "T")
+  x <- merge(data.table::as.data.table(pop_sites)[, .(Gene, pos3, ref3, n, A, C, G, T)],
+             data.table::as.data.table(div_sites)[, .(Gene, Pos, r = Ref, o = get(paste0(taxon, "_base")))],
+             by.x = c("Gene", "pos3"), by.y = c("Gene", "Pos"))[ref3 == r & o %chin% acgt]
+  x[, `:=`(oc = data.table::fcase(o == "A", A, o == "C", C, o == "G", G, o == "T", T), noC = C == 0L)]
+  g <- x[, .(n4 = .N, d4_all = sum(r != o), d4_fix = sum(oc == 0L),
+             d4C_all = sum((r == "C") != (o == "C")),
+             d4C_fix = sum((o == "C" & C == 0L) | (o != "C" & C == n)),
+             nN_all = sum(r != "C" & o != "C"), dN_all = sum(r != "C" & o != "C" & r != o),
+             nN_fix = sum(noC & o != "C"), dN_fix = sum(noC & o != "C" & oc == 0L)), by = Gene]
+  rm(x)
+  pm <- data.table::fread(intron_comp)
+  if (all(c("n_out", "sub_ref", "fixed_sub") %in% names(pm))) {
+    gI <- pm[, .(Gene, nI = n_out, dI_all = sub_ref, dI_fix = fixed_sub)]
+  } else {
+    gI <- data.table::fread(intron_div)[, .(Gene, nI = get(paste0(taxon, "_n_aln")),
+                                           dI_all = get(paste0(taxon, "_sub")), dI_fix = NA_real_)]
+  }
+  g <- merge(g, gI, by = "Gene")
+  has0 <- FALSE
+  if (!is.null(zerofold)) {
+    g <- merge(g, data.table::as.data.table(zerofold)[, .(Gene, n0, d0_all, d0_fix)], by = "Gene")
+    has0 <- TRUE
+  } else if (!is.null(zerofold_div) && file.exists(zerofold_div)) {
+    z <- data.table::fread(zerofold_div)[, .(Gene, n0 = get(paste0(taxon, "_n_aln")),
+                                            d0_all = get(paste0(taxon, "_sub")), d0_fix = NA_real_)]
+    g <- merge(g, z, by = "Gene"); has0 <- TRUE
+  }
+  g <- merge(g, data.table::as.data.table(meta)[, .(Gene, Mean_Log10_Exp)], by = "Gene")
+  g <- g[is.finite(Mean_Log10_Exp) & n4 >= min_sites & nI >= min_sites &
+           (if (has0) n0 >= min_sites else TRUE)]
+  g[, Exp_cat := round(round(Mean_Log10_Exp / bin_width) * bin_width, 1)]
+  cls <- list(`0-fold` = c("n0", "d0"), `4-fold` = c("n4", "d4"), `4-fold C/non-C` = c("n4", "d4C"),
+              `4-fold A/G/T` = c("nN", "dN"), intron = c("nI", "dI"))
+  if (!has0) cls[["0-fold"]] <- NULL
+  summ <- function(s, cnt) {
+    out <- list(genes = nrow(s))
+    for (k in names(cls)) {
+      nn <- cls[[k]][1]; dd <- paste0(cls[[k]][2], "_", cnt)
+      if (nn == "nN") nn <- paste0("nN_", cnt)
+      out[[paste0("sites_", k)]] <- sum(s[[nn]])
+      out[[paste0("p_", k)]] <- if (all(is.na(s[[dd]]))) NA_real_ else sum(s[[dd]]) / sum(s[[nn]])
+    }
+    data.table::as.data.table(out)
+  }
+  rows <- list()
+  for (cnt in c("all", "fix")) {
+    lab <- if (cnt == "all") "All aligned sites" else "Fixed differences"
+    byc <- g[, summ(.SD, cnt), by = Exp_cat][genes >= min_genes][order(Exp_cat)]
+    byc[, Exp_cat := sprintf("%.1f", Exp_cat)]
+    rows[[length(rows) + 1]] <- data.table::data.table(Counting = lab, rbind(
+      byc,
+      data.table::data.table(Exp_cat = sprintf("bulk (<= %.1f)", bulk_max), summ(g[Exp_cat <= bulk_max], cnt)),
+      data.table::data.table(Exp_cat = "all genes", summ(g, cnt))))
+  }
+  res <- data.table::data.table(Outgroup = taxon, data.table::rbindlist(rows))
+  ord <- c(sprintf("%.1f", sort(unique(g$Exp_cat))), sprintf("bulk (<= %.1f)", bulk_max), "all genes")
+  res[, Exp_cat := factor(Exp_cat, levels = ord)]
+  data.table::setorder(res, Exp_cat, Counting)
+  res[, Exp_cat := as.character(Exp_cat)]
+  data.table::setcolorder(res, c("Outgroup", "Exp_cat", "Counting"))
+  res[]
+}
+
+# ---------------------------------------------------------------------------
+# Fig 7C/7D without the ratios: absolute pi and divergence with a time
+# (John Kelly, 2026-11-18)
+# ---------------------------------------------------------------------------
+
+divergence_absolute_by_S <- function(gf, meta, U, V,
+                                     S_breaks = c(-Inf, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, Inf),
+                                     min_sites = 20L, n_boot = 1000L, seed = 1L) {
+  #' Absolute pi and fixed divergence per 4-fold site in the C/non-C system, by
+  #' S_Wright bin, with Wright's predictions in absolute units.
+  #'  pi:  Wright's two-allele heterozygosity pi(S) from U and V; nothing fitted.
+  #'  d:   needs the divergence time t (4N generations, summed over both
+  #'       lineages). Exact two-state solution: per C/non-C opportunity the chance
+  #'       of a difference is 1 - exp(-lambda(S) t), lambda(S) = f(-S)(V e^S + U)
+  #'       (= U + V at S = 0), so per site d(S) = 2Q(1-Q)(1 - exp(-lambda t)),
+  #'       which saturates; t K(S) is its linear (small-t) form.
+  #'  t:   (i) fitted at S = 0 from the 4-fold data (interpolated between the bins
+  #'       flanking zero): one parameter, which the ratios cancel; (ii) from the
+  #'       introns alone, when gf carries fixed intronic differences: introns are
+  #'       neutral C/non-C sites under the same U and V, so this t is independent
+  #'       of the 4-fold data and the prediction then has no free parameter.
+  #' @param gf divergence_per_gene(..., pop_sites = ) output (fixed differences).
+  #' @return per-bin table (observed with 95% CIs from resampling genes within
+  #'   bins; predictions); attributes t (with CI) and t_intron.
+  set.seed(seed)
+  g <- merge(data.table::as.data.table(gf), data.table::as.data.table(meta)[, .(Gene, S)], by = "Gene")
+  g <- g[is.finite(S) & n4 >= min_sites]
+  g[, Sbin := cut(S, S_breaks, right = FALSE)]
+  f   <- function(z) ifelse(abs(z) < 1e-8, 1, z / (1 - exp(-z)))
+  lam <- function(S) f(-S) * (V * exp(S) + U)
+  st <- function(i) {
+    s  <- function(v) sum(g[[v]][i])
+    n  <- s("n4"); Q1 <- s("C4_ref") / n; Q2 <- s("C4_out") / n
+    opp <- Q1 * (1 - Q2) + Q2 * (1 - Q1)
+    fr <- c(s("rA"), s("rG"), s("rT")) / s("nN"); fo <- c(s("oA"), s("oG"), s("oT")) / s("nN")
+    c(Q_IM = Q1, Q_out = Q2, pi = s("piC") / n, d = s("d4C") / n, opp = opp,
+      d_per_opp = s("d4C") / n / opp, dAGT = s("dN") / s("nN"),
+      dAGT_per_opp = (s("dN") / s("nN")) / (1 - sum(fr * fo)))
+  }
+  bins <- levels(droplevels(g$Sbin))
+  idx  <- lapply(bins, function(b) which(g$Sbin == b)); names(idx) <- bins
+  mS   <- vapply(idx, function(i) mean(g$S[i]), numeric(1))
+  w0   <- -mS[1] / (mS[2] - mS[1])
+  tfit <- function(e) -log(1 - ((1 - w0) * e["d_per_opp", 1] + w0 * e["d_per_opp", 2])) / (U + V)
+  est  <- sapply(idx, st)
+  t0   <- tfit(est)
+  bt   <- replicate(n_boot, sapply(idx, function(i) st(i[sample.int(length(i), length(i), TRUE)])))
+  tb   <- apply(bt, 3, tfit)
+  q    <- function(k, p) apply(bt[k, , , drop = FALSE], 2, stats::quantile, p, na.rm = TRUE)
+  QW   <- .wright_Q_kummer(mS, U, V)
+  t_I  <- NA_real_
+  if (isTRUE(attr(gf, "intron_counting") == "fixed")) {
+    h <- g[is.finite(QI) & is.finite(QIo) & nI > 0]
+    qi <- sum(h$QI * h$nI) / sum(h$nI); qo <- sum(h$QIo * h$nI) / sum(h$nI)
+    t_I <- -log(1 - (sum(h$dIC) / sum(h$nI)) / (qi * (1 - qo) + qo * (1 - qi))) / (U + V)
+  }
+  pred <- function(t) 2 * QW * (1 - QW) * (1 - exp(-lam(mS) * t))
+  out <- data.table::data.table(Sbin = bins, n_genes = lengths(idx),
+    n_sites = vapply(idx, function(i) sum(g$n4[i]), numeric(1)), mean_S = mS,
+    Q_IM = est["Q_IM", ], Q_out = est["Q_out", ], Q_Wright = QW,
+    pi = est["pi", ], pi_lo = q("pi", 0.025), pi_hi = q("pi", 0.975),
+    pi_Wright = wright_pi_2allele(mS, U, V),
+    d = est["d", ], d_lo = q("d", 0.025), d_hi = q("d", 0.975),
+    d_Wright = pred(t0), d_Wright_linear = t0 * wright_substitution_rate(mS, U, V),
+    d_Wright_intron_t = if (is.finite(t_I)) pred(t_I) else NA_real_,
+    opportunity = est["opp", ],
+    d_per_opp = est["d_per_opp", ], d_per_opp_lo = q("d_per_opp", 0.025),
+    d_per_opp_hi = q("d_per_opp", 0.975), d_per_opp_Wright = 1 - exp(-lam(mS) * t0),
+    dAGT = est["dAGT", ], dAGT_per_opp = est["dAGT_per_opp", ],
+    dAGT_per_opp_lo = q("dAGT_per_opp", 0.025), dAGT_per_opp_hi = q("dAGT_per_opp", 0.975),
+    pi_over_d = est["pi", ] / est["d", ], pi_over_d_Wright = wright_pi_2allele(mS, U, V) / pred(t0))
+  attr(out, "t") <- c(t = unname(t0), lo = unname(stats::quantile(tb, 0.025)),
+                      hi = unname(stats::quantile(tb, 0.975)))
+  attr(out, "t_intron") <- t_I
+  out[]
+}
+
+plot_divergence_absolute <- function(tab, title = NULL) {
+  #' Three panels, absolute units, by S_Wright: pi_C per site with Wright's pi(S)
+  #' (no fitted parameter); fixed C/non-C divergence per site with Wright's
+  #' saturating prediction for the fitted t (dashed: the linear t K(S)); and per
+  #' opportunity, C/non-C next to the neutral A/G/T rate of the same sites.
+  suppressPackageStartupMessages(require(ggplot2))
+  d <- data.table::as.data.table(tab)
+  pal <- c(obs = "#3B7DD8", neu = "grey45")
+  pan <- c("pi[C]~per~site", "d[C]~per~site~(fixed)", "Divergence~per~opportunity")
+  pts <- data.table::rbindlist(list(
+    d[, .(S = mean_S, y = pi, lo = pi_lo, hi = pi_hi, k = "C/non-C", p = pan[1])],
+    d[, .(S = mean_S, y = d, lo = d_lo, hi = d_hi, k = "C/non-C", p = pan[2])],
+    d[, .(S = mean_S, y = d_per_opp, lo = d_per_opp_lo, hi = d_per_opp_hi, k = "C/non-C", p = pan[3])],
+    d[, .(S = mean_S + 0.03, y = dAGT_per_opp, lo = dAGT_per_opp_lo, hi = dAGT_per_opp_hi,
+          k = "A/G/T (neutral)", p = pan[3])]))
+  lns <- data.table::rbindlist(list(
+    d[, .(S = mean_S, y = pi_Wright, l = "Wright", p = pan[1])],
+    d[, .(S = mean_S, y = d_Wright, l = "Wright", p = pan[2])],
+    d[, .(S = mean_S, y = d_Wright_linear, l = "Wright, linear t K(S)", p = pan[2])],
+    d[, .(S = mean_S, y = d_per_opp_Wright, l = "Wright", p = pan[3])]))
+  pts[, p := factor(p, levels = pan)]; lns[, p := factor(p, levels = pan)]
+  ggplot() +
+    geom_line(data = lns, aes(S, y, linetype = l), colour = "grey15", linewidth = 0.7) +
+    geom_errorbar(data = pts, aes(S, ymin = lo, ymax = hi, colour = k), width = 0.04, linewidth = 0.45) +
+    geom_point(data = pts, aes(S, y, colour = k, shape = k), size = 2) +
+    facet_wrap(~ p, scales = "free_y", labeller = label_parsed) +
+    scale_colour_manual(values = c(`C/non-C` = pal[["obs"]], `A/G/T (neutral)` = pal[["neu"]]), name = NULL) +
+    scale_shape_manual(values = c(`C/non-C` = 16, `A/G/T (neutral)` = 17), name = NULL) +
+    scale_linetype_manual(values = c(Wright = "solid", `Wright, linear t K(S)` = "22"), name = NULL) +
+    labs(x = expression(S[Wright] ~ "(bin mean)"), y = NULL, title = title) +
+    theme_custom() +
+    theme(legend.position = "top", axis.text.x = element_text(angle = 0, hjust = 0.5))
 }
