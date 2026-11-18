@@ -1167,7 +1167,8 @@ zerofold_divergence_by_gene <- function(zerofold_sites, zf_pop, taxon) {
   ref_match <- x[, mean(ref == r)]
   x <- x[ref == r]
   x[, oc := data.table::fcase(o == "A", A, o == "C", C, o == "G", G, o == "T", T)]
-  g <- x[, .(n0 = .N, d0_all = sum(r != o), d0_fix = sum(oc == 0L)), by = Gene]
+  g <- x[, .(n0 = .N, d0_all = sum(r != o), d0_fix = sum(oc == 0L), d0_sh = sum(r != o & oc > 0L)),
+         by = Gene]
   attr(g, "join") <- c(aligned = nrow(z), joined = nrow(x), ref_match = ref_match)
   g[]
 }
@@ -1184,8 +1185,11 @@ divergence_counting_by_expression <- function(pop_sites, div_sites, meta, taxon,
   #' Raw divergence (differences per aligned site, no correction) per expression
   #' category, for one outgroup, counted two ways on the SAME sites:
   #'   "All aligned sites"  the IM767 reference differs from the outgroup
+  #'   "Shared with IM polymorphism"  the reference differs and the outgroup base is
+  #'                        carried by some line: polymorphism leaking into divergence
   #'   "Fixed differences"  the outgroup base is carried by none of the 187 lines
   #'                        (the counting every test in the paper uses)
+  #' All = shared + fixed, except sites where IM767 alone carries the outgroup base.
   #' Classes: 0-fold, 4-fold (any change), 4-fold C/non-C (the selected system),
   #' 4-fold A/G/T (the neutral yardstick; sites non-C on both sides) and introns.
   #' One gene set for every class and both countings. Columns for classes whose
@@ -1196,7 +1200,7 @@ divergence_counting_by_expression <- function(pop_sites, div_sites, meta, taxon,
              data.table::as.data.table(div_sites)[, .(Gene, Pos, r = Ref, o = get(paste0(taxon, "_base")))],
              by.x = c("Gene", "pos3"), by.y = c("Gene", "Pos"))[ref3 == r & o %chin% acgt]
   x[, `:=`(oc = data.table::fcase(o == "A", A, o == "C", C, o == "G", G, o == "T", T), noC = C == 0L)]
-  g <- x[, .(n4 = .N, d4_all = sum(r != o), d4_fix = sum(oc == 0L),
+  g <- x[, .(n4 = .N, d4_all = sum(r != o), d4_fix = sum(oc == 0L), d4_sh = sum(r != o & oc > 0L),
              d4C_all = sum((r == "C") != (o == "C")),
              d4C_fix = sum((o == "C" & C == 0L) | (o != "C" & C == n)),
              nN_all = sum(r != "C" & o != "C"), dN_all = sum(r != "C" & o != "C" & r != o),
@@ -1204,19 +1208,23 @@ divergence_counting_by_expression <- function(pop_sites, div_sites, meta, taxon,
   rm(x)
   pm <- data.table::fread(intron_comp)
   if (all(c("n_out", "sub_ref", "fixed_sub") %in% names(pm))) {
-    gI <- pm[, .(Gene, nI = n_out, dI_all = sub_ref, dI_fix = fixed_sub)]
+    # shared = reference differences minus fixed ones (exact except where IM767
+    # alone carries the outgroup base, which is rare: < 0.1% of 4-fold differences)
+    gI <- pm[, .(Gene, nI = n_out, dI_all = sub_ref, dI_fix = fixed_sub, dI_sh = sub_ref - fixed_sub)]
   } else {
     gI <- data.table::fread(intron_div)[, .(Gene, nI = get(paste0(taxon, "_n_aln")),
-                                           dI_all = get(paste0(taxon, "_sub")), dI_fix = NA_real_)]
+                                           dI_all = get(paste0(taxon, "_sub")), dI_fix = NA_real_,
+                                           dI_sh = NA_real_)]
   }
   g <- merge(g, gI, by = "Gene")
   has0 <- FALSE
   if (!is.null(zerofold)) {
-    g <- merge(g, data.table::as.data.table(zerofold)[, .(Gene, n0, d0_all, d0_fix)], by = "Gene")
+    g <- merge(g, data.table::as.data.table(zerofold)[, .(Gene, n0, d0_all, d0_fix, d0_sh)], by = "Gene")
     has0 <- TRUE
   } else if (!is.null(zerofold_div) && file.exists(zerofold_div)) {
     z <- data.table::fread(zerofold_div)[, .(Gene, n0 = get(paste0(taxon, "_n_aln")),
-                                            d0_all = get(paste0(taxon, "_sub")), d0_fix = NA_real_)]
+                                            d0_all = get(paste0(taxon, "_sub")), d0_fix = NA_real_,
+                                            d0_sh = NA_real_)]
     g <- merge(g, z, by = "Gene"); has0 <- TRUE
   }
   g <- merge(g, data.table::as.data.table(meta)[, .(Gene, Mean_Log10_Exp)], by = "Gene")
@@ -1230,15 +1238,16 @@ divergence_counting_by_expression <- function(pop_sites, div_sites, meta, taxon,
     out <- list(genes = nrow(s))
     for (k in names(cls)) {
       nn <- cls[[k]][1]; dd <- paste0(cls[[k]][2], "_", cnt)
-      if (nn == "nN") nn <- paste0("nN_", cnt)
+      if (nn == "nN") nn <- paste0("nN_", if (cnt == "sh") "all" else cnt)
       out[[paste0("sites_", k)]] <- sum(s[[nn]])
-      out[[paste0("p_", k)]] <- if (all(is.na(s[[dd]]))) NA_real_ else sum(s[[dd]]) / sum(s[[nn]])
+      out[[paste0("p_", k)]] <- if (!dd %in% names(s) || all(is.na(s[[dd]]))) NA_real_ else
+        sum(s[[dd]]) / sum(s[[nn]])
     }
     data.table::as.data.table(out)
   }
   rows <- list()
-  for (cnt in c("all", "fix")) {
-    lab <- if (cnt == "all") "All aligned sites" else "Fixed differences"
+  for (cnt in c("all", "sh", "fix")) {
+    lab <- c(all = "All aligned sites", sh = "Shared with IM polymorphism", fix = "Fixed differences")[[cnt]]
     byc <- g[, summ(.SD, cnt), by = Exp_cat][genes >= min_genes][order(Exp_cat)]
     byc[, Exp_cat := sprintf("%.1f", Exp_cat)]
     rows[[length(rows) + 1]] <- data.table::data.table(Counting = lab, rbind(
@@ -1249,8 +1258,10 @@ divergence_counting_by_expression <- function(pop_sites, div_sites, meta, taxon,
   res <- data.table::data.table(Outgroup = taxon, data.table::rbindlist(rows))
   ord <- c(sprintf("%.1f", sort(unique(g$Exp_cat))), sprintf("bulk (<= %.1f)", bulk_max), "all genes")
   res[, Exp_cat := factor(Exp_cat, levels = ord)]
+  res[, Counting := factor(Counting, levels = c("All aligned sites", "Shared with IM polymorphism",
+                                                "Fixed differences"))]
   data.table::setorder(res, Exp_cat, Counting)
-  res[, Exp_cat := as.character(Exp_cat)]
+  res[, `:=`(Exp_cat = as.character(Exp_cat), Counting = as.character(Counting))]
   data.table::setcolorder(res, c("Outgroup", "Exp_cat", "Counting"))
   res[]
 }
