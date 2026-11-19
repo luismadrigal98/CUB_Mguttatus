@@ -102,8 +102,9 @@ intron_pi_d_by_gene <- function(intron_div, intron_masked, taxon, fixed = TRUE) 
     return(out[d_n > 0 & pi_n > 0])
   }
   if (fixed)
-    warning("[intron pi/d] ", intron_masked, " has no fixed-difference columns; intronic d is ",
-            "reference-based (rerun the intronic script with OUTGROUPS=...)", call. = FALSE)
+    stop("[intron pi/d] ", intron_masked, " has no fixed-difference columns. Rerun ",
+         "Bash_scripts/run_intronic_twostate.sh with OUTGROUPS=..., or call with fixed = FALSE ",
+         "for reference-based counts (contaminated by polymorphism).", call. = FALSE)
   dv <- data.table::fread(intron_div)
   dv <- dv[, .(Gene, d_n = get(paste0(taxon, "_n_aln")), d_tot = get(paste0(taxon, "_sub")),
                d_C = get(paste0(taxon, "_subC")))]
@@ -430,8 +431,9 @@ divergence_per_gene <- function(fourfold_sites, zerofold_div, intron_div, intron
                  QIo = out_C / n_out)]
   } else {
     if (!is.null(pop_sites))
-      warning("[divergence] ", intron_comp, " has no fixed-difference columns; intronic d is ",
-              "reference-based (rerun the intronic script with OUTGROUPS=...)", call. = FALSE)
+      stop("[divergence] ", intron_comp, " has no fixed-difference columns. Rerun ",
+           "Bash_scripts/run_intronic_twostate.sh with OUTGROUPS=... (fixed 4-fold counts must ",
+           "not be mixed with reference-based intronic ones).", call. = FALSE)
     dI <- data.table::fread(intron_div)[, .(Gene, nI = get(paste0(taxon, "_n_aln")),
                                            dI = get(paste0(taxon, "_sub")),
                                            dIC = get(paste0(taxon, "_subC")))]
@@ -489,7 +491,7 @@ divergence_raw_by_expression <- function(gd, meta, bin_width = 0.2, bulk_max = 1
 
 divergence_turnover_by_S <- function(gd, meta, U, V,
                                      S_breaks = c(-Inf, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, Inf),
-                                     min_sites = 20L, n_boot = 2000L, seed = 1L) {
+                                     min_sites = 20L, n_boot = 2000L, seed = 1L, t = NULL) {
   #' The divergence-only selection test, per S_Wright bin, relative to S = 0
   #' (interpolated between the bins flanking zero), genes resampled.
   #' Each turnover is divergence over the mismatch expected between two
@@ -537,6 +539,11 @@ divergence_turnover_by_S <- function(gd, meta, U, V,
                           function(z) min(1, 2 * min(mean(z <= 1), mean(z >= 1))))
   f  <- function(x) ifelse(abs(x) < 1e-8, 1, x / (1 - exp(-x)))
   comp <- function(a, b) vapply(idx, function(i) sm(a, i) / sm(b, i), numeric(1))
+  # Exact prediction for fixed differences (see wright_fixed_divergence_exact),
+  # scaled to the same interpolated S = 0 reference as the data.
+  ex <- if (is.null(t)) rep(NA_real_, length(mS)) else {
+    r <- vapply(mS, function(s) wright_fixed_per_opportunity_exact(s, t, U, V), numeric(1))
+    r / ((1 - w0) * r[1] + w0 * r[2]) }
   data.table::data.table(
     Sbin = bins, n_genes = lengths(idx), n_genes_intron = vapply(idx, function(i) sum(g$hasI[i]), 1L),
     mean_S = mS, Q4_ref = comp("C4_ref", "n4"), Q4_out = comp("C4_out", "n4"),
@@ -549,7 +556,7 @@ divergence_turnover_by_S <- function(gd, meta, U, V,
     P_nonC = pv("rN"),
     ratio_intron = est["rI", ] / ref["rI"], lo_intron = q("rI", 0.025), hi_intron = q("rI", 0.975),
     P_intron = pv("rI"),
-    Wright_turnover = f(-mS) * (V * exp(mS) + U) / (U + V))
+    Wright_turnover = f(-mS) * (V * exp(mS) + U) / (U + V), Wright_exact = ex)
 }
 
 plot_divergence_turnover <- function(tab, check = NULL, yardstick = c("nonC", "intron"),
@@ -574,7 +581,12 @@ plot_divergence_turnover <- function(tab, check = NULL, yardstick = c("nonC", "i
   if (!is.null(check) && nrow(check)) d <- rbind(d, pick(check, "KONZA"))
   d[, x := mean_S + ifelse(Outgroup == "KONZA", 0.03, 0)]
   d[, Outgroup := factor(Outgroup, levels = c("JUNG1", "KONZA"))]
-  pred <- data.table::as.data.table(tab)[, .(mean_S, Wright_turnover)]
+  pred <- data.table::as.data.table(tab)
+  pred <- pred[, .(mean_S, Wright_turnover,
+                   Wright_exact = if ("Wright_exact" %in% names(pred)) Wright_exact else NA_real_)]
+  has_ex <- any(is.finite(pred$Wright_exact))
+  lt <- if (has_ex) c("Selection (Wright, fixed differences)" = "solid", "Closed form" = "13") else
+    c("Selection (Wright)" = "solid")
   # K = substitution rate per opportunity (divergence over the mismatch expected
   # from composition alone); the legend text defines it.
   ylab <- if (yardstick == "nonC")
@@ -583,8 +595,13 @@ plot_divergence_turnover <- function(tab, check = NULL, yardstick = c("nonC", "i
   ggplot() +
     geom_hline(yintercept = 1, linetype = "dashed", colour = "grey55", linewidth = 0.4) +
     geom_vline(xintercept = 0, linetype = "dotted", colour = "grey65", linewidth = 0.4) +
-    geom_line(data = pred, aes(mean_S, Wright_turnover, linetype = "Selection (Wright)"),
-              colour = "grey15", linewidth = 0.8) +
+    {if (has_ex) list(
+       geom_line(data = pred, aes(mean_S, Wright_exact, linetype = "Selection (Wright, fixed differences)"),
+                 colour = "grey15", linewidth = 0.8),
+       geom_line(data = pred, aes(mean_S, Wright_turnover, linetype = "Closed form"),
+                 colour = "grey45", linewidth = 0.5))
+     else geom_line(data = pred, aes(mean_S, Wright_turnover, linetype = "Selection (Wright)"),
+                    colour = "grey15", linewidth = 0.8)} +
     geom_errorbar(data = d, aes(x = x, ymin = lo, ymax = hi), colour = "#3B7DD8",
                   width = 0.04, linewidth = 0.5) +
     geom_point(data = d, aes(x = x, y = y, shape = Outgroup), colour = "#3B7DD8",
@@ -593,11 +610,11 @@ plot_divergence_turnover <- function(tab, check = NULL, yardstick = c("nonC", "i
                        labels = c(JUNG1 = expression(italic("M. jungermannioides")),
                                   KONZA = expression(italic("M. glabratus"))),
                        name = "Outgroup") +
-    scale_linetype_manual(values = c("Selection (Wright)" = "solid"), name = NULL) +
+    scale_linetype_manual(values = lt, name = NULL) +
     labs(x = expression(S[Wright] * " (bin mean)"), y = ylab, title = title) +
     theme_custom() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
-          legend.position = "top", legend.direction = "horizontal",
+          legend.position = "top", legend.direction = "horizontal", legend.box = "vertical",
           legend.background = element_blank(), legend.key = element_blank())
 }
 
@@ -805,7 +822,7 @@ plot_partition_scaled <- function(tab, title = NULL) {
 divergence_turnover_robustness <- function(pop_sites, div_sites, meta, intron_comp, U, V, taxon,
                                            S_breaks = c(-Inf, 0, 0.25, 0.5, 0.75, 1, 1.5, 2, Inf),
                                            min_sites = 20L, shrink = 300, n_boot = 1000L,
-                                           seed = 1L) {
+                                           seed = 1L, t = NULL) {
   #' The turnover test (C/non-C over the neutral yardstick, per opportunity,
   #' fixed differences, relative to S = 0) in the five versions above.
   #' @param pop_sites extract_fourfold_sites() output.
@@ -874,11 +891,22 @@ divergence_turnover_robustness <- function(pop_sites, div_sites, meta, intron_co
     # interpolated at binning S = 0, read at the S where each bin truly sits
     # (with split-half S that reference sits near S = 0.2, not 0).
     sc <- function(v) v / ((1 - w0) * v[1] + w0 * v[2])
+    # A variant with gene-specific mutation bias (column Q0g) reads Wright and the
+    # bias-alone lines at each bin's mean neutral C content, keeping U + V.
+    q0 <- if ("Q0g" %in% names(g))
+      vapply(idx, function(i) sum(g$Q0g[i] * g$n4[i]) / sum(g$n4[i]), numeric(1)) else
+      rep(V / (U + V), length(bins))
+    Ub <- (U + V) * (1 - q0); Vb <- (U + V) * q0
+    Wb <- f(-xS) * (Vb * exp(xS) + Ub) / (Ub + Vb)
+    ex <- if (is.null(t)) NA_real_ else
+      sc(vapply(seq_along(xS), function(k) wright_fixed_per_opportunity_exact(xS[k], t, Ub[k], Vb[k]),
+                numeric(1)))
     data.table::data.table(variant = label, Sbin = bins, n_genes = lengths(idx), S = xS,
       turnover = rel, lo = apply(bt, 1, stats::quantile, 0.025, na.rm = TRUE),
-      hi = apply(bt, 1, stats::quantile, 0.975, na.rm = TRUE), Wright = sc(W(xS)),
-      bias_less_C_loss = sc((U * exp(-xS) + V) / (U + V)),
-      bias_more_C_gain = sc((U + V * exp(xS)) / (U + V)))
+      hi = apply(bt, 1, stats::quantile, 0.975, na.rm = TRUE), Wright = sc(Wb),
+      Wright_exact = ex,
+      bias_less_C_loss = sc((Ub * exp(-xS) + Vb) / (Ub + Vb)),
+      bias_more_C_gain = sc((Ub + Vb * exp(xS)) / (Ub + Vb)))
   }
   m  <- data.table::as.data.table(meta)[, .(Gene, S)]
   gw <- merge(agg("Gene"), m, by = "Gene")[n4 >= min_sites]
@@ -899,8 +927,8 @@ divergence_turnover_robustness <- function(pop_sites, div_sites, meta, intron_co
   ib <- pm[n_sites >= 200, .(Gene, nIs = n_sites, QIg = q_pref_C)]
   QIbar <- ib[, sum(QIg * nIs) / sum(nIs)]
   gl <- merge(gw, ib, by = "Gene")
-  gl[, S_local := S - (stats::qlogis((QIg * nIs + shrink * QIbar) / (nIs + shrink)) -
-                         stats::qlogis(V / (U + V)))]
+  gl[, Q0g := (QIg * nIs + shrink * QIbar) / (nIs + shrink)]
+  gl[, S_local := S - (stats::qlogis(Q0g) - stats::qlogis(V / (U + V)))]
   out[[length(out) + 1]] <- run(gl, "S_local", "AGT", "S with each gene's intronic mutation bias")
   res <- data.table::rbindlist(out)
   res[, variant := factor(variant, levels = unique(variant))]
@@ -1192,6 +1220,8 @@ divergence_counting_by_expression <- function(pop_sites, div_sites, meta, taxon,
   #' All = shared + fixed, except sites where IM767 alone carries the outgroup base.
   #' Classes: 0-fold, 4-fold (any change), 4-fold C/non-C (the selected system),
   #' 4-fold A/G/T (the neutral yardstick; sites non-C on both sides) and introns.
+  #' Same sites for both countings, except A/G/T: "all" uses sites non-C in the
+  #' reference and the outgroup, "fixed" sites non-C in every line and the outgroup.
   #' One gene set for every class and both countings. Columns for classes whose
   #' input is missing are NA (0-fold fixed needs zerofold_sites.tsv.gz; intronic
   #' fixed needs the intronic script run with OUTGROUPS).
@@ -1375,4 +1405,64 @@ plot_divergence_absolute <- function(tab, title = NULL) {
     labs(x = expression(S[Wright] ~ "(bin mean)"), y = NULL, title = title) +
     theme_custom() +
     theme(legend.position = "top", axis.text.x = element_text(angle = 0, hjust = 0.5))
+}
+
+# ---------------------------------------------------------------------------
+# Exact Wright prediction for FIXED differences (2026-11-19)
+# ---------------------------------------------------------------------------
+# The closed forms (K(S), turnover f(-S)(Ve^S+U)/(U+V)) describe two single genomes
+# without ancestral polymorphism. The pipeline counts fixed differences between a
+# 187-line sample and one outgroup genome. Exact expectation: haploid Wright-Fisher
+# with Nh copies (U = 2 Nh u, etc.); ancestor at stationarity; split into two
+# lineages of t/2 * 2Nh generations each (t in 4N generations, both lineages);
+# IM = binomial sample of n; outgroup = one genome. Fixed C/non-C difference =
+# outgroup C and no C in the sample, or outgroup non-C and all C. Opportunity from
+# the expected compositions, as the pipeline pools them. Nh = 100 and 200 agree to
+# 0.001 (checked 2026-11-19); at JUNG1 depth (t = 6.09) the relative turnover at
+# S = 1.2 is 0.738, against the closed form's 0.698.
+
+.wf_cache <- new.env(parent = emptyenv())
+
+.wf_matrix <- function(S, U, V, Nh) {
+  i  <- 0:Nh; p <- i / Nh
+  p1 <- p * (1 - U / (2 * Nh)) + (1 - p) * V / (2 * Nh)
+  p2 <- p1 * (1 + S / (2 * Nh)) / (1 + S / (2 * Nh) * p1)
+  outer(p2, i, function(pp, k) stats::dbinom(k, Nh, pp))
+}
+
+.mat_pow <- function(M, k) {
+  R <- diag(nrow(M))
+  while (k > 0) { if (k %% 2 == 1) R <- R %*% M; M <- M %*% M; k <- k %/% 2 }
+  R
+}
+
+wright_fixed_divergence_exact <- function(S, t, U, V, n = 187L, Nh = 100L) {
+  #' Expected fixed C/non-C divergence per site, opportunity and compositions
+  #' under the split model above. Cached.
+  key <- sprintf("%.4f|%.4f|%.6f|%.6f|%d|%d", S, t, U, V, n, Nh)
+  if (!is.null(.wf_cache[[key]])) return(.wf_cache[[key]])
+  P  <- .wf_matrix(S, U, V, Nh)
+  ev <- eigen(t(P))
+  anc <- Re(ev$vectors[, which.min(abs(ev$values - 1))]); anc <- anc / sum(anc)
+  Pt <- .mat_pow(P, as.integer(round(t / 2 * 2 * Nh)))
+  fr <- (0:Nh) / Nh
+  d  <- sum(anc * ((Pt %*% fr) * (Pt %*% (1 - fr)^n) + (Pt %*% (1 - fr)) * (Pt %*% fr^n)))
+  Q1 <- sum((anc %*% Pt) * fr); Q2 <- Q1                  # same S and Ne on both lineages
+  out <- c(d = d, opp = Q1 * (1 - Q2) + Q2 * (1 - Q1), Q = Q1)
+  .wf_cache[[key]] <- out
+  out
+}
+
+wright_fixed_per_opportunity_exact <- function(S, t, U, V, n = 187L, Nh = 100L) {
+  #' Fixed C/non-C divergence per opportunity: the quantity the turnover test
+  #' divides by the neutral rate (scale to S = 0 like the data).
+  e <- wright_fixed_divergence_exact(S, t, U, V, n, Nh)
+  unname(e["d"] / e["opp"])
+}
+
+fit_t_exact <- function(x0, U, V, n = 187L, Nh = 100L, interval = c(0.05, 40)) {
+  #' Divergence time t (4N generations, both lineages) at which the exact model
+  #' gives fixed C/non-C divergence per opportunity x0 at S = 0.
+  stats::uniroot(function(t) wright_fixed_per_opportunity_exact(0, t, U, V, n, Nh) - x0,
+                 interval, tol = 1e-4)$root
 }

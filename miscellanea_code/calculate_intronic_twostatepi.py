@@ -25,8 +25,9 @@ Use Lines187.to.IM767v2.1.vcf.gz.
 Intron definition
 -----------------
 Primary transcript only (`longest=1`), with every exonic feature it has (CDS,
-UTRs, exon) merged before taking the gaps, so UTR introns count and a gap is
-never part of another isoform's exon. Each intron is trimmed by --trim-bp at
+UTRs, exon) merged before taking the gaps, so UTR introns count. Exons of OTHER isoforms
+and of other genes are not removed: about 3% of trimmed intronic bp overlap them
+(2026-11-18 audit; small effect on composition and U, V). Each intron is trimmed by --trim-bp at
 both ends to drop splice signals and kept only if the trimmed width is at
 least --min-width. The same definition is implemented in R by
 intronic_reference_composition() (src/intronic_controls.R), so the population
@@ -341,7 +342,8 @@ def in_mask(mask, chrom, pos1):
 
 
 def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
-                 target_chrom=None, masks=None, mstats=None, outgroups=None):
+                 target_chrom=None, masks=None, mstats=None, outgroups=None,
+                 min_called_outgroup=0):
     if line.startswith('#'):
         return
     f = line.split('\t', 5)
@@ -420,8 +422,10 @@ def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
                 if mrec is None:
                     mrec = mstats[name][gene_id] = [0] * N_FIELDS
                 add_site(mrec, k_c, k_g, n, het_total)
-    # Outgroup tracks: the site is in the table if the outgroup has a base here.
-    if outgroups:
+    # Outgroup tracks: the site is in the table if the outgroup has a base here
+    # and at least min_called_outgroup lines are called (fixed differences
+    # inflate when few lines are called; 4-fold sites use 50).
+    if outgroups and n >= min_called_outgroup:
         minus = gene_strand.get(gene_id, '+') == '-'
         for name, track in outgroups.items():
             t = track.get(chrom)
@@ -446,10 +450,11 @@ def process_line(line, intervals, gene_strand, min_called, stats, sfs, tally,
 WORKER = {}
 
 
-def worker_init(intervals, gene_strand, min_called, target_chrom, masks=None, outgroups=None):
+def worker_init(intervals, gene_strand, min_called, target_chrom, masks=None, outgroups=None,
+                min_called_outgroup=0):
     WORKER.update(intervals=intervals, gene_strand=gene_strand,
                   min_called=min_called, target_chrom=target_chrom, masks=masks or {},
-                  outgroups=outgroups or {})
+                  outgroups=outgroups or {}, min_called_outgroup=min_called_outgroup)
 
 
 def process_batch(lines):
@@ -459,7 +464,8 @@ def process_batch(lines):
     for line in lines:
         process_line(line, WORKER['intervals'], WORKER['gene_strand'],
                      WORKER['min_called'], stats, sfs, tally, WORKER['target_chrom'],
-                     WORKER['masks'], mstats, WORKER['outgroups'])
+                     WORKER['masks'], mstats, WORKER['outgroups'],
+                     WORKER.get('min_called_outgroup', 0))
     return stats, dict(sfs), tally, mstats
 
 
@@ -487,7 +493,7 @@ def merge_into(acc, part):
 
 def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
                 buffer_bytes=16 * 1024 * 1024, workers=1, batch_size=20000, masks=None,
-                outgroups=None):
+                outgroups=None, min_called_outgroup=0):
     masks = masks or {}
     outgroups = outgroups or {}
     acc = ({}, defaultdict(int), dict.fromkeys(TALLY_KEYS, 0),
@@ -495,7 +501,8 @@ def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
     line_count = 0
 
     if workers <= 1:
-        worker_init(intervals, gene_strand, min_called, target_chrom, masks, outgroups)
+        worker_init(intervals, gene_strand, min_called, target_chrom, masks, outgroups,
+                    min_called_outgroup)
         batch = []
         with open(vcf_file, buffering=buffer_bytes) as fh:
             for line in fh:
@@ -515,7 +522,8 @@ def process_vcf(vcf_file, intervals, gene_strand, min_called, target_chrom=None,
     print(f"  Parallel mode: workers={workers}, batch_size={batch_size}", file=sys.stderr)
     with multiprocessing.Pool(processes=workers, initializer=worker_init,
                               initargs=(intervals, gene_strand, min_called,
-                                        target_chrom, masks, outgroups)) as pool:
+                                        target_chrom, masks, outgroups,
+                                        min_called_outgroup)) as pool:
         pending, batch = [], []
         with open(vcf_file, buffering=buffer_bytes) as fh:
             for line in fh:
@@ -577,6 +585,9 @@ def main():
     ap.add_argument('--trim-bp', type=int, default=30)
     ap.add_argument('--min-width', type=int, default=86,
                     help="Minimum TRIMMED intron width; original must be >= 2*trim + this")
+    ap.add_argument('--min-called-outgroup', type=int, default=50,
+                    help="Called lines required for a site to enter the --outgroup tables "
+                         "(pi and fixed differences together); 4-fold sites use 50")
     ap.add_argument('--min-called', type=int, default=10,
                     help="Minimum strict-homozygote lines for a site to count (default 10)")
     ap.add_argument('--all-isoforms', action='store_true',
@@ -624,12 +635,13 @@ def main():
         n_bp = sum(len(t) - t.count(b'-') for t in outgroups[name].values())
         print(f"  outgroup {name}: {n_bp:,} aligned intronic bp from {path}", file=sys.stderr)
 
-    print(f"Processing VCF: {args.vcf_file}  (min_called = {args.min_called})", file=sys.stderr)
+    print(f"Processing VCF: {args.vcf_file}  (min_called = {args.min_called}; "
+          f"outgroup tables: {args.min_called_outgroup})", file=sys.stderr)
     (stats, sfs, tally, mstats), n_lines = process_vcf(
         args.vcf_file, intervals, gene_strand, args.min_called,
         target_chrom=args.chrom, buffer_bytes=buffer_bytes,
         workers=max(1, args.workers), batch_size=max(1000, args.batch_size), masks=masks,
-        outgroups=outgroups)
+        outgroups=outgroups, min_called_outgroup=args.min_called_outgroup)
 
     used = tally['used']
     inv_share = tally['used_invariant'] / used if used else 0.0

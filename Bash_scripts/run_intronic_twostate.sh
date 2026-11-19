@@ -65,6 +65,7 @@ BATCH_SIZE=${BATCH_SIZE:-20000}
 TRIM_BP=${TRIM_BP:-30}
 MIN_WIDTH=${MIN_WIDTH:-86}
 MIN_CALLED=${MIN_CALLED:-10}
+MIN_CALLED_OUTGROUP=${MIN_CALLED_OUTGROUP:-50}   # outgroup tables: same as 4-fold sites
 MASK_ARGS=()
 for m in ${MASKS:-}; do
   [[ -f "${m#*=}" ]] || { echo "ERROR: mask file not found: ${m#*=}" >&2; exit 1; }
@@ -81,7 +82,7 @@ echo "GFF: $GFF3"
 echo "OUT: $OUT"
 echo "SFS_OUT: $SFS_OUT"
 echo "CPUS: $CPUS, workers: $WORKERS, buffer_mb: $BUFFER_MB, batch_size: $BATCH_SIZE"
-echo "trim_bp: $TRIM_BP, min_width: $MIN_WIDTH, min_called: $MIN_CALLED"
+echo "trim_bp: $TRIM_BP, min_width: $MIN_WIDTH, min_called: $MIN_CALLED, outgroup tables: $MIN_CALLED_OUTGROUP"
 echo "masks: ${MASKS:-none}"
 echo "outgroups: ${OUTGROUPS:-none}"
 
@@ -132,6 +133,7 @@ fi
   --trim-bp "$TRIM_BP" \
   --min-width "$MIN_WIDTH" \
   --min-called "$MIN_CALLED" \
+  --min-called-outgroup "$MIN_CALLED_OUTGROUP" \
   ${MASK_ARGS[@]+"${MASK_ARGS[@]}"}
 
 echo "Finished: $(date)"

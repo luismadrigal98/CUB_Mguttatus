@@ -3167,7 +3167,7 @@ print(data.table::dcast(pi_shared_uptick[Exp_cat >= 1.6], Exp_cat ~ Sequence,
 #
 # Inputs (cluster, before this script):
 #   Bash_scripts/run_divergence_by_gene.sh            -> data/divergence/*
-#   MASKS="JUNG1=data/divergence/intron_aligned_JUNG1.bed KONZA=data/divergence/intron_aligned_KONZA.bed" \
+#   OUTGROUPS="JUNG1=data/divergence/intron_outgroup_JUNG1.fa.gz KONZA=data/divergence/intron_outgroup_KONZA.fa.gz" \
 #     Bash_scripts/run_intronic_twostate.sh ...        -> data/intron_2_allele_{JUNG1,KONZA}.csv
 div_dir   <- "data/divergence"
 div_sites <- file.path(div_dir, "fourfold_sites.tsv.gz")
@@ -3189,7 +3189,7 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
     tabs <- list("4-fold sites" = g4)
     masked <- sprintf("data/intron_2_allele_%s.csv", tx)
     if (file.exists(masked)) tabs[["Introns, same genes"]] <- intron_pi_d_by_gene(div_intr, masked, tx)
-    else cat(sprintf("[12.1i] %s: %s missing; introns skipped (rerun the intronic script with MASKS)\n", tx, masked))
+    else cat(sprintf("[12.1i] %s: %s missing; introns skipped (rerun the intronic script with OUTGROUPS)\n", tx, masked))
     pd_genes[[tx]] <- tabs
     for (sq in names(tabs)) {
       pd_S[[length(pd_S) + 1]] <- data.table::data.table(
@@ -3273,6 +3273,7 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
   # table and for the intronic yardstick, which has no per-site polymorphism.
   div_raw <- list(); div_turn <- list(); div_turn_ref <- list(); div_comp <- list()
   div_robust <- list(); part_scaled <- NULL; div_abs <- list(); div_count <- list()
+  t_exact <- list()
   # Fixed 0-fold differences: per-site outgroup bases (divergence_by_gene.py from
   # 2026-11-18) joined to the lines' codon counts at 0-fold positions.
   zf_file <- file.path(div_dir, "zerofold_sites.tsv.gz")
@@ -3307,10 +3308,17 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
                 ov[["differ_from_ref"]], ov[["fixed"]]))
     div_raw[[tx]]  <- data.table::data.table(
       Outgroup = tx, divergence_raw_by_expression(gd, control_meta, bulk_max = PARTITION_BULK_MAX))
+    # Divergence time for the EXACT fixed-difference predictions (2026-11-19): the
+    # closed forms describe two genomes without ancestral polymorphism; our counts
+    # are fixed differences from a 187-line sample (wright_fixed_divergence_exact).
+    a <- divergence_absolute_by_S(gf, control_meta, U = U_ctrl, V = V_ctrl)
+    t_exact[[tx]] <- fit_t_exact(1 - exp(-(U_ctrl + V_ctrl) * attr(a, "t")[["t"]]), U_ctrl, V_ctrl)
+    cat(sprintf("[12.1i] %s: exact-model divergence time t = %.2f (closed two-genome form %.2f)\n",
+                tx, t_exact[[tx]], attr(a, "t")[["t"]]))
     # Fixed differences: use ratio_nonC only (its ratio_intron would mix fixed
     # 4-fold counts with reference-based intronic ones).
     div_turn[[tx]] <- data.table::data.table(
-      Outgroup = tx, divergence_turnover_by_S(gf, control_meta, U = U_ctrl, V = V_ctrl))
+      Outgroup = tx, divergence_turnover_by_S(gf, control_meta, U = U_ctrl, V = V_ctrl, t = t_exact[[tx]]))
     div_turn_ref[[tx]] <- data.table::data.table(
       Outgroup = tx, divergence_turnover_by_S(gd, control_meta, U = U_ctrl, V = V_ctrl))
     # Numerators and denominators: pi and fixed divergence by S, raw and per unit
@@ -3325,11 +3333,11 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
     # each gene's own intronic mutation bias instead of the global U/V.
     div_robust[[tx]] <- data.table::data.table(
       Outgroup = tx, divergence_turnover_robustness(fourfold_sites, div_sites_tab, control_meta,
-                                                    masked, U = U_ctrl, V = V_ctrl, taxon = tx))
+                                                    masked, U = U_ctrl, V = V_ctrl, taxon = tx,
+                                                    t = t_exact[[tx]]))
     # Without the ratios (John Kelly, 2026-11-18): absolute pi and divergence by S
     # with Wright's predictions for a divergence time t, and raw divergence by
     # expression category counted on all aligned sites and as fixed differences.
-    a <- divergence_absolute_by_S(gf, control_meta, U = U_ctrl, V = V_ctrl)
     cat(sprintf("[12.1i] %s: divergence time t = %.2f [%.2f, %.2f] (4N generations, both lineages) from ",
                 tx, attr(a, "t")[["t"]], attr(a, "t")[["lo"]], attr(a, "t")[["hi"]]),
         sprintf("4-fold sites at S = 0; from introns alone: %s\n",
@@ -3443,9 +3451,40 @@ if (file.exists(div_sites) && file.exists(div_intr)) {
       save_figure_panel(p_hiS$ranking, "FigS_high_S_turnover_by_ranking", width = 6.5, height = 5)
       rm(hiS, p_hiS)
     }
+
+    # 12.1j) Selection vs mutation at 4-fold sites (adversarial review, 2026-11-18/19) ----
+    # The C-vs-rest model treats G like A/T, part of the C gradient is mutational,
+    # and the turnover test cannot exclude a mutation-bias mixture. Statistics that
+    # need no preferred-codon call: the unfolded spectrum polarised by the two
+    # outgroups (selection = slope; mutation moves only the intercept), composition
+    # log-odds split into rare-variant mutation and selection, the turnover test by
+    # CpG context with exact predictions, and pi/d by site class against introns.
+    pol <- polarise_fourfold(fourfold_sites, div_sites_tab)
+    sv_slopes <- rbind(sfs_direction_slopes(pol, control_meta, "S"),
+                       sfs_direction_slopes(pol, control_meta, "expression"))
+    sv_decomp <- rbind(decompose_composition(pol, control_meta, "data/intron_2_allele.csv", "S"),
+                       decompose_composition(pol, control_meta, "data/intron_2_allele.csv", "expression"))
+    sv_context <- data.table::rbindlist(lapply(names(t_exact), function(tx)
+      turnover_by_context(fourfold_sites, div_sites_tab, control_meta, U_ctrl, V_ctrl, tx, t = t_exact[[tx]])))
+    sv_classes <- data.table::rbindlist(lapply(names(t_exact), function(tx)
+      pi_d_by_site_class(fourfold_sites, div_sites_tab, sprintf("data/intron_2_allele_%s.csv", tx),
+                         control_meta, tx)))
+    data.table::fwrite(sv_slopes, "./results/sfs_direction_slopes.csv")
+    data.table::fwrite(sv_decomp, "./results/composition_mutation_selection_decomposition.csv")
+    data.table::fwrite(sv_context, "./results/divergence_turnover_by_context.csv")
+    data.table::fwrite(sv_classes, "./results/pi_d_by_site_class.csv")
+    print(data.table::dcast(sv_slopes[, .(grouping, group, pair, v = sprintf("%.2f [%.2f, %.2f]", slope, lo, hi))],
+                            grouping + group ~ pair, value.var = "v"))
+    for (gb in c("S", "expression")) {
+      p_sl <- plot_sfs_slopes(sv_slopes[grouping == gb])
+      save_figure_panel(p_sl, paste0("FigS_sfs_selection_slopes_by_", gb), width = 7, height = 4.8)
+      p_dc <- plot_decomposition(sv_decomp[grouping == gb])
+      save_figure_panel(p_dc, paste0("FigS_composition_mutation_selection_by_", gb), width = 11, height = 4.4)
+    }
+    rm(pol, sv_slopes, sv_decomp, sv_context, sv_classes, p_sl, p_dc, gb)
   }
   rm(div_zero, div_raw, div_turn, div_turn_ref, div_comp, div_robust, part_scaled, div_abs, div_count,
-     zf_file, zf_gene); gc()
+     zf_file, zf_gene, t_exact); gc()
   rm(div_taxa, div_sites_tab, pd_S, pd_E, pd_genes, pd_dbl, dbl_strata, g4, j, tabs, masked, tx, sq, w)
 } else {
   cat("[12.1i] skipped: data/divergence/ not found (run Bash_scripts/run_divergence_by_gene.sh).\n")
